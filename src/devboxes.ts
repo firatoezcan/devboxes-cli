@@ -123,11 +123,42 @@ export const loadContext = async (options: DevboxesCliOptions): Promise<Devboxes
   // Normalized exactly once, here: no trailing slash and always ending in
   // /api. Every consumer relies on that shape — the Eden client strips the
   // suffix back off before its typed routes re-add it, and the SSE reader
-  // string-concatenates paths onto it.
-  const trimmedApiBaseUrl = configuredApiBaseUrl.replace(/\/+$/, "");
-  const apiBaseUrl = trimmedApiBaseUrl.endsWith("/api")
-    ? trimmedApiBaseUrl
-    : `${trimmedApiBaseUrl}/api`;
+  // string-concatenates paths onto it. Parse before looking at the suffix:
+  // a raw-string check mistakes a host-only URL like https://api for an
+  // already-suffixed one, and the API always mounts at lowercase /api.
+  let parsedApiBaseUrl: URL;
+  try {
+    parsedApiBaseUrl = new URL(configuredApiBaseUrl);
+  } catch {
+    throw new Error(`Devboxes API base URL is not a valid URL: ${configuredApiBaseUrl}`);
+  }
+  // A scheme-less "host:3000/api" parses as scheme "host:", and non-special
+  // schemes (file:, git:, ssh:) have no origin at all — both would rebuild
+  // into a garbage base URL; fail naming the input instead.
+  if (parsedApiBaseUrl.origin === "null") {
+    throw new Error(
+      `Devboxes API base URL must be an absolute http(s) URL (e.g. https://app.local.devboxes.ai/api): ${configuredApiBaseUrl}`,
+    );
+  }
+  // The origin+pathname rebuild below would silently drop these; refuse loudly
+  // instead. The message deliberately does not echo the input — it may carry
+  // the very credentials being rejected.
+  if (
+    parsedApiBaseUrl.username ||
+    parsedApiBaseUrl.password ||
+    parsedApiBaseUrl.search ||
+    parsedApiBaseUrl.hash
+  ) {
+    throw new Error(
+      "Devboxes API base URL must not contain credentials, a query string, or a fragment.",
+    );
+  }
+  const apiBasePath = parsedApiBaseUrl.pathname.replace(/\/+$/, "");
+  const apiBaseUrl = `${parsedApiBaseUrl.origin}${
+    apiBasePath.toLowerCase().endsWith("/api")
+      ? `${apiBasePath.slice(0, -"/api".length)}/api`
+      : `${apiBasePath}/api`
+  }`;
   const authBaseUrl = (
     options.auth ??
     process.env.DEVBOX_AUTH_BASE_URL ??
@@ -381,7 +412,9 @@ export const normalizeGitRemoteUrl = (remote: string) => {
   }
   const normalizedPath = path
     .replace(/\/+$/, "")
-    .replace(/\.git$/, "")
+    // Case-insensitive: the key is lowercased below, so ".GIT" must strip
+    // exactly like ".git".
+    .replace(/\.git$/i, "")
     .replace(/^\/+/, "");
   if (!normalizedPath) return null;
   return `${host}/${normalizedPath}`.toLowerCase();
@@ -437,8 +470,13 @@ export const dispatchDevboxesTask = async (context: DevboxesCliContext, input: D
   const issue = parseGitHubIssueReference(task);
   const requestedRepo = (input.repo ?? issue?.repositoryFullName)?.toLowerCase();
   let project: (typeof projects)[number] | undefined;
-  // Set only when the cwd git remote picked the project, so callers can
-  // display the inference; explicit --project/--repo/issue selection wins.
+  // How the project was picked, so callers can display an implicit choice;
+  // explicit --project/--repo/issue selection always wins.
+  let projectSelection: "explicit" | "git-remote" | "single-project" = "explicit";
+  // Set only when the cwd git remote picked the project. Carries the
+  // credential-free normalized comparison key, never the raw remote URL — a
+  // token-embedded remote (https://user:ghp_…@host/…) must not leak into
+  // --json output or MCP results, which get persisted into transcripts.
   let inferredFromGitRemote: string | null = null;
   if (input.project) {
     project = projects.find((candidate) => candidate.id === input.project);
@@ -465,11 +503,20 @@ export const dispatchDevboxesTask = async (context: DevboxesCliContext, input: D
           (candidate) => normalizeGitRemoteUrl(candidate.repository.url) === normalizedRemote,
         )
       : [];
-    if (remote && remoteMatches.length === 1) {
+    if (normalizedRemote && remoteMatches.length === 1) {
       project = remoteMatches[0];
-      inferredFromGitRemote = remote;
+      projectSelection = "git-remote";
+      inferredFromGitRemote = normalizedRemote;
+    } else if (remoteMatches.length > 1) {
+      // Projects sharing a remote share the repository name, so "--repo"
+      // would be dead-end advice here; only --project disambiguates.
+      const matching = remoteMatches.map((candidate) => candidate.repository.name).join(", ");
+      throw new Error(
+        `The git remote matches more than one project (${matching}). Pass --project <id>.`,
+      );
     } else if (projects.length === 1) {
       project = projects[0];
+      projectSelection = "single-project";
     } else {
       const available = projects.map((candidate) => candidate.repository.name).join(", ");
       throw new Error(
@@ -507,6 +554,7 @@ export const dispatchDevboxesTask = async (context: DevboxesCliContext, input: D
     projectId: project.id,
     repository: project.repository.name,
     branch,
+    projectSelection,
     inferredFromGitRemote,
   };
 };
@@ -521,8 +569,11 @@ export const readDevboxesSession = async (context: DevboxesCliContext, agentSess
   const session = sessionResponse.data;
   if (!session) throw new Error("Agent session lookup returned no session.");
 
-  // The run row is the product truth for outcome and PR link. A deleted run
-  // (404) degrades to session-status truth instead of failing status/result.
+  // The run row is the product truth for outcome and PR link. A missing run
+  // (404) degrades to session-status truth instead of failing status/result —
+  // defensive only: run deletion cascades to the dispatch task, so in steady
+  // state the session lookup above 404s first and this branch covers just the
+  // in-between window (and a run hidden by soft deletion).
   const runResponse = await backend.api.org({ organizationId }).runs({ runId: session.runId }).get();
   if (runResponse.error && runResponse.error.status !== 404) {
     throw apiRequestError("Run lookup", runResponse.error);
@@ -792,12 +843,14 @@ export const createDevboxesCommand = () => {
         process.stdout.write(`${JSON.stringify(dispatched, null, 2)}\n`);
         return;
       }
-      // An inferred default must be visible, so a wrong guess is caught
+      // An implicit default must be visible, so a wrong guess is caught
       // immediately and corrected with --repo or --project.
-      if (dispatched.inferredFromGitRemote) {
+      if (dispatched.projectSelection === "git-remote") {
         log.info(
           `Project: ${dispatched.repository} (inferred from git remote ${dispatched.inferredFromGitRemote})`,
         );
+      } else if (dispatched.projectSelection === "single-project") {
+        log.info(`Project: ${dispatched.repository} (the organization's only project)`);
       }
       log.success(
         `Dispatched run ${dispatched.runId} on ${dispatched.repository} (${dispatched.branch}).`,

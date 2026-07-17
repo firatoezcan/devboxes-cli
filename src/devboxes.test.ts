@@ -1,4 +1,5 @@
 import { beforeAll, afterAll, describe, expect, it } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,6 +32,12 @@ const harness = createApiIntegrationHarness("devboxes-cli");
 
 // Real repositories for cwd project inference: dispatch reads the origin
 // remote of an actual git checkout, exactly like a user's terminal would.
+// Every git spawn (these fixtures and the implementation's `git remote
+// get-url origin`) inherits process.env, so the machine's global/system
+// gitconfig is pointed at /dev/null for the suite — a url.<base>.insteadOf
+// rewrite would otherwise silently rewrite remotes and flip the inference
+// assertions.
+const originalGitConfigEnv = new Map<string, string | undefined>();
 const temporaryGitRepos: string[] = [];
 const gitRepoWithOrigin = async (remote: string) => {
   const dir = await mkdtemp(join(tmpdir(), "devboxes-cli-git-"));
@@ -55,6 +62,10 @@ describe("devboxes CLI", () => {
   let secondFixture: Awaited<ReturnType<typeof harness.seedGithubProjectRun>>;
 
   beforeAll(async () => {
+    for (const key of ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"]) {
+      originalGitConfigEnv.set(key, process.env[key]);
+      process.env[key] = "/dev/null";
+    }
     dbClient = await harness.db();
     const auth = await harness.auth();
     const server = await harness.server();
@@ -87,6 +98,20 @@ describe("devboxes CLI", () => {
       repository: { name: "acme/other-service", url: "https://github.com/acme/other-service" },
       githubAppInstallation: { githubInstallationId: "102" },
     });
+    // Two projects whose repository URLs normalize to the same comparison key
+    // (https vs scp-like), so a cwd remote can match more than one project.
+    await harness.seedGithubProjectRun({
+      organizationId,
+      createdByUserId: ownerUserId,
+      repository: { name: "acme/duplicated", url: "https://github.com/acme/duplicated" },
+      githubAppInstallation: { githubInstallationId: "103" },
+    });
+    await harness.seedGithubProjectRun({
+      organizationId,
+      createdByUserId: ownerUserId,
+      repository: { name: "acme/duplicated", url: "git@github.com:acme/duplicated.git" },
+      githubAppInstallation: { githubInstallationId: "104" },
+    });
     for (const projectFixture of [fixture, secondFixture]) {
       await dbClient.db.insert(schema.blueprintSteps).values({
         organizationId,
@@ -115,6 +140,13 @@ describe("devboxes CLI", () => {
     await closeOpencodeClickHouseEventStorage();
     if (configDir) await rm(configDir, { recursive: true, force: true });
     for (const dir of temporaryGitRepos) await rm(dir, { recursive: true, force: true });
+    for (const [key, value] of originalGitConfigEnv) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
   });
 
   it("keeps the CLI command surface", () => {
@@ -154,6 +186,9 @@ describe("devboxes CLI", () => {
     expect(normalizeGitRemoteUrl("git@github.com:acme/other-service.git")).toBe(
       "github.com/acme/other-service",
     );
+    expect(normalizeGitRemoteUrl("https://github.com/Acme/Other-Service.GIT")).toBe(
+      "github.com/acme/other-service",
+    );
     expect(normalizeGitRemoteUrl("ssh://git@github.com:22/acme/other-service/")).toBe(
       "github.com/acme/other-service",
     );
@@ -172,6 +207,36 @@ describe("devboxes CLI", () => {
     const suffixless = await loadContext({ config: unusedConfigPath, api: origin });
     expect(suffixless.config.apiBaseUrl).toBe(`${origin}/api`);
     expect(suffixless.config.authBaseUrl).toBe(`${origin}/api/auth`);
+
+    // The suffix check runs on the parsed path, not the raw string: a
+    // host-only URL that happens to end in "/api" still gains the path, and
+    // an uppercase /API collapses to the lowercase mount path.
+    const hostOnly = await loadContext({ config: unusedConfigPath, api: "https://api" });
+    expect(hostOnly.config.apiBaseUrl).toBe("https://api/api");
+    const uppercase = await loadContext({ config: unusedConfigPath, api: `${origin}/API` });
+    expect(uppercase.config.apiBaseUrl).toBe(`${origin}/api`);
+    await expect(loadContext({ config: unusedConfigPath, api: "not a url" })).rejects.toThrow(
+      "is not a valid URL",
+    );
+    // Scheme-less host:port parses as a URL with scheme "host:", and
+    // non-special schemes have no origin; the error must name the input
+    // instead of degrading into a garbage base URL.
+    await expect(
+      loadContext({ config: unusedConfigPath, api: "localhost:3000/api" }),
+    ).rejects.toThrow("must be an absolute http(s) URL");
+    await expect(
+      loadContext({ config: unusedConfigPath, api: "file:///srv/devboxes/api" }),
+    ).rejects.toThrow("must be an absolute http(s) URL");
+    // Parts the origin+path rebuild would silently drop are refused loudly.
+    await expect(
+      loadContext({ config: unusedConfigPath, api: `${origin}/api?tenant=1` }),
+    ).rejects.toThrow("must not contain credentials, a query string, or a fragment");
+    await expect(
+      loadContext({
+        config: unusedConfigPath,
+        api: `http://user:secret@127.0.0.1:1/api`,
+      }),
+    ).rejects.toThrow("must not contain credentials, a query string, or a fragment");
 
     for (const api of [
       "http://localhost:3000/api",
@@ -300,12 +365,34 @@ describe("devboxes CLI", () => {
 
     expect(dispatched.projectId).toBe(secondFixture.projectId);
     expect(dispatched.repository).toBe("acme/other-service");
-    expect(dispatched.inferredFromGitRemote).toBe("git@github.com:acme/other-service.git");
+    expect(dispatched.projectSelection).toBe("git-remote");
+    // The surfaced inference is the credential-free normalized key, never the
+    // raw remote URL.
+    expect(dispatched.inferredFromGitRemote).toBe("github.com/acme/other-service");
 
     const task = await dbClient.db.query.opencodeDispatchTasks.findFirst({
       where: { id: dispatched.agentSessionId, organizationId },
     });
     expect(task?.repositoryFullName).toBe("acme/other-service");
+  });
+
+  it("never echoes credentials from a token-embedded remote into the dispatch result", async () => {
+    // A user-scoped HTTPS remote with an embedded token still infers the
+    // project, but the token must stay out of the result — --json output and
+    // MCP results get persisted into transcripts.
+    const repoDir = await gitRepoWithOrigin(
+      "https://x-access-token:ghp_devboxes_cli_secret@github.com/acme/other-service.git",
+    );
+    const dispatched = await dispatchDevboxesTask(context, {
+      task: "Rotate the webhook signing key.",
+      blueprint: secondFixture.blueprintId,
+      cwd: repoDir,
+    });
+
+    expect(dispatched.projectId).toBe(secondFixture.projectId);
+    expect(dispatched.inferredFromGitRemote).toBe("github.com/acme/other-service");
+    expect(JSON.stringify(dispatched)).not.toContain("ghp_devboxes_cli_secret");
+    expect(JSON.stringify(dispatched)).not.toContain("x-access-token");
   });
 
   it("lets explicit selection override the cwd git remote", async () => {
@@ -317,14 +404,73 @@ describe("devboxes CLI", () => {
       cwd: repoDir,
     });
     expect(dispatched.projectId).toBe(fixture.projectId);
+    expect(dispatched.projectSelection).toBe("explicit");
     expect(dispatched.inferredFromGitRemote).toBeNull();
   });
 
-  it("never dispatches from a remote that matches no project exactly", async () => {
+  // Both scoped to a multi-project organization: with a single project the
+  // documented fallback still dispatches to that only project.
+  it("refuses a no-match remote in a multi-project organization instead of guessing", async () => {
     const repoDir = await gitRepoWithOrigin("git@github.com:acme/unrelated.git");
     await expect(
       dispatchDevboxesTask(context, { task: "Ship something somewhere.", cwd: repoDir }),
     ).rejects.toThrow("Pass --repo");
+  });
+
+  it("refuses a remote whose key matches more than one project", async () => {
+    const repoDir = await gitRepoWithOrigin("ssh://git@github.com/acme/duplicated.git");
+    // The dedicated message matters: projects sharing a remote share the
+    // repository name, so this branch must advise --project, not --repo.
+    await expect(
+      dispatchDevboxesTask(context, { task: "Ship something somewhere.", cwd: repoDir }),
+    ).rejects.toThrow(
+      "The git remote matches more than one project (acme/duplicated, acme/duplicated). Pass --project <id>.",
+    );
+  });
+
+  it("falls back to the only project of a single-project organization and reports it", async () => {
+    const soloOrganizationId = randomUUID();
+    await harness.seedOrganizations({
+      id: soloOrganizationId,
+      name: "Devboxes CLI Solo Org",
+      slug: `devboxes-cli-solo-${randomUUID()}`,
+    });
+    await harness.seedMemberships({
+      id: "devboxes-cli-solo-membership",
+      organizationId: soloOrganizationId,
+      userId: ownerUserId,
+      role: "owner",
+    });
+    const soloFixture = await harness.seedGithubProjectRun({
+      organizationId: soloOrganizationId,
+      createdByUserId: ownerUserId,
+      repository: { name: "acme/solo-service", url: "https://github.com/acme/solo-service" },
+      githubAppInstallation: { githubInstallationId: "105" },
+    });
+    await dbClient.db.insert(schema.blueprintSteps).values({
+      organizationId: soloOrganizationId,
+      blueprintVersionId: soloFixture.blueprintVersionId,
+      stepKey: "implement",
+      name: "Implement",
+      order: 1,
+      action: "opencode.run",
+    });
+
+    const soloContext = await loadContext({
+      config: context.configPath,
+      organization: soloOrganizationId,
+    });
+    // configDir is not a git checkout, so no remote can tip the selection.
+    const dispatched = await dispatchDevboxesTask(soloContext, {
+      task: "Ship the only project.",
+      blueprint: soloFixture.blueprintId,
+      cwd: configDir,
+    });
+
+    expect(dispatched.projectId).toBe(soloFixture.projectId);
+    expect(dispatched.repository).toBe("acme/solo-service");
+    expect(dispatched.projectSelection).toBe("single-project");
+    expect(dispatched.inferredFromGitRemote).toBeNull();
   });
 
   it("reads session and run status for a dispatched session", async () => {
@@ -333,6 +479,8 @@ describe("devboxes CLI", () => {
     expect(current.session.status).toBe("queued");
     expect(current.run?.id).toBe(dispatchedRunId);
     expect(current.run?.status).toBe("queued");
+    // The run route serves the current step's name, not the step row.
+    expect(current.run?.currentStep).toBe("Implement");
 
     await expect(
       readDevboxesSession(context, "00000000-0000-7000-8000-00000000dead"),
@@ -473,7 +621,7 @@ describe("devboxes CLI", () => {
           blueprint: secondFixture.blueprintId,
         },
       });
-      expect(mcpDispatch.isError).toBeUndefined();
+      expect(mcpDispatch.isError).toBeFalsy();
       const mcpDispatchContent = mcpDispatch.content as Array<{ type: string; text: string }>;
       const mcpDispatched = JSON.parse(mcpDispatchContent[0]!.text) as {
         runId: string;
