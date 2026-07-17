@@ -137,7 +137,7 @@ export const loadContext = async (options: DevboxesCliOptions): Promise<Devboxes
   // into a garbage base URL; fail naming the input instead.
   if (parsedApiBaseUrl.origin === "null") {
     throw new Error(
-      `Devboxes API base URL must be an absolute http(s) URL (e.g. https://app.local.devboxes.ai/api): ${configuredApiBaseUrl}`,
+      `Devboxes API base URL must be an absolute http(s) URL (e.g. https://api.devboxes.ai/api): ${configuredApiBaseUrl}`,
     );
   }
   // The origin+pathname rebuild below would silently drop these; refuse loudly
