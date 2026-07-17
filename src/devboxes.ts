@@ -181,9 +181,7 @@ export const loadContext = async (options: DevboxesCliOptions): Promise<Devboxes
     const loopbackHttp =
       url.protocol === "http:" &&
       // URL.hostname keeps the brackets around an IPv6 literal.
-      (url.hostname === "localhost" ||
-        url.hostname === "127.0.0.1" ||
-        url.hostname === "[::1]");
+      (url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]");
     if (url.protocol !== "https:" && !loopbackHttp) {
       throw new Error(
         `Devboxes ${label} must use HTTPS (or loopback HTTP for local development): ${value}`,
@@ -391,9 +389,7 @@ export const normalizeGitRemoteUrl = (remote: string) => {
   if (!trimmed) return null;
   let host: string;
   let path: string;
-  const scpLike = trimmed.includes("://")
-    ? null
-    : /^(?:[^@/]+@)?([^:/]+):(.+)$/.exec(trimmed);
+  const scpLike = trimmed.includes("://") ? null : /^(?:[^@/]+@)?([^:/]+):(.+)$/.exec(trimmed);
   if (scpLike?.[1] && scpLike[2]) {
     host = scpLike[1];
     path = scpLike[2];
@@ -574,7 +570,10 @@ export const readDevboxesSession = async (context: DevboxesCliContext, agentSess
   // defensive only: run deletion cascades to the dispatch task, so in steady
   // state the session lookup above 404s first and this branch covers just the
   // in-between window (and a run hidden by soft deletion).
-  const runResponse = await backend.api.org({ organizationId }).runs({ runId: session.runId }).get();
+  const runResponse = await backend.api
+    .org({ organizationId })
+    .runs({ runId: session.runId })
+    .get();
   if (runResponse.error && runResponse.error.status !== 404) {
     throw apiRequestError("Run lookup", runResponse.error);
   }

@@ -42,7 +42,10 @@ const temporaryGitRepos: string[] = [];
 const gitRepoWithOrigin = async (remote: string) => {
   const dir = await mkdtemp(join(tmpdir(), "devboxes-cli-git-"));
   temporaryGitRepos.push(dir);
-  for (const args of [["init", "--quiet"], ["remote", "add", "origin", remote]]) {
+  for (const args of [
+    ["init", "--quiet"],
+    ["remote", "add", "origin", remote],
+  ]) {
     const git = Bun.spawn(["git", ...args], { cwd: dir, stdout: "ignore", stderr: "pipe" });
     if ((await git.exited) !== 0) {
       throw new Error(`git ${args.join(" ")} failed: ${await new Response(git.stderr).text()}`);
