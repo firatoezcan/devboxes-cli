@@ -3,11 +3,11 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import * as schema from "@firops/api/db/schema";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { eq } from "drizzle-orm";
 
+import * as schema from "@/db/schema";
 import { createApiIntegrationHarness } from "@/test/api-integration";
 
 import {

@@ -5,8 +5,6 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { log, note, spinner } from "@clack/prompts";
 import { treaty } from "@elysiajs/eden";
-import type { ApiType } from "@firops/api/app";
-import type { GlobalEvent } from "@firops/opencode-sdk/types.gen";
 import { createAuthClient } from "better-auth/client";
 import { deviceAuthorizationClient } from "better-auth/client/plugins";
 import { Command } from "commander";
@@ -14,6 +12,14 @@ import open from "open";
 import Type, { type Static } from "typebox";
 import Value from "typebox/value";
 
+// Type-only wiring against the private monorepo this CLI is developed in,
+// resolved through tsconfig "paths" there and fully erased at runtime (both
+// are `import type`). In the published package and the public source mirror
+// these specifiers stay unresolved on purpose: nothing private ships.
+import type { ApiType } from "#monorepo/api";
+import type { GlobalEvent } from "#monorepo/opencode-events";
+
+import packageJson from "../package.json";
 import { writeSecretFile } from "./secret-file";
 
 type DevboxesCliOptions = {
@@ -47,14 +53,16 @@ const CliConfigFileSchema = Type.Object({
 type CliConfigFile = Static<typeof CliConfigFileSchema>;
 
 export const cliCommandName = "devboxes";
-export const cliVersion = "0.1.0";
+// The npm package version is the single source of truth: `changeset version`
+// bumps package.json, and --version/user-agent/MCP server info follow it.
+export const cliVersion: string = packageJson.version;
 const cliUserAgent = `devboxes-cli/${cliVersion} (${process.platform}/${process.arch})`;
 // Must stay in the validateClient allowlist of the API's deviceAuthorization
-// plugin (apps/firops-api/src/plugins/auth/auth.ts). Public identifier, not a
-// secret: it only names which client asked for the browser approval.
+// auth plugin. Public identifier, not a secret: it only names which client
+// asked for the browser approval.
 export const cliDeviceClientId = "devboxes-cli";
-// The dashboard's dispatch default (defaultOpencodeModel in
-// apps/firops-web/src/features/agent-sessions/opencode/console/model-catalog.ts).
+// Mirrors the dashboard dispatch console's default model (defaultOpencodeModel
+// in the web app's model catalog).
 export const defaultDispatchModel = "deepseek/deepseek-v4-pro";
 
 const windowsApplicationDataHome = process.env.APPDATA ?? join(homedir(), "AppData", "Roaming");
@@ -109,7 +117,7 @@ export const loadContext = async (options: DevboxesCliOptions): Promise<Devboxes
     options.api ?? process.env.DEVBOX_API_BASE_URL ?? fileConfig.apiBaseUrl;
   if (!configuredApiBaseUrl) {
     throw new Error(
-      `No API base URL configured. Run \`${cliCommandName} connect --api <url>\` (e.g. --api https://app.local.devboxes.ai/api) or set DEVBOX_API_BASE_URL.`,
+      `No API base URL configured. Run \`${cliCommandName} connect --api <url>\` (e.g. --api https://devboxes.example.com/api) or set DEVBOX_API_BASE_URL.`,
     );
   }
   // Normalized exactly once, here: no trailing slash and always ending in
