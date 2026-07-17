@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "ignoreDeprecations": "6.0",
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noFallthroughCasesInSwitch": true,
+    "strictNullChecks": true,
+    "exactOptionalPropertyTypes": false,
+    "incremental": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "types": ["bun-types", "node"],
+    "noEmit": true,
+    "paths": {
+      "@/*": ["../firops-api/src/*"]
+    }
+  },
+  "include": ["src/**/*.ts", "../firops-api/types/**/*.d.ts"]
+}
