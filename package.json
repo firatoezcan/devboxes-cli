@@ -1,6 +1,6 @@
 {
   "name": "devboxes",
-  "version": "0.0.2",
+  "version": "0.1.0",
   "private": false,
   "description": "Devboxes CLI: connect a terminal, dispatch coding tasks, follow sessions, and serve the same actions as MCP tools.",
   "homepage": "https://github.com/firatoezcan/devboxes-cli#readme",
