@@ -112,7 +112,14 @@ export const loadContext = async (options: DevboxesCliOptions): Promise<Devboxes
       `No API base URL configured. Run \`${cliCommandName} connect --api <url>\` (e.g. --api https://app.local.devboxes.ai/api) or set DEVBOX_API_BASE_URL.`,
     );
   }
-  const apiBaseUrl = configuredApiBaseUrl.replace(/\/+$/, "");
+  // Normalized exactly once, here: no trailing slash and always ending in
+  // /api. Every consumer relies on that shape — the Eden client strips the
+  // suffix back off before its typed routes re-add it, and the SSE reader
+  // string-concatenates paths onto it.
+  const trimmedApiBaseUrl = configuredApiBaseUrl.replace(/\/+$/, "");
+  const apiBaseUrl = trimmedApiBaseUrl.endsWith("/api")
+    ? trimmedApiBaseUrl
+    : `${trimmedApiBaseUrl}/api`;
   const authBaseUrl = (
     options.auth ??
     process.env.DEVBOX_AUTH_BASE_URL ??
@@ -133,7 +140,11 @@ export const loadContext = async (options: DevboxesCliOptions): Promise<Devboxes
       throw new Error(`Devboxes ${label} is not a valid URL: ${value}`);
     }
     const loopbackHttp =
-      url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1");
+      url.protocol === "http:" &&
+      // URL.hostname keeps the brackets around an IPv6 literal.
+      (url.hostname === "localhost" ||
+        url.hostname === "127.0.0.1" ||
+        url.hostname === "[::1]");
     if (url.protocol !== "https:" && !loopbackHttp) {
       throw new Error(
         `Devboxes ${label} must use HTTPS (or loopback HTTP for local development): ${value}`,
@@ -258,8 +269,10 @@ const deviceSessionToken = async (config: DevboxesCliConfig) => {
 };
 
 // One bearer-authorized Eden client policy for every API call the CLI makes.
+// loadContext guarantees the base URL ends in /api; Eden's typed routes re-add
+// that segment (backend.api...), so the treaty origin is the URL without it.
 const bearerBackend = (apiBaseUrl: string, sessionToken: string) =>
-  treaty<ApiType>(apiBaseUrl.replace(/\/+$/, "").replace(/\/api$/, ""), {
+  treaty<ApiType>(apiBaseUrl.replace(/\/api$/, ""), {
     onRequest(_path, requestOptions) {
       const headers = new Headers(requestOptions.headers);
       headers.set("Authorization", `Bearer ${sessionToken}`);
@@ -321,6 +334,70 @@ export const parseGitHubIssueReference = (task: string) => {
   return null;
 };
 
+// Git remotes name the same repository as https ("https://github.com/acme/api.git"),
+// ssh ("ssh://git@github.com:22/acme/api"), or scp-like ("git@github.com:acme/api")
+// URLs. All collapse to one lowercase "host[:port]/path" key with credentials,
+// scheme-default ports, ".git", and slashes stripped. Project inference compares
+// these keys with exact string equality only — never fuzzy — so a remote that
+// does not normalize to exactly one project repository selects nothing.
+const schemeDefaultPorts: Record<string, string> = {
+  "http:": "80",
+  "https:": "443",
+  "ssh:": "22",
+  "git:": "9418",
+};
+
+export const normalizeGitRemoteUrl = (remote: string) => {
+  const trimmed = remote.trim();
+  if (!trimmed) return null;
+  let host: string;
+  let path: string;
+  const scpLike = trimmed.includes("://")
+    ? null
+    : /^(?:[^@/]+@)?([^:/]+):(.+)$/.exec(trimmed);
+  if (scpLike?.[1] && scpLike[2]) {
+    host = scpLike[1];
+    path = scpLike[2];
+  } else {
+    let url: URL;
+    try {
+      url = new URL(trimmed);
+    } catch {
+      return null;
+    }
+    // Local paths and file:// remotes have no host to match a hosted project.
+    if (!url.hostname) return null;
+    const port = url.port && url.port !== schemeDefaultPorts[url.protocol] ? `:${url.port}` : "";
+    host = `${url.hostname}${port}`;
+    path = url.pathname;
+  }
+  const normalizedPath = path
+    .replace(/\/+$/, "")
+    .replace(/\.git$/, "")
+    .replace(/^\/+/, "");
+  if (!normalizedPath) return null;
+  return `${host}/${normalizedPath}`.toLowerCase();
+};
+
+// The origin remote of the dispatch working directory. Anything that keeps it
+// from resolving — not a git repository, no origin remote, git not installed —
+// means "no inference", never an error.
+const gitRemoteOriginUrl = async (cwd: string) => {
+  try {
+    const git = Bun.spawn(["git", "remote", "get-url", "origin"], {
+      cwd,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const [output, exitCode] = await Promise.all([new Response(git.stdout).text(), git.exited]);
+    if (exitCode !== 0) return null;
+    return output.trim() || null;
+  } catch {
+    return null;
+  }
+};
+
 export type DispatchInput = {
   task: string;
   repo?: string;
@@ -329,6 +406,10 @@ export type DispatchInput = {
   branch?: string;
   title?: string;
   blueprint?: string;
+  // Directory whose git origin remote may infer the project when neither
+  // --project, --repo, nor an issue reference selects one. Defaults to the
+  // process working directory.
+  cwd?: string;
 };
 
 export const dispatchDevboxesTask = async (context: DevboxesCliContext, input: DispatchInput) => {
@@ -348,6 +429,9 @@ export const dispatchDevboxesTask = async (context: DevboxesCliContext, input: D
   const issue = parseGitHubIssueReference(task);
   const requestedRepo = (input.repo ?? issue?.repositoryFullName)?.toLowerCase();
   let project: (typeof projects)[number] | undefined;
+  // Set only when the cwd git remote picked the project, so callers can
+  // display the inference; explicit --project/--repo/issue selection wins.
+  let inferredFromGitRemote: string | null = null;
   if (input.project) {
     project = projects.find((candidate) => candidate.id === input.project);
     if (!project) throw new Error(`No project has id ${input.project}.`);
@@ -365,13 +449,25 @@ export const dispatchDevboxesTask = async (context: DevboxesCliContext, input: D
       );
     }
     project = matches[0];
-  } else if (projects.length === 1) {
-    project = projects[0];
   } else {
-    const available = projects.map((candidate) => candidate.repository.name).join(", ");
-    throw new Error(
-      `Pass --repo <owner/name> to pick a project. Connected repositories: ${available}.`,
-    );
+    const remote = await gitRemoteOriginUrl(input.cwd ?? process.cwd());
+    const normalizedRemote = remote ? normalizeGitRemoteUrl(remote) : null;
+    const remoteMatches = normalizedRemote
+      ? projects.filter(
+          (candidate) => normalizeGitRemoteUrl(candidate.repository.url) === normalizedRemote,
+        )
+      : [];
+    if (remote && remoteMatches.length === 1) {
+      project = remoteMatches[0];
+      inferredFromGitRemote = remote;
+    } else if (projects.length === 1) {
+      project = projects[0];
+    } else {
+      const available = projects.map((candidate) => candidate.repository.name).join(", ");
+      throw new Error(
+        `Pass --repo <owner/name> to pick a project. Connected repositories: ${available}.`,
+      );
+    }
   }
   if (!project) throw new Error("Dispatch requires a project.");
 
@@ -403,6 +499,7 @@ export const dispatchDevboxesTask = async (context: DevboxesCliContext, input: D
     projectId: project.id,
     repository: project.repository.name,
     branch,
+    inferredFromGitRemote,
   };
 };
 
@@ -416,11 +513,13 @@ export const readDevboxesSession = async (context: DevboxesCliContext, agentSess
   const session = sessionResponse.data;
   if (!session) throw new Error("Agent session lookup returned no session.");
 
-  // The run row is the product truth for outcome and PR link; the run list
-  // endpoint is the only surface serving those fields today.
-  const runsResponse = await backend.api.org({ organizationId }).runs.get();
-  if (runsResponse.error) throw apiRequestError("Run lookup", runsResponse.error);
-  const run = (runsResponse.data ?? []).find((candidate) => candidate.id === session.runId) ?? null;
+  // The run row is the product truth for outcome and PR link. A deleted run
+  // (404) degrades to session-status truth instead of failing status/result.
+  const runResponse = await backend.api.org({ organizationId }).runs({ runId: session.runId }).get();
+  if (runResponse.error && runResponse.error.status !== 404) {
+    throw apiRequestError("Run lookup", runResponse.error);
+  }
+  const run = runResponse.data ?? null;
 
   return { session, run };
 };
@@ -436,6 +535,10 @@ export const sessionReachedTerminalState = (input: {
     ? terminalRunStatuses.has(input.run.status)
     : terminalSessionStatuses.has(input.session.status);
 
+// A stalled SSE connection must not hang `result` forever; the read leg gets
+// the same ceiling as the connect flow's browser-approval poll.
+const finalOutputReadTimeoutMs = 5 * 60_000;
+
 // Reads the session's stored Opencode events once — the SSE endpoint drains
 // the ClickHouse backlog first and only then emits its first keepalive, so the
 // keepalive is the CLI's clean "caught up, disconnect" signal — and extracts
@@ -446,6 +549,7 @@ export const readFinalAssistantMessage = async (
 ) => {
   const { organizationId, sessionToken } = connectedBackend(context);
   const controller = new AbortController();
+  const readDeadline = AbortSignal.timeout(finalOutputReadTimeoutMs);
   const response = await fetch(
     `${context.config.apiBaseUrl}/org/${organizationId}/agent-sessions/${agentSessionId}/opencode/event`,
     {
@@ -454,9 +558,16 @@ export const readFinalAssistantMessage = async (
         Accept: "text/event-stream",
         "User-Agent": cliUserAgent,
       },
-      signal: controller.signal,
+      signal: AbortSignal.any([controller.signal, readDeadline]),
     },
-  );
+  ).catch((error: unknown) => {
+    if (readDeadline.aborted) {
+      throw new Error(
+        `Opencode event read timed out after ${finalOutputReadTimeoutMs / 60_000} minutes without a response.`,
+      );
+    }
+    throw error;
+  });
   if (!response.ok || !response.body) {
     const detail = (await response.text().catch(() => "")).slice(0, 300);
     throw new ApiRequestError(
@@ -534,6 +645,14 @@ export const readFinalAssistantMessage = async (
       }
       if (caughtUp) break;
     }
+  } catch (error) {
+    // AbortSignal.timeout surfaces as an opaque TimeoutError; name the deadline.
+    if (readDeadline.aborted) {
+      throw new Error(
+        `Opencode event read timed out after ${finalOutputReadTimeoutMs / 60_000} minutes without catching up.`,
+      );
+    }
+    throw error;
   } finally {
     controller.abort();
   }
@@ -631,7 +750,10 @@ export const createDevboxesCommand = () => {
   dispatchCommand
     .description("dispatch a task or GitHub issue as a new Devboxes run")
     .argument("<task...>", "task text, a GitHub issue URL, or owner/repo#123")
-    .option("--repo <owner/name>", "repository of the target project")
+    .option(
+      "--repo <owner/name>",
+      "repository of the target project (default: inferred from the cwd git origin remote)",
+    )
     .option("--project <id>", "target project id (overrides --repo)")
     .option("--model <provider/model>", "Opencode model", defaultDispatchModel)
     .option("--branch <branch>", "base branch and PR destination", "main")
@@ -661,6 +783,13 @@ export const createDevboxesCommand = () => {
       if (options.json) {
         process.stdout.write(`${JSON.stringify(dispatched, null, 2)}\n`);
         return;
+      }
+      // An inferred default must be visible, so a wrong guess is caught
+      // immediately and corrected with --repo or --project.
+      if (dispatched.inferredFromGitRemote) {
+        log.info(
+          `Project: ${dispatched.repository} (inferred from git remote ${dispatched.inferredFromGitRemote})`,
+        );
       }
       log.success(
         `Dispatched run ${dispatched.runId} on ${dispatched.repository} (${dispatched.branch}).`,

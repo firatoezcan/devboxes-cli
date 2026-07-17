@@ -37,6 +37,10 @@ export const createDevboxesMcpServer = (context: DevboxesCliContext) => {
         model: z.string().optional().describe("Opencode model as provider/model"),
         branch: z.string().optional().describe("Base branch and PR destination (default main)"),
         title: z.string().optional().describe("Run title"),
+        blueprint: z
+          .string()
+          .optional()
+          .describe("Blueprint id (defaults to the Implement GitHub Issue blueprint)"),
       },
     },
     async (input) => jsonResult(await dispatchDevboxesTask(context, input)),
