@@ -18,7 +18,7 @@ npm i -g devboxes   # or: bun i -g devboxes
 
 ```sh
 # Sign this terminal in via browser approval (device authorization flow).
-devboxes connect --api https://<your-devboxes-host>/api
+devboxes connect   # hosted cloud by default; self-hosted: --api https://<your-host>/api
 
 # Dispatch a task — free text with a target repository, or a GitHub issue.
 devboxes dispatch "Fix the retry backoff in the queue worker" --repo owner/name

@@ -204,6 +204,23 @@ describe("devboxes CLI", () => {
     expect(normalizeGitRemoteUrl("file:///srv/git/other-service.git")).toBeNull();
   });
 
+  it("defaults to the hosted API when nothing is configured", async () => {
+    const unusedConfigPath = join(configDir, "does-not-exist.json");
+    const savedEnvApi = process.env.DEVBOX_API_BASE_URL;
+    delete process.env.DEVBOX_API_BASE_URL;
+    try {
+      const context = await loadContext({ config: unusedConfigPath });
+      expect(context.config.apiBaseUrl).toBe("https://api.devboxes.ai/api");
+      expect(context.config.authBaseUrl).toBe("https://api.devboxes.ai/api/auth");
+      // Explicit configuration still wins over the hosted default.
+      const explicit = await loadContext({ config: unusedConfigPath, api: origin });
+      expect(explicit.config.apiBaseUrl).toBe(`${origin}/api`);
+    } finally {
+      if (savedEnvApi === undefined) delete process.env.DEVBOX_API_BASE_URL;
+      else process.env.DEVBOX_API_BASE_URL = savedEnvApi;
+    }
+  });
+
   it("normalizes the API base URL once and applies the loopback HTTP policy", async () => {
     const unusedConfigPath = join(configDir, "does-not-exist.json");
     // A suffix-less --api value gains the /api suffix all consumers rely on.

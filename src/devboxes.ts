@@ -113,13 +113,13 @@ export const loadContext = async (options: DevboxesCliOptions): Promise<Devboxes
   const configExtras = Object.fromEntries(
     Object.entries(fileConfig).filter(([key]) => !knownConfigKeys.has(key)),
   );
+  // Hosted default: the public Devboxes cloud. Self-hosters override with
+  // --api, DEVBOX_API_BASE_URL, or the config stored by a previous connect.
   const configuredApiBaseUrl =
-    options.api ?? process.env.DEVBOX_API_BASE_URL ?? fileConfig.apiBaseUrl;
-  if (!configuredApiBaseUrl) {
-    throw new Error(
-      `No API base URL configured. Run \`${cliCommandName} connect --api <url>\` (e.g. --api https://devboxes.example.com/api) or set DEVBOX_API_BASE_URL.`,
-    );
-  }
+    options.api ??
+    process.env.DEVBOX_API_BASE_URL ??
+    fileConfig.apiBaseUrl ??
+    "https://api.devboxes.ai/api";
   // Normalized exactly once, here: no trailing slash and always ending in
   // /api. Every consumer relies on that shape — the Eden client strips the
   // suffix back off before its typed routes re-add it, and the SSE reader
