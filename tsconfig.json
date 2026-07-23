@@ -25,8 +25,7 @@
     // them (all uses are erased `import type` / test-only imports).
     "paths": {
       "@/*": ["../firops-api/src/*"],
-      "#monorepo/api": ["../firops-api/src/app.ts"],
-      "#monorepo/opencode-events": ["../../packages/opencode-sdk/src/generated/types.gen.ts"]
+      "#monorepo/api": ["../firops-api/src/app.ts"]
     }
   },
   "include": ["src/**/*.ts", "../firops-api/types/**/*.d.ts"]

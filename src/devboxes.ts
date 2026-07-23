@@ -13,11 +13,10 @@ import Type, { type Static } from "typebox";
 import Value from "typebox/value";
 
 // Type-only wiring against the private monorepo this CLI is developed in,
-// resolved through tsconfig "paths" there and fully erased at runtime (both
-// are `import type`). In the published package and the public source mirror
-// these specifiers stay unresolved on purpose: nothing private ships.
+// resolved through tsconfig "paths" there and fully erased at runtime
+// (`import type`). In the published package and the public source mirror
+// this specifier stays unresolved on purpose: nothing private ships.
 import type { ApiType } from "#monorepo/api";
-import type { GlobalEvent } from "#monorepo/opencode-events";
 
 import packageJson from "../package.json";
 import { writeSecretFile } from "./secret-file";
@@ -593,132 +592,50 @@ export const sessionReachedTerminalState = (input: {
     ? terminalRunStatuses.has(input.run.status)
     : terminalSessionStatuses.has(input.session.status);
 
-// A stalled SSE connection must not hang `result` forever; the read leg gets
-// the same ceiling as the connect flow's browser-approval poll.
+// A stalled read must not hang `result` forever; the read leg gets the same
+// ceiling as the connect flow's browser-approval poll.
 const finalOutputReadTimeoutMs = 5 * 60_000;
 
-// Reads the session's stored Opencode events once — the SSE endpoint drains
-// the ClickHouse backlog first and only then emits its first keepalive, so the
-// keepalive is the CLI's clean "caught up, disconnect" signal — and extracts
-// the text of the latest assistant message as the session's final output.
+// Reads the session's projected message history from the v2 read API and
+// extracts the text of the latest assistant message as the session's final
+// output. A session that never reached opencode has no output yet.
 export const readFinalAssistantMessage = async (
   context: DevboxesCliContext,
   agentSessionId: string,
+  opencodeSessionId: string | null,
 ) => {
-  const { organizationId, sessionToken } = connectedBackend(context);
-  const controller = new AbortController();
+  if (!opencodeSessionId) return null;
+  const { backend, organizationId } = connectedBackend(context);
   const readDeadline = AbortSignal.timeout(finalOutputReadTimeoutMs);
-  const response = await fetch(
-    `${context.config.apiBaseUrl}/org/${organizationId}/agent-sessions/${agentSessionId}/opencode/event`,
-    {
-      headers: {
-        Authorization: `Bearer ${sessionToken}`,
-        Accept: "text/event-stream",
-        "User-Agent": cliUserAgent,
-      },
-      signal: AbortSignal.any([controller.signal, readDeadline]),
-    },
-  ).catch((error: unknown) => {
-    if (readDeadline.aborted) {
-      throw new Error(
-        `Opencode event read timed out after ${finalOutputReadTimeoutMs / 60_000} minutes without a response.`,
-      );
+  const response = await backend.api
+    .org({ organizationId })
+    ["agent-sessions"]({ agentSessionId })
+    .opencode.v2.session({ sessionID: opencodeSessionId })
+    .message.get({ fetch: { signal: readDeadline } })
+    .catch((error: unknown) => {
+      // AbortSignal.timeout surfaces as an opaque TimeoutError; name the deadline.
+      if (readDeadline.aborted) {
+        throw new Error(
+          `Opencode message read timed out after ${finalOutputReadTimeoutMs / 60_000} minutes without a response.`,
+        );
+      }
+      throw error;
+    });
+  if (response.error) throw apiRequestError("Opencode message read", response.error);
+
+  // Messages arrive ascending; the last assistant message is the final turn.
+  const messages = response.data ?? [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || message.info.role !== "assistant") continue;
+    const texts: string[] = [];
+    for (const part of message.parts) {
+      if (part.type !== "text" || part.synthetic || part.ignored) continue;
+      texts.push(part.text);
     }
-    throw error;
-  });
-  if (!response.ok || !response.body) {
-    const detail = (await response.text().catch(() => "")).slice(0, 300);
-    throw new ApiRequestError(
-      `Opencode event read failed with HTTP ${response.status}${detail ? `: ${detail}` : "."}`,
-      response.status,
-    );
+    return texts.join("\n\n").trim() || null;
   }
-
-  const roleByMessageId = new Map<string, string>();
-  const textPartsByMessageId = new Map<string, Map<string, string>>();
-  let latestAssistantMessageId: string | null = null;
-
-  const applyEvent = (event: GlobalEvent["payload"]) => {
-    const info =
-      event.type === "message.updated"
-        ? event.properties.info
-        : event.type === "sync" && event.syncEvent.type === "message.updated.1"
-          ? event.syncEvent.data.info
-          : null;
-    if (info) {
-      roleByMessageId.set(info.id, info.role);
-      if (info.role === "assistant") latestAssistantMessageId = info.id;
-    }
-    const part =
-      event.type === "message.part.updated"
-        ? event.properties.part
-        : event.type === "sync" && event.syncEvent.type === "message.part.updated.1"
-          ? event.syncEvent.data.part
-          : null;
-    if (part?.type === "text" && !part.synthetic && !part.ignored) {
-      const parts = textPartsByMessageId.get(part.messageID) ?? new Map<string, string>();
-      parts.set(part.id, part.text);
-      textPartsByMessageId.set(part.messageID, parts);
-    }
-  };
-
-  // One SSE block per stored event: "id: <cursor>\ndata: <event json>\n\n",
-  // with ": keepalive" comments once the backlog is drained.
-  const handleEventBlock = (block: string) => {
-    let sawKeepalive = false;
-    let data = "";
-    for (const line of block.split("\n")) {
-      if (line.startsWith(":")) {
-        if (line.slice(1).trim() === "keepalive") sawKeepalive = true;
-        continue;
-      }
-      if (line.startsWith("data:")) data += (data ? "\n" : "") + line.slice(5).trimStart();
-    }
-    if (data) {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(data);
-      } catch {
-        return sawKeepalive;
-      }
-      if (parsed && typeof parsed === "object" && "type" in parsed) {
-        applyEvent(parsed as GlobalEvent["payload"]);
-      }
-    }
-    return sawKeepalive;
-  };
-
-  const decoder = new TextDecoder();
-  let buffered = "";
-  let caughtUp = false;
-  try {
-    for await (const chunk of response.body) {
-      buffered += decoder.decode(chunk, { stream: true });
-      let boundary = buffered.indexOf("\n\n");
-      while (boundary !== -1) {
-        const block = buffered.slice(0, boundary);
-        buffered = buffered.slice(boundary + 2);
-        if (handleEventBlock(block)) caughtUp = true;
-        boundary = buffered.indexOf("\n\n");
-      }
-      if (caughtUp) break;
-    }
-  } catch (error) {
-    // AbortSignal.timeout surfaces as an opaque TimeoutError; name the deadline.
-    if (readDeadline.aborted) {
-      throw new Error(
-        `Opencode event read timed out after ${finalOutputReadTimeoutMs / 60_000} minutes without catching up.`,
-      );
-    }
-    throw error;
-  } finally {
-    controller.abort();
-  }
-
-  if (!latestAssistantMessageId) return null;
-  const parts = textPartsByMessageId.get(latestAssistantMessageId);
-  if (!parts || parts.size === 0) return null;
-  return [...parts.values()].join("\n\n").trim() || null;
+  return null;
 };
 
 export const readDevboxesSessionResult = async (
@@ -729,7 +646,11 @@ export const readDevboxesSessionResult = async (
   let finalOutput: string | null = null;
   let finalOutputError: string | null = null;
   try {
-    finalOutput = await readFinalAssistantMessage(context, agentSessionId);
+    finalOutput = await readFinalAssistantMessage(
+      context,
+      agentSessionId,
+      session.opencodeSessionId,
+    );
   } catch (error) {
     // The outcome and PR link stay useful even when event storage is
     // unreachable; surface the gap instead of failing the whole result.

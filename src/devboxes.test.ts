@@ -529,57 +529,60 @@ describe("devboxes CLI", () => {
   });
 
   it("reads the result with pull request link and final assistant output", async () => {
+    // The v2 read API projects the durable session log; the final output is
+    // the latest assistant message's text parts.
+    await dbClient.db
+      .update(schema.opencodeDispatchTasks)
+      .set({ opencodeSessionId: "ses-cli" })
+      .where(eq(schema.opencodeDispatchTasks.id, dispatchedSessionId));
     const { appendRawOpencodeEventsToClickHouse } = await import("@/clickhouse/opencode-events");
     await appendRawOpencodeEventsToClickHouse({
       organizationId,
       agentSessionId: dispatchedSessionId,
       events: [
         {
-          type: "message.updated",
-          properties: {
+          id: "evt-input",
+          created: 1,
+          type: "session.input.admitted",
+          durable: { aggregateID: "ses-cli", seq: 1, version: 1 },
+          data: {
             sessionID: "ses-cli",
-            info: { id: "msg-user", sessionID: "ses-cli", role: "user", time: { created: 1 } },
+            inputID: "msg-user",
+            input: { type: "text", data: { text: "Fix the flaky retry handling in the queue worker." } },
           },
         },
         {
-          type: "message.part.updated",
-          properties: {
+          id: "evt-step-started",
+          created: 2,
+          type: "session.step.started",
+          durable: { aggregateID: "ses-cli", seq: 2, version: 1 },
+          data: { sessionID: "ses-cli", assistantMessageID: "msg-assistant" },
+        },
+        {
+          id: "evt-text-started",
+          created: 3,
+          type: "session.text.started",
+          durable: { aggregateID: "ses-cli", seq: 3, version: 1 },
+          data: { sessionID: "ses-cli", assistantMessageID: "msg-assistant", ordinal: 0 },
+        },
+        {
+          id: "evt-text-ended",
+          created: 4,
+          type: "session.text.ended",
+          durable: { aggregateID: "ses-cli", seq: 4, version: 1 },
+          data: {
             sessionID: "ses-cli",
-            part: {
-              id: "prt-user",
-              sessionID: "ses-cli",
-              messageID: "msg-user",
-              type: "text",
-              text: "Fix the flaky retry handling in the queue worker.",
-            },
-            time: 1,
+            assistantMessageID: "msg-assistant",
+            ordinal: 0,
+            text: "Retry handling now backs off exponentially; opened a pull request.",
           },
         },
         {
-          type: "message.updated",
-          properties: {
-            sessionID: "ses-cli",
-            info: {
-              id: "msg-assistant",
-              sessionID: "ses-cli",
-              role: "assistant",
-              time: { created: 2 },
-            },
-          },
-        },
-        {
-          type: "message.part.updated",
-          properties: {
-            sessionID: "ses-cli",
-            part: {
-              id: "prt-assistant",
-              sessionID: "ses-cli",
-              messageID: "msg-assistant",
-              type: "text",
-              text: "Retry handling now backs off exponentially; opened a pull request.",
-            },
-            time: 2,
-          },
+          id: "evt-step-ended",
+          created: 5,
+          type: "session.step.ended",
+          durable: { aggregateID: "ses-cli", seq: 5, version: 1 },
+          data: { sessionID: "ses-cli", assistantMessageID: "msg-assistant", finish: "stop" },
         },
       ],
     });
