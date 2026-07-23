@@ -548,7 +548,10 @@ describe("devboxes CLI", () => {
           data: {
             sessionID: "ses-cli",
             inputID: "msg-user",
-            input: { type: "text", data: { text: "Fix the flaky retry handling in the queue worker." } },
+            input: {
+              type: "text",
+              data: { text: "Fix the flaky retry handling in the queue worker." },
+            },
           },
         },
         {
