@@ -326,7 +326,7 @@ describe("devboxes CLI", () => {
     const dispatched = await dispatchDevboxesTask(context, {
       task: "Fix the flaky retry handling in the queue worker.",
       repo: fixture.repositoryFullName,
-      model: "openai/gpt-5.5",
+      model: "opencode/big-pickle",
       blueprint: fixture.blueprintId,
     });
     dispatchedSessionId = dispatched.agentSessionId;
@@ -341,8 +341,8 @@ describe("devboxes CLI", () => {
     });
     expect(task?.status).toBe("queued");
     expect(task?.taskPrompt).toContain("Fix the flaky retry handling in the queue worker.");
-    expect(task?.modelProviderId).toBe("openai");
-    expect(task?.modelId).toBe("gpt-5.5");
+    expect(task?.modelProviderId).toBe("opencode");
+    expect(task?.modelId).toBe("big-pickle");
     const run = await dbClient.db.query.runs.findFirst({
       where: { id: dispatched.runId, organizationId },
     });
@@ -363,6 +363,8 @@ describe("devboxes CLI", () => {
     expect(task?.taskPrompt).toContain(`ISSUE_URL=${issueUrl}`);
     expect(task?.taskPrompt).toContain("DESTINATION_BRANCH=main");
     expect(task?.baseBranch).toBe("main");
+    expect(task?.modelProviderId).toBe("opencode");
+    expect(task?.modelId).toBe("big-pickle");
   });
 
   it("refuses an ambiguous dispatch instead of guessing a project", async () => {
@@ -638,6 +640,9 @@ describe("devboxes CLI", () => {
       expect(Object.keys(dispatchTool?.inputSchema.properties ?? {}).sort()).toEqual(
         ["blueprint", "branch", "model", "project", "repo", "task", "title"].sort(),
       );
+      expect(dispatchTool?.inputSchema.properties?.model).toMatchObject({
+        const: "opencode/big-pickle",
+      });
 
       const mcpDispatch = await client.callTool({
         name: "dispatch_task",

@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import {
   cliVersion,
+  defaultDispatchModel,
   dispatchDevboxesTask,
   readDevboxesSession,
   readDevboxesSessionResult,
@@ -36,7 +37,10 @@ export const createDevboxesMcpServer = (context: DevboxesCliContext) => {
             "Repository full name (owner/name) selecting the target project. When omitted, the project is inferred from the git origin remote of the MCP server's working directory if it matches exactly one connected repository; without a match, an organization with a single project falls back to it. The result reports the choice as projectSelection and inferredFromGitRemote.",
           ),
         project: z.string().optional().describe("Project id (overrides repo)"),
-        model: z.string().optional().describe("Opencode model as provider/model"),
+        model: z
+          .literal(defaultDispatchModel)
+          .optional()
+          .describe(`Opencode model (${defaultDispatchModel})`),
         branch: z.string().optional().describe("Base branch and PR destination (default main)"),
         title: z.string().optional().describe("Run title"),
         blueprint: z

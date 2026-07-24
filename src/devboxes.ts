@@ -62,7 +62,7 @@ const cliUserAgent = `devboxes-cli/${cliVersion} (${process.platform}/${process.
 export const cliDeviceClientId = "devboxes-cli";
 // Mirrors the dashboard dispatch console's default model (defaultOpencodeModel
 // in the web app's model catalog).
-export const defaultDispatchModel = "deepseek/deepseek-v4-pro";
+export const defaultDispatchModel = "opencode/big-pickle";
 
 const windowsApplicationDataHome = process.env.APPDATA ?? join(homedir(), "AppData", "Roaming");
 
