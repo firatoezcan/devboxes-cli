@@ -22,7 +22,8 @@
   "type": "module",
   "scripts": {
     "devboxes": "bun src/cli.ts",
-    "test": "bun test --isolate --timeout 60000",
+    "test": "bun test --isolate --timeout 60000 --changed=origin/dev",
+    "test:full": "bun test --isolate --timeout 60000",
     "tslint": "tsgo --noEmit --project tsconfig.json"
   },
   "dependencies": {
