@@ -51,7 +51,7 @@ const CliConfigFileSchema = Type.Object({
 
 type CliConfigFile = Static<typeof CliConfigFileSchema>;
 
-export const cliCommandName = "devboxes";
+const cliCommandName = "devboxes";
 // The npm package version is the single source of truth: `changeset version`
 // bumps package.json, and --version/user-agent/MCP server info follow it.
 export const cliVersion: string = packageJson.version;
@@ -59,7 +59,7 @@ const cliUserAgent = `devboxes-cli/${cliVersion} (${process.platform}/${process.
 // Must stay in the validateClient allowlist of the API's deviceAuthorization
 // auth plugin. Public identifier, not a secret: it only names which client
 // asked for the browser approval.
-export const cliDeviceClientId = "devboxes-cli";
+const cliDeviceClientId = "devboxes-cli";
 // Mirrors the dashboard dispatch console's default model (defaultOpencodeModel
 // in the web app's model catalog).
 export const defaultDispatchModel = "opencode/big-pickle";
@@ -599,7 +599,7 @@ const finalOutputReadTimeoutMs = 5 * 60_000;
 // Reads the session's projected message history from the v2 read API and
 // extracts the text of the latest assistant message as the session's final
 // output. A session that never reached opencode has no output yet.
-export const readFinalAssistantMessage = async (
+const readFinalAssistantMessage = async (
   context: DevboxesCliContext,
   agentSessionId: string,
   opencodeSessionId: string | null,
