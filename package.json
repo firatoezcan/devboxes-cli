@@ -22,7 +22,7 @@
   "type": "module",
   "scripts": {
     "devboxes": "bun src/cli.ts",
-    "test": "bun test --isolate --timeout 60000 --changed=origin/dev",
+    "test": "bun run ../../scripts/record-suite-selection.ts bun test --isolate --timeout 60000 --changed=${DEVBOXES_GATE_MERGE_BASE:-origin/dev}",
     "test:full": "bun test --isolate --timeout 60000",
     "tslint": "tsgo --noEmit --project tsconfig.json"
   },
