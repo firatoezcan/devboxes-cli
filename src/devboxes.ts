@@ -60,10 +60,6 @@ const cliUserAgent = `devboxes-cli/${cliVersion} (${process.platform}/${process.
 // auth plugin. Public identifier, not a secret: it only names which client
 // asked for the browser approval.
 const cliDeviceClientId = "devboxes-cli";
-// Mirrors the dashboard dispatch console's default model (defaultOpencodeModel
-// in the web app's model catalog).
-export const defaultDispatchModel = "opencode/big-pickle";
-
 const windowsApplicationDataHome = process.env.APPDATA ?? join(homedir(), "AppData", "Roaming");
 
 const platformConfigHome = () => {
@@ -524,6 +520,7 @@ export const dispatchDevboxesTask = async (context: DevboxesCliContext, input: D
   // The dashboard's dispatch dialog defaults the base branch to main; keep
   // the CLI on the same product default.
   const branch = input.branch?.trim() || "main";
+  const model = input.model?.trim();
   // A bare issue reference targets the default "Implement GitHub Issue"
   // blueprint, whose prompt parses ISSUE_URL and DESTINATION_BRANCH from the
   // final lines of the task input.
@@ -534,8 +531,8 @@ export const dispatchDevboxesTask = async (context: DevboxesCliContext, input: D
   const dispatched = await backend.api.org({ organizationId }).runs.dispatch.post({
     projectId: project.id,
     task: taskPrompt,
-    model: input.model?.trim() || defaultDispatchModel,
     branch,
+    ...(model ? { model } : {}),
     ...(input.title?.trim() ? { title: input.title.trim() } : {}),
     ...(input.blueprint?.trim() ? { blueprintId: input.blueprint.trim() } : {}),
   });
@@ -734,7 +731,7 @@ export const createDevboxesCommand = () => {
       "repository of the target project (default: inferred from the cwd git origin remote)",
     )
     .option("--project <id>", "target project id (overrides --repo)")
-    .option("--model <provider/model>", "Opencode model", defaultDispatchModel)
+    .option("--model <provider/model>", "model id (uses the server default when omitted)")
     .option("--branch <branch>", "base branch and PR destination", "main")
     .option("--title <title>", "run title")
     .option("--blueprint <id>", "blueprint id (defaults to the Implement GitHub Issue blueprint)")
@@ -743,7 +740,7 @@ export const createDevboxesCommand = () => {
       const options = dispatchCommand.opts<{
         repo?: string;
         project?: string;
-        model: string;
+        model?: string;
         branch: string;
         title?: string;
         blueprint?: string;

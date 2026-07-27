@@ -89,6 +89,11 @@ describe("devboxes CLI", () => {
     });
     if (!defaultMembership) throw new Error("Expected a default organization membership.");
     organizationId = defaultMembership.organizationId;
+    await harness.seedOpencodeProviderCredential({
+      organizationId,
+      createdByUserId: ownerUserId,
+      providerId: "opencode",
+    });
     fixture = await harness.seedGithubProjectRun({
       organizationId,
       createdByUserId: ownerUserId,
@@ -166,6 +171,9 @@ describe("devboxes CLI", () => {
     expect(dispatch?.options.map((option) => option.long).sort()).toEqual(
       ["--blueprint", "--branch", "--json", "--model", "--project", "--repo", "--title"].sort(),
     );
+    expect(
+      dispatch?.options.find((option) => option.long === "--model")?.defaultValue,
+    ).toBeUndefined();
   });
 
   it("parses GitHub issue references", () => {
@@ -463,6 +471,11 @@ describe("devboxes CLI", () => {
       userId: ownerUserId,
       role: "owner",
     });
+    await harness.seedOpencodeProviderCredential({
+      organizationId: soloOrganizationId,
+      createdByUserId: ownerUserId,
+      providerId: "opencode",
+    });
     const soloFixture = await harness.seedGithubProjectRun({
       organizationId: soloOrganizationId,
       createdByUserId: ownerUserId,
@@ -640,9 +653,8 @@ describe("devboxes CLI", () => {
       expect(Object.keys(dispatchTool?.inputSchema.properties ?? {}).sort()).toEqual(
         ["blueprint", "branch", "model", "project", "repo", "task", "title"].sort(),
       );
-      expect(dispatchTool?.inputSchema.properties?.model).toMatchObject({
-        const: "opencode/big-pickle",
-      });
+      expect(dispatchTool?.inputSchema.properties?.model).toMatchObject({ type: "string" });
+      expect(dispatchTool?.inputSchema.properties?.model).not.toHaveProperty("const");
 
       const mcpDispatch = await client.callTool({
         name: "dispatch_task",
