@@ -1,6 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { chmod, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { log, note, spinner } from "@clack/prompts";
@@ -21,67 +21,102 @@ import type { ApiType } from "#monorepo/api";
 import packageJson from "../package.json";
 import { writeSecretFile } from "./secret-file";
 
-type DevboxesCliOptions = {
+export type DevboxesCliOptions = {
   config?: string;
   api?: string;
   auth?: string;
   organization?: string;
+  name?: string;
 };
 
-type DevboxesCliConfig = {
+export type DevboxesConfig = {
   apiBaseUrl: string;
   authBaseUrl: string;
   organizationId?: string;
   sessionToken?: string;
+  machineId?: string;
+  name?: string;
+  apiKey?: string;
+  opencodeProviderCredentials?: Array<{
+    providerId: string;
+    authFile: string;
+    source: "opencode-auth-file" | "codex-auth-file";
+  }>;
 };
 
-export type DevboxesCliContext = {
-  config: DevboxesCliConfig;
+export type DevboxesContext = {
+  config: DevboxesConfig;
   configPath: string;
-  // Unknown cli.json keys from a newer binary, preserved on write.
+  // Unknown config.json keys from a newer binary, preserved on write.
   configExtras?: Record<string, unknown>;
 };
 
-const CliConfigFileSchema = Type.Object({
+const LocalCredentialReferenceSchema = Type.Object(
+  {
+    providerId: Type.String({ minLength: 1 }),
+    authFile: Type.String({ minLength: 1 }),
+    source: Type.Union([Type.Literal("opencode-auth-file"), Type.Literal("codex-auth-file")]),
+  },
+  { additionalProperties: false },
+);
+
+const ConfigFileSchema = Type.Object({
   apiBaseUrl: Type.Optional(Type.String({ minLength: 1 })),
   authBaseUrl: Type.Optional(Type.String({ minLength: 1 })),
   organizationId: Type.Optional(Type.String({ minLength: 1 })),
   sessionToken: Type.Optional(Type.String({ minLength: 1 })),
+  machineId: Type.Optional(Type.String({ format: "uuid" })),
+  name: Type.Optional(Type.String({ minLength: 1 })),
+  apiKey: Type.Optional(Type.String({ minLength: 1 })),
+  opencodeProviderCredentials: Type.Optional(Type.Array(LocalCredentialReferenceSchema)),
 });
 
-type CliConfigFile = Static<typeof CliConfigFileSchema>;
+type ConfigFile = Static<typeof ConfigFileSchema>;
 
 const cliCommandName = "devboxes";
 // The npm package version is the single source of truth: `changeset version`
 // bumps package.json, and --version/user-agent/MCP server info follow it.
 export const cliVersion: string = packageJson.version;
-const cliUserAgent = `devboxes-cli/${cliVersion} (${process.platform}/${process.arch})`;
+export const cliUserAgent = `devboxes/${cliVersion} (${process.platform}/${process.arch})`;
 // Must stay in the validateClient allowlist of the API's deviceAuthorization
 // auth plugin. Public identifier, not a secret: it only names which client
 // asked for the browser approval.
 const cliDeviceClientId = "devboxes-cli";
 const windowsApplicationDataHome = process.env.APPDATA ?? join(homedir(), "AppData", "Roaming");
 
-const platformConfigHome = () => {
+export const platformConfigHome = () => {
   if (process.env.XDG_CONFIG_HOME) return process.env.XDG_CONFIG_HOME;
   if (process.platform === "win32") return windowsApplicationDataHome;
   if (process.platform === "darwin") return join(homedir(), "Library", "Application Support");
   return join(homedir(), ".config");
 };
 
-const writeConfig = async (context: DevboxesCliContext) => {
-  // The config carries the session token: atomic fsync'd tmp+rename, 0600.
+export const platformDataHome = () => {
+  if (process.env.XDG_DATA_HOME) return process.env.XDG_DATA_HOME;
+  if (process.platform === "win32") return windowsApplicationDataHome;
+  if (process.platform === "darwin") return join(homedir(), "Library", "Application Support");
+  return join(homedir(), ".local", "share");
+};
+
+const defaultConfigPath = () => join(platformConfigHome(), "devboxes", "config.json");
+
+export const writeConfig = async (context: DevboxesContext) => {
+  // The config carries both the terminal session and runner API key: atomic
+  // fsync'd tmp+rename, 0600.
   // Known fields win over preserved unknown keys from a newer binary.
   await writeSecretFile({
     path: context.configPath,
     contents: `${JSON.stringify({ ...context.configExtras, ...context.config }, null, 2)}\n`,
-    tmpPrefix: ".cli.",
+    tmpPrefix: ".config.",
   });
+  if (context.configPath === defaultConfigPath()) {
+    await chmod(dirname(context.configPath), 0o700);
+  }
 };
 
-export const loadContext = async (options: DevboxesCliOptions): Promise<DevboxesCliContext> => {
-  const configPath = options.config ?? join(platformConfigHome(), "devboxes", "cli.json");
-  let fileConfig: CliConfigFile = {};
+export const loadContext = async (options: DevboxesCliOptions): Promise<DevboxesContext> => {
+  const configPath = options.config ?? defaultConfigPath();
+  let fileConfig: ConfigFile = {};
   let rawConfigText: string | null = null;
   try {
     rawConfigText = await readFile(configPath, "utf8");
@@ -91,25 +126,27 @@ export const loadContext = async (options: DevboxesCliOptions): Promise<Devboxes
     if (!missing) throw error;
   }
   if (rawConfigText !== null) {
+    if (!options.config) await chmod(dirname(configPath), 0o700);
+    await chmod(configPath, 0o600);
     try {
-      fileConfig = Value.Parse(CliConfigFileSchema, JSON.parse(rawConfigText));
+      fileConfig = Value.Parse(ConfigFileSchema, JSON.parse(rawConfigText));
     } catch (error) {
       // A raw TypeBox/JSON error prints as little as the word "Parse": name
       // the file and the recovery at the boundary instead.
       throw new Error(
         `Devboxes CLI config at ${configPath} is invalid: ${
           error instanceof Error ? error.message : String(error)
-        }. Fix or delete the file, then run \`${cliCommandName} connect\`.`,
+        }. Fix or delete the file, then run \`${cliCommandName} login\`.`,
       );
     }
   }
   // Unknown keys written by a newer CLI round-trip through writeConfig.
-  const knownConfigKeys = new Set(Object.keys(CliConfigFileSchema.properties));
+  const knownConfigKeys = new Set(Object.keys(ConfigFileSchema.properties));
   const configExtras = Object.fromEntries(
     Object.entries(fileConfig).filter(([key]) => !knownConfigKeys.has(key)),
   );
   // Hosted default: the public Devboxes cloud. Self-hosters override with
-  // --api, DEVBOX_API_BASE_URL, or the config stored by a previous connect.
+  // --api, DEVBOX_API_BASE_URL, or the config stored by a previous command.
   const configuredApiBaseUrl =
     options.api ??
     process.env.DEVBOX_API_BASE_URL ??
@@ -162,7 +199,7 @@ export const loadContext = async (options: DevboxesCliOptions): Promise<Devboxes
   ).replace(/\/+$/, "");
 
   // The session token travels over these base URLs, so require HTTPS everywhere
-  // except loopback HTTP for local development (same policy as the listener).
+  // except loopback HTTP for local development.
   for (const [label, value] of [
     ["API base URL", apiBaseUrl],
     ["auth base URL", authBaseUrl],
@@ -193,14 +230,22 @@ export const loadContext = async (options: DevboxesCliOptions): Promise<Devboxes
       organizationId:
         options.organization ?? process.env.DEVBOX_ORGANIZATION_ID ?? fileConfig.organizationId,
       sessionToken: process.env.DEVBOX_CLI_SESSION_TOKEN ?? fileConfig.sessionToken,
+      machineId: fileConfig.machineId,
+      name:
+        options.name ??
+        process.env.DEVBOX_RUNNER_NAME ??
+        fileConfig.name ??
+        `docker-${process.platform}/${process.arch}`,
+      apiKey: process.env.DEVBOX_RUNNER_API_KEY ?? fileConfig.apiKey,
+      opencodeProviderCredentials: fileConfig.opencodeProviderCredentials,
     },
   };
 };
 
 // An abandoned browser approval must not hang the CLI forever.
-const connectFlowTimeoutMs = 5 * 60_000;
+const deviceFlowTimeoutMs = 5 * 60_000;
 
-class ApiRequestError extends Error {
+export class ApiRequestError extends Error {
   readonly status: number;
   readonly code: string | null;
 
@@ -215,7 +260,11 @@ class ApiRequestError extends Error {
 // body is never serialized into the message — a validation error echoes the
 // request body back, and dispatch bodies carry task text that must stay out
 // of captured logs verbatim.
-const apiRequestError = (operation: string, error: { status: unknown; value: unknown }) => {
+export const apiRequestError = (
+  operation: string,
+  error: { status: unknown; value: unknown },
+  reauthenticateWith: "login" | "connect" = "login",
+) => {
   const value = error.value as { code?: unknown; error?: unknown } | null;
   const code =
     value && typeof value === "object" && typeof value.code === "string" ? value.code : null;
@@ -224,7 +273,8 @@ const apiRequestError = (operation: string, error: { status: unknown; value: unk
       ? value.error
       : "The API answered without an error description.";
   const status = typeof error.status === "number" ? error.status : 0;
-  const hint = status === 401 ? ` Run \`${cliCommandName} connect\` to sign in again.` : "";
+  const hint =
+    status === 401 ? ` Run \`${cliCommandName} ${reauthenticateWith}\` and try again.` : "";
   return new ApiRequestError(
     `${operation} failed with HTTP ${String(error.status)}: ${detail}${hint}`,
     status,
@@ -232,7 +282,7 @@ const apiRequestError = (operation: string, error: { status: unknown; value: unk
   );
 };
 
-const openBrowser = async (url: string) => {
+export const openBrowser = async (url: string) => {
   // BROWSER=none is the conventional opt-out for headless machines, CI, and
   // tests — and a piped run must never pop a browser mid-script. The URL is
   // already printed by every caller, so skipping loses nothing.
@@ -244,20 +294,23 @@ const openBrowser = async (url: string) => {
   }
 };
 
-const deviceSessionToken = async (config: DevboxesCliConfig) => {
+export const deviceSessionToken = async (
+  config: DevboxesConfig,
+  options: { clientId: string; scope: string; purpose: string },
+) => {
   const authClient = createAuthClient({
     baseURL: config.authBaseUrl,
     plugins: [deviceAuthorizationClient()],
   });
   const { data: device, error } = await authClient.device.code({
-    client_id: cliDeviceClientId,
-    scope: "cli",
+    client_id: options.clientId,
+    scope: options.scope,
   });
   if (error || !device) {
     throw new Error(`Device authorization failed: ${JSON.stringify(error)}`);
   }
   // The code and URL print plainly so they stay copyable from any terminal.
-  console.info(`Approve the Devboxes CLI sign-in with code ${device.user_code}.`);
+  console.info(`Approve Devboxes ${options.purpose} with code ${device.user_code}.`);
   console.info(device.verification_uri_complete);
   await openBrowser(device.verification_uri_complete);
 
@@ -271,19 +324,21 @@ const deviceSessionToken = async (config: DevboxesCliConfig) => {
   approval?.start(`Waiting for browser approval (code ${device.user_code})`);
   try {
     let intervalMs = Math.max(device.interval ?? 5, 1) * 1_000;
-    const deadline = Date.now() + connectFlowTimeoutMs;
+    const deadline = Date.now() + deviceFlowTimeoutMs;
     for (;;) {
       if (Date.now() > deadline) {
-        throw new Error("Devboxes CLI sign-in timed out after 5 minutes without browser approval.");
+        throw new Error(
+          `Devboxes ${options.purpose} timed out after 5 minutes without browser approval.`,
+        );
       }
       await sleep(intervalMs);
       const token = await authClient.device.token({
         grant_type: "urn:ietf:params:oauth:grant-type:device_code",
         device_code: device.device_code,
-        client_id: cliDeviceClientId,
+        client_id: options.clientId,
       });
       if (token.data?.access_token) {
-        approval?.stop("Devboxes CLI sign-in approved.");
+        approval?.stop(`Devboxes ${options.purpose} approved.`);
         return token.data.access_token;
       }
       const errorCode = (token.error as { error?: string } | null)?.error;
@@ -292,10 +347,10 @@ const deviceSessionToken = async (config: DevboxesCliConfig) => {
         intervalMs += 5_000;
         continue;
       }
-      throw new Error(`Device sign-in failed: ${JSON.stringify(token.error)}`);
+      throw new Error(`Device ${options.purpose} failed: ${JSON.stringify(token.error)}`);
     }
   } catch (error) {
-    approval?.error("Devboxes CLI sign-in was not approved.");
+    approval?.error(`Devboxes ${options.purpose} was not approved.`);
     throw error;
   }
 };
@@ -303,7 +358,7 @@ const deviceSessionToken = async (config: DevboxesCliConfig) => {
 // One bearer-authorized Eden client policy for every API call the CLI makes.
 // loadContext guarantees the base URL ends in /api; Eden's typed routes re-add
 // that segment (backend.api...), so the treaty origin is the URL without it.
-const bearerBackend = (apiBaseUrl: string, sessionToken: string) =>
+export const bearerBackend = (apiBaseUrl: string, sessionToken: string) =>
   treaty<ApiType>(apiBaseUrl.replace(/\/api$/, ""), {
     onRequest(_path, requestOptions) {
       const headers = new Headers(requestOptions.headers);
@@ -313,11 +368,11 @@ const bearerBackend = (apiBaseUrl: string, sessionToken: string) =>
     },
   });
 
-const connectedBackend = (context: DevboxesCliContext) => {
+const connectedBackend = (context: DevboxesContext) => {
   const { sessionToken, organizationId } = context.config;
   if (!sessionToken || !organizationId) {
     throw new Error(
-      `This command requires a connected account. Run \`${cliCommandName} connect\` first.`,
+      `This command requires a signed-in account. Run \`${cliCommandName} login\` first.`,
     );
   }
   return {
@@ -327,8 +382,12 @@ const connectedBackend = (context: DevboxesCliContext) => {
   };
 };
 
-export const connectDevboxes = async (context: DevboxesCliContext) => {
-  const sessionToken = await deviceSessionToken(context.config);
+export const loginDevboxes = async (context: DevboxesContext) => {
+  const sessionToken = await deviceSessionToken(context.config, {
+    clientId: cliDeviceClientId,
+    scope: "cli",
+    purpose: "CLI sign-in",
+  });
   context.config.sessionToken = sessionToken;
 
   const backend = bearerBackend(context.config.apiBaseUrl, sessionToken);
@@ -337,10 +396,16 @@ export const connectDevboxes = async (context: DevboxesCliContext) => {
   const organization = me.data?.organization;
   if (!me.data || !organization) {
     throw new Error(
-      "This account has no active organization. Finish onboarding in the Devboxes dashboard, then connect again.",
+      "This account has no active organization. Finish onboarding in the Devboxes dashboard, then log in again.",
     );
   }
-  context.config.organizationId = organization.id;
+  // A migrated runner config already binds its machine identity, key, and
+  // encrypted credential store to one organization. The account session may
+  // currently have another organization active; adding that session must not
+  // retarget machine-scoped commands or credential sync.
+  if (!(context.config.machineId && context.config.apiKey && context.config.organizationId)) {
+    context.config.organizationId = organization.id;
+  }
   await writeConfig(context);
   return { user: me.data.user, organization };
 };
@@ -444,7 +509,7 @@ export type DispatchInput = {
   cwd?: string;
 };
 
-export const dispatchDevboxesTask = async (context: DevboxesCliContext, input: DispatchInput) => {
+export const dispatchDevboxesTask = async (context: DevboxesContext, input: DispatchInput) => {
   const { backend, organizationId } = connectedBackend(context);
   const task = input.task.trim();
   if (!task) throw new Error("Dispatch requires task text or a GitHub issue reference.");
@@ -551,7 +616,7 @@ export const dispatchDevboxesTask = async (context: DevboxesCliContext, input: D
   };
 };
 
-export const readDevboxesSession = async (context: DevboxesCliContext, agentSessionId: string) => {
+export const readDevboxesSession = async (context: DevboxesContext, agentSessionId: string) => {
   const { backend, organizationId } = connectedBackend(context);
   const sessionResponse = await backend.api
     .org({ organizationId })
@@ -590,14 +655,14 @@ export const sessionReachedTerminalState = (input: {
     : terminalSessionStatuses.has(input.session.status);
 
 // A stalled read must not hang `result` forever; the read leg gets the same
-// ceiling as the connect flow's browser-approval poll.
+// ceiling as the login flow's browser-approval poll.
 const finalOutputReadTimeoutMs = 5 * 60_000;
 
 // Reads the session's projected message history from the v2 read API and
 // extracts the text of the latest assistant message as the session's final
 // output. A session that never reached opencode has no output yet.
 const readFinalAssistantMessage = async (
-  context: DevboxesCliContext,
+  context: DevboxesContext,
   agentSessionId: string,
   opencodeSessionId: string | null,
 ) => {
@@ -636,7 +701,7 @@ const readFinalAssistantMessage = async (
 };
 
 export const readDevboxesSessionResult = async (
-  context: DevboxesCliContext,
+  context: DevboxesContext,
   agentSessionId: string,
 ) => {
   const { session, run } = await readDevboxesSession(context, agentSessionId);
@@ -696,29 +761,18 @@ const printSessionStatus = (input: Awaited<ReturnType<typeof readDevboxesSession
   );
 };
 
-export const createDevboxesCommand = () => {
-  const program = new Command();
-  program
-    .name(cliCommandName)
-    .description("Dispatch Devboxes tasks and follow their sessions from your terminal")
-    .version(cliVersion)
-    .showHelpAfterError()
-    .option("--config <path>", "CLI config file")
-    .option("--api <url>", "Devboxes API base URL")
-    .option("--auth <url>", "Devboxes auth base URL")
-    .option("--organization <id>", "Devboxes organization id");
-
+export const addAccountCommands = (program: Command) => {
   const cliOptions = (command: Command): DevboxesCliOptions =>
     command.optsWithGlobals<DevboxesCliOptions>();
 
-  const connectCommand = program.command("connect");
-  connectCommand
+  const loginCommand = program.command("login");
+  loginCommand
     .description("sign this terminal in to Devboxes via browser approval")
     .action(async () => {
-      const context = await loadContext(cliOptions(connectCommand));
-      const connected = await connectDevboxes(context);
+      const context = await loadContext(cliOptions(loginCommand));
+      const connected = await loginDevboxes(context);
       log.success(
-        `Connected as ${connected.user.email} to organization ${connected.organization.name}. Credentials saved at ${context.configPath}.`,
+        `Signed in as ${connected.user.email} to organization ${connected.organization.name}. Credentials saved at ${context.configPath}.`,
       );
     });
 
@@ -840,6 +894,4 @@ export const createDevboxesCommand = () => {
       const { runDevboxesMcpServer } = await import("./mcp");
       await runDevboxesMcpServer(context);
     });
-
-  return program;
 };

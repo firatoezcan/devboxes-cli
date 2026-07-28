@@ -8,7 +8,7 @@ import {
   readDevboxesSession,
   readDevboxesSessionResult,
   sessionReachedTerminalState,
-  type DevboxesCliContext,
+  type DevboxesContext,
 } from "./devboxes";
 
 const jsonResult = (value: unknown) => ({
@@ -17,9 +17,9 @@ const jsonResult = (value: unknown) => ({
 
 // A thin stdio wrapper over the exact same API calls the CLI commands make.
 // The context (API base URL, session token, organization) comes from the
-// stored `devboxes connect` credentials; stdout stays reserved for the MCP
+// stored `devboxes login` credentials; stdout stays reserved for the MCP
 // protocol, so nothing here logs.
-export const createDevboxesMcpServer = (context: DevboxesCliContext) => {
+export const createDevboxesMcpServer = (context: DevboxesContext) => {
   const server = new McpServer({ name: "devboxes", version: cliVersion });
 
   server.registerTool(
@@ -100,7 +100,7 @@ export const createDevboxesMcpServer = (context: DevboxesCliContext) => {
   return server;
 };
 
-export const runDevboxesMcpServer = async (context: DevboxesCliContext) => {
+export const runDevboxesMcpServer = async (context: DevboxesContext) => {
   const server = createDevboxesMcpServer(context);
   await server.connect(new StdioServerTransport());
   // Serve until the parent closes the session or stdin. The SDK transport

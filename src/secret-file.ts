@@ -2,11 +2,10 @@ import { randomUUID } from "node:crypto";
 import { chmod, mkdir, open, readdir, rename, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-// Atomic owner-only persistence for the CLI config's session token — the same
-// tmp + fsync + rename + 0600/0700 discipline as the runner listeners' secret
-// files (a documented self-contained copy of that helper, kept in sync in the
-// private monorepo): a crash or power loss can never tear the target file, and
-// owner-only modes keep other local users out.
+// Atomic owner-only persistence for the unified config's session/API keys and
+// the age-encrypted credential store. tmp + fsync + rename prevents a crash or
+// power loss from tearing either file, and owner-only modes keep other local
+// users out.
 
 // A tmp file this old cannot be a live concurrent writer's work-in-progress —
 // writes finish in milliseconds — so it is a crash leftover to sweep.

@@ -2,7 +2,7 @@
   "name": "devboxes",
   "version": "0.1.0",
   "private": false,
-  "description": "Devboxes CLI: connect a terminal, dispatch coding tasks, follow sessions, and serve the same actions as MCP tools.",
+  "description": "Devboxes CLI: sign in, dispatch coding tasks, follow sessions, run connected machines, and expose MCP tools.",
   "homepage": "https://github.com/firatoezcan/devboxes-cli#readme",
   "bugs": "https://github.com/firatoezcan/devboxes-cli/issues",
   "license": "MIT",
@@ -15,13 +15,20 @@
   },
   "files": [
     "src",
-    "!src/*.test.ts",
+    "!src/**/*.test.ts",
+    "FROZEN.md",
     "SECURITY.md",
     "CHANGELOG.md"
   ],
   "type": "module",
+  "exports": {
+    "./protocol/*": "./src/protocol/*.ts",
+    "./provider-connect/*": "./src/provider-connect/*.ts"
+  },
   "scripts": {
-    "devboxes": "bun src/cli.ts",
+    "bin:help": "./dist/devboxes --help",
+    "build": "bun scripts/build-cli-binaries.ts",
+    "devboxes:local": "NODE_EXTRA_CA_CERTS=${DEVBOXES_LOCAL_CA_DIR:-$HOME/.local/share/devboxes/ca}/root.crt bun src/cli.ts",
     "test": "bun run ../../scripts/record-suite-selection.ts bun test --isolate --timeout 60000 --changed=${DEVBOXES_GATE_MERGE_BASE:-origin/dev}",
     "test:full": "bun test --isolate --timeout 60000",
     "tslint": "tsgo --noEmit --project tsconfig.json"
@@ -30,18 +37,22 @@
     "@clack/prompts": "^1.7.0",
     "@elysiajs/eden": "^1.4.9",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "age-encryption": "0.3.0",
     "better-auth": "^1.6.9",
     "commander": "^14.0.3",
+    "dockerode": "5.0.1",
+    "elysia": "^1.4.28",
+    "log-update": "8.0.0",
     "open": "^11.0.0",
     "typebox": "^1.1.34",
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@types/dockerode": "^4.0.1",
     "@types/node": "^25.6.0",
     "@typescript/native-preview": "7.0.0-dev.20260425.1",
     "bun-types": "^1.3.14",
-    "drizzle-orm": "1.0.0-beta.22",
-    "elysia": "^1.4.28"
+    "drizzle-orm": "1.0.0-beta.22"
   },
   "engines": {
     "bun": ">=1.3.0"

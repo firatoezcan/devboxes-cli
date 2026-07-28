@@ -1,6 +1,6 @@
 import { beforeAll, afterAll, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,16 +11,16 @@ import { eq } from "drizzle-orm";
 import * as schema from "@/db/schema";
 import { createApiIntegrationHarness } from "@/test/api-integration";
 
+import { createDevboxesCommand } from "./cli";
 import {
-  connectDevboxes,
-  createDevboxesCommand,
   dispatchDevboxesTask,
+  loginDevboxes,
   loadContext,
   normalizeGitRemoteUrl,
   parseGitHubIssueReference,
   readDevboxesSession,
   readDevboxesSessionResult,
-  type DevboxesCliContext,
+  type DevboxesContext,
 } from "./devboxes";
 import { createDevboxesMcpServer } from "./mcp";
 
@@ -59,10 +59,11 @@ describe("devboxes CLI", () => {
   let listener: ReturnType<typeof Bun.serve>;
   let origin: string;
   let configDir: string;
-  let context: DevboxesCliContext;
+  let context: DevboxesContext;
   let organizationId: string;
   let fixture: Awaited<ReturnType<typeof harness.seedGithubProjectRun>>;
   let secondFixture: Awaited<ReturnType<typeof harness.seedGithubProjectRun>>;
+  const heartbeatAuthorizations: string[] = [];
 
   beforeAll(async () => {
     for (const key of ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"]) {
@@ -132,12 +133,20 @@ describe("devboxes CLI", () => {
     }
 
     // The CLI talks over real HTTP, so the app needs a real socket.
-    listener = Bun.serve({ port: 0, fetch: (request) => server.handle(request) });
+    listener = Bun.serve({
+      port: 0,
+      fetch: (request) => {
+        if (new URL(request.url).pathname === "/api/internal/runner-machines/heartbeat") {
+          heartbeatAuthorizations.push(request.headers.get("authorization") ?? "");
+        }
+        return server.handle(request);
+      },
+    });
     origin = `http://127.0.0.1:${listener.port}`;
 
     configDir = await mkdtemp(join(tmpdir(), "devboxes-cli-config-"));
     context = await loadContext({
-      config: join(configDir, "cli.json"),
+      config: join(configDir, "config.json"),
       api: `${origin}/api`,
     });
   }, 120_000);
@@ -157,6 +166,47 @@ describe("devboxes CLI", () => {
     }
   });
 
+  const approveDeviceFlow = async <Result>(start: () => Promise<Result>) => {
+    await dbClient.db.delete(schema.deviceCode);
+
+    let rejected = false;
+    let rejection: unknown;
+    const operation = start();
+    void operation.catch((error: unknown) => {
+      rejected = true;
+      rejection = error;
+    });
+
+    let userCode: string | undefined;
+    for (let attempt = 0; attempt < 100 && !userCode; attempt += 1) {
+      if (rejected) throw rejection;
+      const [pending] = await dbClient.db.select().from(schema.deviceCode).limit(1);
+      userCode = pending?.userCode;
+      if (!userCode) await Bun.sleep(100);
+    }
+    if (!userCode) {
+      if (rejected) throw rejection;
+      throw new Error("The device flow never persisted a device code.");
+    }
+
+    const approverCookie = await harness.signInEmailSessionCookie({
+      email: ownerEmail,
+      password: ownerPassword,
+    });
+    const approval = await fetch(`${origin}/api/auth/device/approve`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: "http://localhost:3000",
+        Cookie: approverCookie,
+      },
+      body: JSON.stringify({ userCode }),
+    });
+    expect(approval.status).toBe(200);
+
+    return operation;
+  };
+
   it("keeps the CLI command surface", () => {
     const command = createDevboxesCommand();
     expect(command.name()).toBe("devboxes");
@@ -165,7 +215,17 @@ describe("devboxes CLI", () => {
       ["--api", "--auth", "--config", "--organization", "--version"].sort(),
     );
     expect(command.commands.map((child) => child.name()).sort()).toEqual(
-      ["connect", "dispatch", "mcp", "result", "status"].sort(),
+      [
+        "connect",
+        "credentials",
+        "dispatch",
+        "doctor",
+        "listen",
+        "login",
+        "mcp",
+        "result",
+        "status",
+      ].sort(),
     );
     const dispatch = command.commands.find((child) => child.name() === "dispatch");
     expect(dispatch?.options.map((option) => option.long).sort()).toEqual(
@@ -279,8 +339,8 @@ describe("devboxes CLI", () => {
     ).rejects.toThrow("must use HTTPS");
   });
 
-  it("connects through the real device authorization flow", async () => {
-    const connectPromise = connectDevboxes(context);
+  it("logs in through the real device authorization flow", async () => {
+    const loginPromise = loginDevboxes(context);
 
     // The browser-approval leg, driven exactly like the /device page: a
     // signed-in user approves the printed user code.
@@ -307,7 +367,7 @@ describe("devboxes CLI", () => {
     });
     expect(approval.status).toBe(200);
 
-    const connected = await connectPromise;
+    const connected = await loginPromise;
     expect(connected.user.email).toBe(ownerEmail);
     expect(connected.organization.id).toBe(organizationId);
 
@@ -325,6 +385,193 @@ describe("devboxes CLI", () => {
     // A fresh context loads the persisted credentials the way every later
     // command invocation would.
     context = await loadContext({ config: context.configPath });
+  }, 60_000);
+
+  it("login and connect preserve runner identity in config.json", async () => {
+    const machineName = `preserved-${randomUUID().slice(0, 8)}`;
+    const seedSessionToken = `seed-runner-session-${randomUUID()}`;
+    await harness.seedSessions({
+      id: `seed-runner-session-${randomUUID()}`,
+      token: seedSessionToken,
+      userId: ownerUserId,
+      activeOrganizationId: organizationId,
+    });
+
+    const apiClient = await harness.client();
+    const registrationResponse = await apiClient.api.internal["runner-machines"].register.post(
+      {
+        organizationId,
+        name: machineName,
+        runtime: "docker",
+        nativePlatform: `${process.platform}/${process.arch}`,
+        supportedPlatforms: [process.arch === "arm64" ? "linux/arm64" : "linux/amd64"],
+        listenerVersion: "test",
+      },
+      { headers: { Authorization: `Bearer ${seedSessionToken}` } },
+    );
+    if (registrationResponse.status !== 200) {
+      throw new Error(
+        `Runner fixture registration failed: ${JSON.stringify(registrationResponse.error)}`,
+      );
+    }
+    const registration = registrationResponse.data;
+    if (!registration?.apiKey) throw new Error("Expected runner registration API key.");
+
+    const configPath = join(configDir, `preserve-identity-${randomUUID()}.json`);
+    const credentialReferences = [
+      {
+        providerId: "anthropic",
+        authFile: join(configDir, "opencode-auth.json"),
+        source: "opencode-auth-file",
+      },
+    ];
+    await writeFile(
+      configPath,
+      `${JSON.stringify(
+        {
+          apiBaseUrl: `${origin}/api`,
+          authBaseUrl: `${origin}/api/auth`,
+          organizationId,
+          machineId: registration.machine.id,
+          name: machineName,
+          apiKey: registration.apiKey,
+          opencodeProviderCredentials: credentialReferences,
+          futureConfigKey: { preserved: true },
+        },
+        null,
+        2,
+      )}\n`,
+      { mode: 0o600 },
+    );
+
+    await approveDeviceFlow(() =>
+      createDevboxesCommand()
+        .exitOverride()
+        .parseAsync(["--config", configPath, "login"], { from: "user" }),
+    );
+
+    const afterLogin = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
+    expect(afterLogin).toMatchObject({
+      organizationId,
+      machineId: registration.machine.id,
+      name: machineName,
+      apiKey: registration.apiKey,
+      opencodeProviderCredentials: credentialReferences,
+      futureConfigKey: { preserved: true },
+    });
+    expect(afterLogin.sessionToken).toEqual(expect.any(String));
+
+    await createDevboxesCommand()
+      .exitOverride()
+      .parseAsync(["--config", configPath, "connect", "--name", machineName], { from: "user" });
+
+    const afterConnect = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
+    expect(afterConnect).toMatchObject({
+      organizationId,
+      machineId: registration.machine.id,
+      name: machineName,
+      apiKey: registration.apiKey,
+      opencodeProviderCredentials: credentialReferences,
+      futureConfigKey: { preserved: true },
+      sessionToken: afterLogin.sessionToken,
+    });
+
+    heartbeatAuthorizations.length = 0;
+    const listening = Bun.spawn(
+      [process.execPath, join(import.meta.dir, "cli.ts"), "--config", configPath, "listen"],
+      {
+        cwd: join(import.meta.dir, ".."),
+        env: {
+          ...process.env,
+          DEVBOX_OPENCODE_DOCKER_SOCKET_PATH: join(configDir, "missing-docker.sock"),
+        },
+        stdout: "ignore",
+        stderr: "pipe",
+      },
+    );
+
+    for (
+      let attempt = 0;
+      attempt < 100 && !heartbeatAuthorizations.includes(`Bearer ${String(afterConnect.apiKey)}`);
+      attempt += 1
+    ) {
+      const exited = await Promise.race([
+        listening.exited.then((exitCode) => ({ exitCode })),
+        Bun.sleep(50).then(() => null),
+      ]);
+      if (exited) break;
+    }
+
+    if (!listening.killed) listening.kill("SIGTERM");
+    const exitCode = await listening.exited;
+    const listenError = await new Response(listening.stderr).text();
+    if (!heartbeatAuthorizations.includes(`Bearer ${String(afterConnect.apiKey)}`)) {
+      throw new Error(
+        `devboxes listen never authenticated a heartbeat (exit ${exitCode}): ${listenError}`,
+      );
+    }
+    expect(heartbeatAuthorizations).toContain(`Bearer ${String(afterConnect.apiKey)}`);
+  }, 60_000);
+
+  it("connect reuses the login session without a runner device flow", async () => {
+    const configPath = join(configDir, `reuse-login-session-${randomUUID()}.json`);
+    await approveDeviceFlow(() =>
+      createDevboxesCommand()
+        .exitOverride()
+        .parseAsync(
+          [
+            "--config",
+            configPath,
+            "--api",
+            `${origin}/api`,
+            "--auth",
+            `${origin}/api/auth`,
+            "login",
+          ],
+          { from: "user" },
+        ),
+    );
+
+    const afterLogin = JSON.parse(await readFile(configPath, "utf8")) as {
+      organizationId: string;
+      sessionToken: string;
+    };
+    await dbClient.db.delete(schema.deviceCode);
+
+    const machineName = `session-runner-${randomUUID().slice(0, 6)}`;
+    await createDevboxesCommand()
+      .exitOverride()
+      .parseAsync(
+        [
+          "--config",
+          configPath,
+          "--auth",
+          "http://127.0.0.1:9/api/auth",
+          "connect",
+          "--name",
+          machineName,
+        ],
+        { from: "user" },
+      );
+
+    expect(await dbClient.db.select().from(schema.deviceCode)).toHaveLength(0);
+    const saved = JSON.parse(await readFile(configPath, "utf8")) as {
+      apiKey?: string;
+      machineId?: string;
+      organizationId?: string;
+      sessionToken?: string;
+    };
+    expect(saved).toMatchObject({
+      organizationId: afterLogin.organizationId,
+      sessionToken: afterLogin.sessionToken,
+      apiKey: expect.any(String),
+      machineId: expect.any(String),
+    });
+    expect(
+      await dbClient.db.query.runnerMachines.findFirst({
+        where: { id: saved.machineId, organizationId, name: machineName },
+      }),
+    ).toBeDefined();
   }, 60_000);
 
   let dispatchedSessionId: string;

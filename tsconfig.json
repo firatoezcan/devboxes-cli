@@ -28,5 +28,5 @@
       "#monorepo/api": ["../firops-api/src/app.ts"]
     }
   },
-  "include": ["src/**/*.ts", "../firops-api/types/**/*.d.ts"]
+  "include": ["src/**/*.ts", "scripts/**/*.ts", "../firops-api/types/**/*.d.ts"]
 }
