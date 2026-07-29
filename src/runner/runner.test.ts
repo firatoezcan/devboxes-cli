@@ -888,6 +888,7 @@ describe("runner Opencode credentials", () => {
         futureRunnerSetting: true,
       }),
     );
+    process.env.DEVBOX_OPENCODE_DOCKER_SOCKET_PATH = join(fixtureDir, "missing.sock");
     const command = createDevboxesCommand();
     await command.parseAsync(["doctor", "--json", "--config", configPath], { from: "user" });
     const parsed = JSON.parse(infoMessages.join("")) as {
@@ -904,7 +905,6 @@ describe("runner Opencode credentials", () => {
     // Doctor's exit code is the one contract scripts consume: unregistered +
     // unreachable container runtime must answer non-zero.
     infoMessages.length = 0;
-    process.env.DEVBOX_OPENCODE_DOCKER_SOCKET_PATH = join(fixtureDir, "missing.sock");
     try {
       const doctorCommand = createDevboxesCommand();
       await doctorCommand.parseAsync(["doctor", "--config", configPath], { from: "user" });
