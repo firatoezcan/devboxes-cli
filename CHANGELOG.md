@@ -1,5 +1,11 @@
 # devboxes
 
+## 0.2.2
+
+### Patch Changes
+
+- Make release validation reliable on cold machines.
+
 ## 0.2.1
 
 ### Patch Changes

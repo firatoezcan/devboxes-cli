@@ -1,6 +1,6 @@
 {
   "name": "devboxes",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": false,
   "description": "Devboxes CLI: sign in, dispatch coding tasks, follow sessions, run connected machines, and expose MCP tools.",
   "homepage": "https://github.com/firatoezcan/devboxes-cli#readme",
@@ -58,11 +58,11 @@
     "drizzle-orm": "1.0.0-beta.22"
   },
   "optionalDependencies": {
-    "@devboxes/cli-darwin-arm64": "0.2.1",
-    "@devboxes/cli-darwin-x64": "0.2.1",
-    "@devboxes/cli-linux-arm64": "0.2.1",
-    "@devboxes/cli-linux-x64": "0.2.1",
-    "@devboxes/cli-win32-x64": "0.2.1"
+    "@devboxes/cli-darwin-arm64": "0.2.2",
+    "@devboxes/cli-darwin-x64": "0.2.2",
+    "@devboxes/cli-linux-arm64": "0.2.2",
+    "@devboxes/cli-linux-x64": "0.2.2",
+    "@devboxes/cli-win32-x64": "0.2.2"
   },
   "engines": {
     "node": ">=18"

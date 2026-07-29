@@ -28,7 +28,7 @@ const ownerUserId = "devboxes-cli-owner";
 const ownerEmail = "devboxes-cli-owner@example.com";
 const ownerPassword = "devboxes-cli-owner-password";
 
-const harness = createApiIntegrationHarness("devboxes-cli");
+const harness = createApiIntegrationHarness("devboxes-cli", {}, 30_000);
 
 // Real repositories for cwd project inference: dispatch reads the origin
 // remote of an actual git checkout, exactly like a user's terminal would.

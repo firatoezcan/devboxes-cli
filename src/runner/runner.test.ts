@@ -32,7 +32,11 @@ import {
   taskContainerApiBaseUrl,
 } from "./runner";
 
-const credentialSyncHarness = createApiIntegrationHarness("devboxes-runner-credential-sync");
+const credentialSyncHarness = createApiIntegrationHarness(
+  "devboxes-runner-credential-sync",
+  {},
+  30_000,
+);
 const credentialSyncOrganizationId = "00000000-0000-7000-8000-000000000171";
 const credentialSyncUserId = "runner-credential-sync-user";
 const credentialSyncSessionToken = "runner-credential-sync-session";
