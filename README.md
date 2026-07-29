@@ -6,8 +6,7 @@ session commands as MCP tools over stdio.
 
 ## Install
 
-Install the self-contained executable with npm. npm needs Node while it installs
-the package; running `devboxes` afterward needs neither Node nor Bun.
+Install the self-contained `devboxes` command from npm:
 
 ```sh
 npm i -g devboxes
