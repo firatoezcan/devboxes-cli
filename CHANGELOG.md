@@ -1,5 +1,26 @@
 # devboxes
 
+## 0.2.0
+
+### Minor Changes
+
+- 60517f5: Separate OpenCode Zen and OpenCode Go credentials and require the v2 runner protocol for dispatch. Existing ambiguous OpenCode credentials must be reconnected, v2 runners must be staged before the v2-only server cutover, and the provider-identity cutover is forward-only after exact Zen credentials are connected.
+- 3e8ca70: Unify terminal sign-in, task dispatch, and runner management in the `devboxes` CLI.
+
+  Existing invite-cohort runners must rename `listener.json` to `config.json`
+  before starting 0.2.0, then run `devboxes login`. The platform config
+  directory is `$XDG_CONFIG_HOME/devboxes` (or `~/.config/devboxes`) on Linux,
+  `~/Library/Application Support/devboxes` on macOS, and
+  `%APPDATA%\devboxes` on Windows. For the Linux default:
+
+  ```sh
+  mv ~/.config/devboxes/listener.json ~/.config/devboxes/config.json
+  devboxes login
+  ```
+
+  Renaming the file preserves the registered machine identity and credential
+  references. The CLI no longer reads `listener.json`.
+
 ## 0.1.0
 
 ### Minor Changes
