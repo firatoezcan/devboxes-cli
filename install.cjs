@@ -1,12 +1,9 @@
-const { chmodSync, copyFileSync, existsSync, linkSync, renameSync, rmSync } = require("node:fs");
+const { chmodSync, copyFileSync, linkSync, renameSync, rmSync } = require("node:fs");
 const { dirname, join, sep } = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const packageRoot = __dirname;
-if (
-  existsSync(join(packageRoot, "src", "cli.ts")) &&
-  !packageRoot.split(sep).includes("node_modules")
-) {
+if (!packageRoot.split(sep).includes("node_modules")) {
   process.exit(0);
 }
 

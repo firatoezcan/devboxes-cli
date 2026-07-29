@@ -1,5 +1,11 @@
 # devboxes
 
+## 0.2.3
+
+### Patch Changes
+
+- Keep the npm binary installer out of workspace source installs and scope native release builders to Devboxes dependencies.
+
 ## 0.2.2
 
 ### Patch Changes
