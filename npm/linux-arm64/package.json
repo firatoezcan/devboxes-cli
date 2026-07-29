@@ -1,0 +1,25 @@
+{
+  "name": "@devboxes/cli-linux-arm64",
+  "version": "0.2.1",
+  "description": "Devboxes CLI native binary for Linux arm64.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/firatoezcan/devboxes-cli.git"
+  },
+  "files": [
+    "bin/devboxes.exe"
+  ],
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "libc": [
+    "glibc"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,5 +1,11 @@
 # devboxes
 
+## 0.2.1
+
+### Patch Changes
+
+- Install a self-contained native Devboxes executable through npm without requiring Bun at runtime, and publish checksum-verified native installers for machines without npm.
+
 ## 0.2.0
 
 ### Minor Changes

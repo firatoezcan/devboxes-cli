@@ -1,0 +1,22 @@
+{
+  "name": "@devboxes/cli-darwin-arm64",
+  "version": "0.2.1",
+  "description": "Devboxes CLI native binary for macOS arm64.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/firatoezcan/devboxes-cli.git"
+  },
+  "files": [
+    "bin/devboxes.exe"
+  ],
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

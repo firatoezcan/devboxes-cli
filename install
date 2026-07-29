@@ -1,0 +1,109 @@
+#!/bin/sh
+
+set -eu
+
+repository="firatoezcan/devboxes-cli"
+version="${1:-}"
+
+if [ -z "$version" ]; then
+  release_url="$(
+    curl --proto '=https' --tlsv1.2 -fsSL \
+      -o /dev/null \
+      -w '%{url_effective}' \
+      "https://github.com/${repository}/releases/latest"
+  )"
+  version="${release_url##*/}"
+  version="${version#v}"
+fi
+
+case "$version" in
+  *[!0-9.]* | .* | *..* | *.)
+    echo "Devboxes version must be X.Y.Z (got '$version')." >&2
+    exit 1
+    ;;
+esac
+if [ "$(printf '%s' "$version" | awk -F. '{ print NF }')" -ne 3 ]; then
+  echo "Devboxes version must be X.Y.Z (got '$version')." >&2
+  exit 1
+fi
+
+case "$(uname -s)" in
+  Darwin) platform="darwin" ;;
+  Linux)
+    platform="linux"
+    if ldd --version 2>&1 | grep -qi musl; then
+      echo "Devboxes does not currently publish a native binary for musl Linux." >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "Devboxes supports macOS, glibc Linux, and Windows. Use install.ps1 on Windows." >&2
+    exit 1
+    ;;
+esac
+
+case "$(uname -m)" in
+  arm64 | aarch64) architecture="arm64" ;;
+  x86_64 | amd64) architecture="x64" ;;
+  *)
+    echo "Devboxes does not publish a binary for architecture $(uname -m)." >&2
+    exit 1
+    ;;
+esac
+
+asset="devboxes-${version}-${platform}-${architecture}"
+base_url="https://github.com/${repository}/releases/download/v${version}"
+install_dir="${DEVBOXES_INSTALL_DIR:-${HOME}/.local/bin}"
+destination="${install_dir}/devboxes"
+
+umask 022
+mkdir -p "$install_dir"
+if [ -d "$destination" ]; then
+  echo "Devboxes install destination is a directory: ${destination}" >&2
+  exit 1
+fi
+staged="$(mktemp "${install_dir}/.devboxes.XXXXXX")"
+checksums="$(mktemp "${install_dir}/.devboxes-checksums.XXXXXX")"
+cleanup() {
+  rm -f "$staged" "$checksums"
+}
+trap cleanup 0 1 2 15
+
+curl --proto '=https' --tlsv1.2 -fsSL "${base_url}/SHA256SUMS" -o "$checksums"
+curl --proto '=https' --tlsv1.2 -fsSL "${base_url}/${asset}" -o "$staged"
+
+expected="$(awk -v name="$asset" '$2 == name { print $1 }' "$checksums")"
+if ! printf '%s' "$expected" | grep -Eq '^[0-9a-f]{64}$'; then
+  echo "SHA256SUMS does not contain exactly one valid checksum for ${asset}." >&2
+  exit 1
+fi
+if command -v sha256sum >/dev/null 2>&1; then
+  actual="$(sha256sum "$staged" | awk '{ print $1 }')"
+elif command -v shasum >/dev/null 2>&1; then
+  actual="$(shasum -a 256 "$staged" | awk '{ print $1 }')"
+else
+  echo "Install sha256sum or shasum before installing Devboxes." >&2
+  exit 1
+fi
+if [ "$actual" != "$expected" ]; then
+  echo "Checksum verification failed for ${asset}." >&2
+  exit 1
+fi
+
+chmod 0755 "$staged"
+installed_version="$("$staged" --version)"
+if [ "$installed_version" != "$version" ]; then
+  echo "Downloaded binary reports version '$installed_version', expected '$version'." >&2
+  exit 1
+fi
+
+mv -f "$staged" "$destination"
+trap - 0 1 2 15
+rm -f "$checksums"
+
+echo "Installed Devboxes ${version} at ${destination}"
+case ":${PATH}:" in
+  *":${install_dir}:"*) ;;
+  *) echo "Add ${install_dir} to PATH, then open a new terminal." ;;
+esac
+echo "Next: devboxes login"

@@ -6,16 +6,31 @@ session commands as MCP tools over stdio.
 
 ## Install
 
-The primary package runs from source and requires
-[Bun](https://bun.sh) 1.3 or newer on `PATH`.
+Install the self-contained executable with npm. npm needs Node while it installs
+the package; running `devboxes` afterward needs neither Node nor Bun.
 
 ```sh
-npm i -g devboxes   # or: bun i -g devboxes
+npm i -g devboxes
 ```
 
-Runner hosts without Bun can use standalone binaries from the Devboxes release
-channel. Linux binaries ship with checksums; macOS disk images are signed and
-notarized. Both channels use the same version.
+Without npm, use the native installer:
+
+```sh
+# macOS and glibc Linux
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/firatoezcan/devboxes-cli/main/install | sh
+
+# Windows PowerShell
+irm https://raw.githubusercontent.com/firatoezcan/devboxes-cli/main/install.ps1 | iex
+```
+
+Both installers select the current versioned GitHub release, verify its SHA-256
+checksum, install under the current user, and leave shell profiles and
+configuration untouched. Rerun the same command to update.
+
+Native binaries are not yet Developer ID/notarized or Authenticode-signed.
+Managed devices that require publisher signing may block them; do not weaken
+an organization security policy to install Devboxes.
 
 ## Sign in and dispatch
 

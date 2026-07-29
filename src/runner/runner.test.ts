@@ -128,16 +128,6 @@ describe("runner CLI", () => {
     expect(credentialsStatus?.options.map((option) => option.long)).toContain("--json");
   });
 
-  it("publishes the unified source entry as the package bin", async () => {
-    const manifest = JSON.parse(await readFile("package.json", "utf8")) as {
-      bin: Record<string, string>;
-      files: string[];
-    };
-
-    expect(manifest.bin.devboxes).toBe("./src/cli.ts");
-    expect(manifest.files).toContain("src");
-  });
-
   it("uses a container-reachable API URL for local runner targets", () => {
     expect(taskContainerApiBaseUrl("http://localhost:3000/api")).toBe(
       "http://host.docker.internal:3000/api",
