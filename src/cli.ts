@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { Command } from "commander";
+import { Command, Option } from "commander";
 
 import { addAccountCommands, cliVersion } from "./devboxes";
 import { addRunnerCommands } from "./runner/runner";
@@ -12,8 +12,8 @@ export const createDevboxesCommand = () => {
     .version(cliVersion)
     .showHelpAfterError()
     .option("--config <path>", "Devboxes config file")
-    .option("--api <url>", "Devboxes API base URL")
-    .option("--auth <url>", "Devboxes auth base URL")
+    .addOption(new Option("--api <url>", "Devboxes API base URL").hideHelp())
+    .addOption(new Option("--auth <url>", "Devboxes auth base URL").hideHelp())
     .option("--organization <id>", "Devboxes organization id");
 
   addAccountCommands(program);

@@ -14,8 +14,8 @@ import Value from "typebox/value";
 
 // Type-only wiring against the private monorepo this CLI is developed in,
 // resolved through tsconfig "paths" there and fully erased at runtime
-// (`import type`). In the published package and the public source mirror
-// this specifier stays unresolved on purpose: nothing private ships.
+// (`import type`). The registry package contains no source; in the public
+// source mirror this specifier stays unresolved on purpose.
 import type { ApiType } from "#monorepo/api";
 
 import packageJson from "../package.json";
@@ -76,8 +76,8 @@ const ConfigFileSchema = Type.Object({
 type ConfigFile = Static<typeof ConfigFileSchema>;
 
 const cliCommandName = "devboxes";
-// The npm package version is the single source of truth: `changeset version`
-// bumps package.json, and --version/user-agent/MCP server info follow it.
+// The workspace package version is the single source of truth for the native
+// build and staged npm wrapper.
 export const cliVersion: string = packageJson.version;
 export const cliUserAgent = `devboxes/${cliVersion} (${process.platform}/${process.arch})`;
 // Must stay in the validateClient allowlist of the API's deviceAuthorization
@@ -147,8 +147,7 @@ export const loadContext = async (options: DevboxesCliOptions): Promise<Devboxes
   const configExtras = Object.fromEntries(
     Object.entries(fileConfig).filter(([key]) => !knownConfigKeys.has(key)),
   );
-  // Hosted default: the public Devboxes cloud. Self-hosters override with
-  // --api, DEVBOX_API_BASE_URL, or the config stored by a previous command.
+  // Hosted Devboxes is the default. Local-development settings can override it.
   const configuredApiBaseUrl =
     options.api ??
     process.env.DEVBOX_API_BASE_URL ??
@@ -401,7 +400,7 @@ export const loginDevboxes = async (context: DevboxesContext) => {
       "This account has no active organization. Finish onboarding in the Devboxes dashboard, then log in again.",
     );
   }
-  // A migrated runner config already binds its machine identity, key, and
+  // A registered runner config already binds its machine identity, key, and
   // encrypted credential store to one organization. The account session may
   // currently have another organization active; adding that session must not
   // retarget machine-scoped commands or credential sync.

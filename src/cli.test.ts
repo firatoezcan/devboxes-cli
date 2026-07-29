@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { join } from "node:path";
 
+import { createDevboxesCommand } from "./cli";
+
 describe("devboxes entrypoint", () => {
   it("prints help instead of listening when invoked without a subcommand", async () => {
     const child = Bun.spawn([process.execPath, "src/cli.ts"], {
@@ -27,5 +29,27 @@ describe("devboxes entrypoint", () => {
     expect(await stdout).toContain("login");
     expect(await stdout).toContain("listen");
     expect(await stderr).toBe("");
+  });
+});
+
+describe("Devboxes root options", () => {
+  it("keeps deployment overrides functional without advertising them", () => {
+    const command = createDevboxesCommand();
+    const help = command.helpInformation();
+
+    expect(help).toContain("--organization <id>");
+    expect(help).not.toContain("--api <url>");
+    expect(help).not.toContain("--auth <url>");
+
+    command.parseOptions([
+      "--api",
+      "https://api.example.com",
+      "--auth",
+      "https://auth.example.com",
+    ]);
+    expect(command.opts()).toMatchObject({
+      api: "https://api.example.com",
+      auth: "https://auth.example.com",
+    });
   });
 });

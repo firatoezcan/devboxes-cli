@@ -16,10 +16,8 @@ same address.
 
 ## Runner trust boundary
 
-`devboxes listen` controls the configured Docker daemon. Access to a Docker
-socket can amount to control of the host, so run it only on a trusted machine
-and never expose an unauthenticated Docker TCP endpoint. The CLI accepts local
-Unix sockets and Windows named pipes and rejects remote TCP sockets.
+`devboxes listen` controls Docker on the runner machine. Docker access can
+amount to control of the host, so run it only on a trusted machine.
 
 Tasks run organization-dispatched code in containers. An organization member
 who can dispatch a task to a runner can cause that container to receive the
@@ -55,6 +53,8 @@ a sandbox against an operator who already controls the host or Docker daemon.
   cloud and other runner machines; sync only credentials suitable for that
   organization-wide trust boundary.
 
-The public npm package and source mirror expose these implementations under
-MIT so they can be audited. Public source does not make locally stored
-credentials, organization data, or hosted secrets public.
+The four-file npm package contains the launcher, manifest, README, and license;
+the optional native packages contain the compiled commands. The public source
+mirror exposes the CLI and runner implementation under MIT so it can be
+audited. Public source does not make locally stored credentials, organization
+data, or hosted secrets public.
