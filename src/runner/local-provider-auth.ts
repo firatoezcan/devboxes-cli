@@ -4,18 +4,22 @@ import Type from "typebox";
 import Value from "typebox/value";
 
 import {
-  opencodeProviderAuthJsonKey,
   validateOpencodeProviderAuth,
   type OpencodeProviderAuthJson,
 } from "../protocol/provider-auth";
 import type { OpencodeConnectorDescriptor } from "../provider-connect/descriptor-schema";
 import { refreshOpencodeOauthAccess } from "../provider-connect/flows";
-import { readCredentialStore, writeCredentialStore } from "./credential-store";
+import {
+  ambiguousOpencodeCredentialMessage,
+  readCredentialStore,
+  writeCredentialStore,
+} from "./credential-store";
 
 export type LocalOpencodeProviderCredentialReference = {
   providerId: string;
   authFile: string;
   source: "opencode-auth-file" | "codex-auth-file";
+  providerIdFormat?: "exact";
 };
 
 export type LocalCredentialStoreAccess = { configPath: string; passphrase: string };
@@ -67,10 +71,10 @@ export class LocalRunnerOpencodeProviderAuthRuntime {
           auth.expires === 0 ||
           auth.expires > Date.now() + refreshSkewMs
         ) {
-          return { [opencodeProviderAuthJsonKey(input.providerId)]: auth };
+          return { [input.providerId]: auth };
         }
         return {
-          [opencodeProviderAuthJsonKey(input.providerId)]: await this.singleFlightRefresh(
+          [input.providerId]: await this.singleFlightRefresh(
             this.storeAccess,
             input.providerId,
             auth,
@@ -82,6 +86,9 @@ export class LocalRunnerOpencodeProviderAuthRuntime {
     const credential = this.credentials.find((entry) => entry.providerId === input.providerId);
     if (!credential) {
       throw new Error(`Opencode credentials for provider ${input.providerId} are not configured.`);
+    }
+    if (input.providerId === "opencode" && credential.providerIdFormat !== "exact") {
+      throw new Error(ambiguousOpencodeCredentialMessage);
     }
 
     let auth: unknown;
@@ -95,9 +102,7 @@ export class LocalRunnerOpencodeProviderAuthRuntime {
             ? { type: "api", key: codexApiKey }
             : undefined;
       } else {
-        auth = Value.Parse(OpencodeAuthFileSchema, parsed)[
-          opencodeProviderAuthJsonKey(input.providerId)
-        ];
+        auth = Value.Parse(OpencodeAuthFileSchema, parsed)[input.providerId];
       }
     } catch {
       throw new Error(
@@ -110,10 +115,7 @@ export class LocalRunnerOpencodeProviderAuthRuntime {
     }
 
     return {
-      [opencodeProviderAuthJsonKey(input.providerId)]: validateOpencodeProviderAuth(
-        input.providerId,
-        auth,
-      ),
+      [input.providerId]: validateOpencodeProviderAuth(input.providerId, auth),
     };
   }
 

@@ -25,15 +25,14 @@ import {
   type DevboxesContext,
 } from "../devboxes";
 import {
-  credentialStoreVersion,
   listenerRegistrationDeviceClientId,
   listenerUpgradeRequiredCode,
 } from "../protocol/frozen";
-import { opencodeLaunchProtocol, OpencodeLaunchSpecSchema } from "../protocol/launch-spec";
 import {
-  normalizeOpencodeProviderId,
-  opencodeProviderAuthJsonKey,
-} from "../protocol/provider-auth";
+  opencodeExactProviderIdsLaunchProtocol,
+  OpencodeLaunchSpecSchema,
+} from "../protocol/launch-spec";
+import { normalizeOpencodeProviderId } from "../protocol/provider-auth";
 import { taskContainerName } from "../protocol/task-runtime";
 import {
   OpencodeConnectorDescriptorSchema,
@@ -48,6 +47,7 @@ import {
   type ActiveOpencodeCredentialTask,
 } from "./credential-broker";
 import {
+  ambiguousOpencodeCredentialMessage,
   CredentialStoreUnreadableError,
   credentialStoreExists,
   readCredentialStore,
@@ -183,10 +183,16 @@ const credentialStoreAccess = async (
 
 // One policy for every command that reads the store: skip the dashboard
 // passphrase round trip entirely when no store file exists on disk.
-const openCredentialStoreIfPresent = async (context: DevboxesContext) => {
+const openCredentialStoreIfPresent = async (
+  context: DevboxesContext,
+  discardAmbiguousOpencode = false,
+) => {
   if (!(await credentialStoreExists(context.configPath))) return undefined;
   const access = await credentialStoreAccess(context);
-  return { access, store: await readCredentialStore(access) };
+  return {
+    access,
+    store: await readCredentialStore({ ...access, discardAmbiguousOpencode }),
+  };
 };
 
 const listOrgOpencodeProviderCredentials = async (context: DevboxesContext) => {
@@ -278,9 +284,7 @@ const discoveredCredentialsFromFile = async (
 
   const parsed = Value.Parse(OpencodeAuthFileSchema, JSON.parse(await readFile(authFile, "utf8")));
   const credentials: DiscoveredOpencodeProviderCredential[] = [];
-  for (const [authJsonKey, auth] of Object.entries(parsed)) {
-    const providerId =
-      authJsonKey === opencodeProviderAuthJsonKey("opencode") ? "opencode" : authJsonKey;
+  for (const [providerId, auth] of Object.entries(parsed)) {
     if (seenProviderIds.has(providerId)) continue;
     seenProviderIds.add(providerId);
     credentials.push({
@@ -318,14 +322,21 @@ const saveCredentialFileReferences = async (
   selected: DiscoveredOpencodeProviderCredential[],
 ) => {
   const selectedProviderIds = new Set(selected.map((entry) => entry.providerId));
+  const replacesAmbiguousOpencode =
+    selectedProviderIds.has("opencode") || selectedProviderIds.has("opencode-go");
   context.config.opencodeProviderCredentials = [
     ...(context.config.opencodeProviderCredentials ?? []).filter(
-      (entry) => !selectedProviderIds.has(entry.providerId),
+      (entry) =>
+        !selectedProviderIds.has(entry.providerId) &&
+        (!replacesAmbiguousOpencode ||
+          entry.providerId !== "opencode" ||
+          entry.providerIdFormat === "exact"),
     ),
     ...selected.map((entry) => ({
       providerId: entry.providerId,
       authFile: entry.authFile,
       source: entry.source,
+      ...(entry.providerId === "opencode" ? { providerIdFormat: "exact" as const } : {}),
     })),
   ];
   await writeConfig(context);
@@ -338,13 +349,16 @@ const saveCredentialFileReferences = async (
 // cryptographically dead once the passphrase rotated (machine deleted or
 // re-registered), so the next connect or API-key entry rewrites the file
 // fresh instead of dead-ending the setup.
-const readCredentialStoreForRewrite = async (storeAccess: LocalCredentialStoreAccess) => {
+const readCredentialStoreForRewrite = async (
+  storeAccess: LocalCredentialStoreAccess,
+  discardAmbiguousOpencode = false,
+) => {
   try {
-    return await readCredentialStore(storeAccess);
+    return await readCredentialStore({ ...storeAccess, discardAmbiguousOpencode });
   } catch (error) {
     if (!(error instanceof CredentialStoreUnreadableError)) throw error;
     log.warn(`${error.message} Storing a credential now recreates the store.`);
-    return { version: credentialStoreVersion, entries: {} } satisfies LocalCredentialStore;
+    return { entries: {} } satisfies LocalCredentialStore;
   }
 };
 
@@ -403,6 +417,10 @@ export const connectOpencodeProviderSubscription = async (
   providerId: string | undefined,
 ) => {
   const requestedProviderId = providerId?.trim().toLowerCase();
+  if (requestedProviderId === "opencode" || requestedProviderId === "opencode-go") {
+    await storeManualApiKey(context, requestedProviderId);
+    return requestedProviderId;
+  }
   const connectors = await fetchOpencodeConnectors(context);
   const connector = connectors.find((candidate) => candidate.providerId === requestedProviderId);
   if (!connector) {
@@ -516,9 +534,21 @@ const storeManualApiKey = async (context: DevboxesContext, providerIdFlag?: stri
   }
 
   const storeAccess = await credentialStoreAccess(context);
-  const store = await readCredentialStoreForRewrite(storeAccess);
-  store.entries[providerId] = { auth: { type: "api", key: key.trim() } };
+  const replacesAmbiguousOpencode = providerId === "opencode" || providerId === "opencode-go";
+  const store = await readCredentialStoreForRewrite(storeAccess, replacesAmbiguousOpencode);
+  store.entries[providerId] = {
+    auth: { type: "api", key: key.trim() },
+  };
   await writeCredentialStore({ ...storeAccess, store });
+  if (replacesAmbiguousOpencode) {
+    const references = context.config.opencodeProviderCredentials ?? [];
+    context.config.opencodeProviderCredentials = references.filter(
+      (reference) => reference.providerId !== "opencode" || reference.providerIdFormat === "exact",
+    );
+    if (context.config.opencodeProviderCredentials.length !== references.length) {
+      await writeConfig(context);
+    }
+  }
   log.success(`Stored the ${providerId} API key encrypted on this device.`);
   log.info(
     "Restart `devboxes listen` to serve it to local runs. Run `devboxes credentials sync` to share it with the organization.",
@@ -543,7 +573,7 @@ const interactiveCredentialSetup = async (
   let dashboardNote = context.config.apiKey
     ? undefined
     : "Run `devboxes connect` to enable subscription connects, device-stored API keys, and organization sync.";
-  let store: LocalCredentialStore = { version: credentialStoreVersion, entries: {} };
+  let store: LocalCredentialStore = { entries: {} };
   let storeWarning: string | undefined;
   if (context.config.apiKey) {
     try {
@@ -780,7 +810,6 @@ export const syncOpencodeProviderCredentials = async (
 
   const references = context.config.opencodeProviderCredentials ?? [];
   const store = (await openCredentialStoreIfPresent(context))?.store ?? {
-    version: credentialStoreVersion,
     entries: {},
   };
 
@@ -845,7 +874,7 @@ export const syncOpencodeProviderCredentials = async (
       continue;
     }
     const providerAuth = await runtime.providerAuthForProvider({ providerId });
-    const fileAuth = providerAuth[opencodeProviderAuthJsonKey(providerId)]!;
+    const fileAuth = providerAuth[providerId]!;
     if (fileAuth.type !== "api") {
       // OAuth logins in a foreign CLI's auth file are broker-served, never
       // synced — copying another tool's rotating refresh token org-wide
@@ -1002,8 +1031,19 @@ export const removeOpencodeProviderCredentials = async (
   context: DevboxesContext,
   options: Pick<RunnerCliOptions, "all" | "provider">,
 ) => {
+  if (!options.all && !options.provider) {
+    throw new Error("Choose credentials to remove with --provider <provider> or --all.");
+  }
+  const requestedProviders = new Set(
+    (options.provider ?? "")
+      .split(",")
+      .map((providerId) => providerId.trim())
+      .filter(Boolean),
+  );
+  const discardAmbiguousOpencode =
+    options.all || requestedProviders.has("opencode") || requestedProviders.has("opencode-go");
   const references = context.config.opencodeProviderCredentials ?? [];
-  const opened = await openCredentialStoreIfPresent(context);
+  const opened = await openCredentialStoreIfPresent(context, discardAmbiguousOpencode);
   const store = opened?.store;
   const configuredProviderIds = [
     ...new Set([
@@ -1011,34 +1051,46 @@ export const removeOpencodeProviderCredentials = async (
       ...Object.keys(store?.entries ?? {}),
     ]),
   ];
-  if (configuredProviderIds.length === 0) {
-    log.warn("No local Opencode provider credentials are configured.");
-    return;
-  }
-  if (!options.all && !options.provider) {
-    throw new Error("Choose credentials to remove with --provider <provider> or --all.");
-  }
-
-  const requestedProviders = new Set(
-    (options.provider ?? "")
-      .split(",")
-      .map((providerId) => providerId.trim())
-      .filter(Boolean),
-  );
   const removedProviderIds = configuredProviderIds.filter(
     (providerId) => options.all || requestedProviders.has(providerId),
   );
-  if (removedProviderIds.length === 0) {
+  const removedSet = new Set(removedProviderIds);
+  const remainingReferences = references.filter(
+    (reference) =>
+      !removedSet.has(reference.providerId) &&
+      (!requestedProviders.has("opencode-go") ||
+        reference.providerId !== "opencode" ||
+        reference.providerIdFormat === "exact"),
+  );
+  const removedLegacyOpencodeReference =
+    requestedProviders.has("opencode-go") &&
+    references.some(
+      (reference) => reference.providerId === "opencode" && reference.providerIdFormat !== "exact",
+    );
+  if (configuredProviderIds.length === 0 || removedProviderIds.length === 0) {
+    if (removedLegacyOpencodeReference) {
+      context.config.opencodeProviderCredentials = remainingReferences;
+      await writeConfig(context);
+    }
+    if (opened && discardAmbiguousOpencode) {
+      await writeCredentialStore({ ...opened.access, store: opened.store });
+    }
+    if (removedLegacyOpencodeReference) {
+      log.success("Removed ambiguous legacy OpenCode credentials for opencode-go.");
+      log.info("Source credential files remain in their configured locations.");
+      return;
+    }
     // Removal is idempotent: "already absent" is the desired state, so a
     // re-run in a provisioning script succeeds instead of failing.
-    log.warn("No configured local Opencode provider credentials match --provider.");
+    log.warn(
+      configuredProviderIds.length === 0
+        ? "No local Opencode provider credentials are configured."
+        : "No configured local Opencode provider credentials match --provider.",
+    );
     return;
   }
 
-  const removedSet = new Set(removedProviderIds);
-  context.config.opencodeProviderCredentials = references.filter(
-    (reference) => !removedSet.has(reference.providerId),
-  );
+  context.config.opencodeProviderCredentials = remainingReferences;
   await writeConfig(context);
   if (opened) {
     for (const providerId of removedProviderIds) {
@@ -1318,6 +1370,12 @@ const listen = async (
     return result.data;
   };
   const openedStore = await openCredentialStoreIfPresent(context);
+  const ambiguousReference = context.config.opencodeProviderCredentials?.find(
+    (credential) => credential.providerId === "opencode" && credential.providerIdFormat !== "exact",
+  );
+  if (ambiguousReference) {
+    throw new Error(ambiguousOpencodeCredentialMessage);
+  }
   // Providers this machine serves from disk through the broker. Both lists are
   // fixed at startup; `devboxes credentials setup` during a running listen needs a
   // restart to be advertised. Org-stored credentials qualify further tasks
@@ -1599,7 +1657,7 @@ const listen = async (
             availableProviderIds: [...localProviderIds],
             // The launch-spec protocols this binary executes; a server that
             // serves none of them answers listener_upgrade_required.
-            launchProtocols: [opencodeLaunchProtocol],
+            launchProtocols: [opencodeExactProviderIdsLaunchProtocol],
           });
           if (claimResult.error) throw apiRequestError("Claim", claimResult.error, "connect");
           // An empty queue answers 204, which Eden types as the "No Content" literal.

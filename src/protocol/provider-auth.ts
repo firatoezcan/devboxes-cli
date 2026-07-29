@@ -38,13 +38,6 @@ export type OpencodeProviderAuth = OpencodeApiAuth | OpencodeOauthAuth;
 // to whichever base URL its task was launched with.
 export const opencodeProviderAuthPath = "/opencode-tasks/:taskId/provider-auth";
 
-// The engine routes gateway models under the "opencode" provider segment,
-// while the CLI writes that subscription credential under "opencode-go" in
-// auth.json. This mapping bridges those namespaces; it does not determine
-// model routing or account entitlement.
-export const opencodeProviderAuthJsonKey = (providerId: string) =>
-  providerId === "opencode" ? "opencode-go" : providerId;
-
 export const OpencodeProviderAuthResponseSchema = Type.Record(
   Type.String({ minLength: 1 }),
   Type.Object({ type: Type.String({ minLength: 1 }) }, { additionalProperties: true }),

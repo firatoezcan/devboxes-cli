@@ -41,6 +41,7 @@ export type DevboxesConfig = {
     providerId: string;
     authFile: string;
     source: "opencode-auth-file" | "codex-auth-file";
+    providerIdFormat?: "exact";
   }>;
 };
 
@@ -56,6 +57,7 @@ const LocalCredentialReferenceSchema = Type.Object(
     providerId: Type.String({ minLength: 1 }),
     authFile: Type.String({ minLength: 1 }),
     source: Type.Union([Type.Literal("opencode-auth-file"), Type.Literal("codex-auth-file")]),
+    providerIdFormat: Type.Optional(Type.Literal("exact")),
   },
   { additionalProperties: false },
 );

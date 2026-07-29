@@ -64,14 +64,30 @@ describe("Opencode provider auth runtime", () => {
     });
   });
 
-  it("serves the opencode gateway credential under its well-known opencode-go key", async () => {
-    await writeFile(authFile, '{"opencode-go":{"type":"api","key":"go-key"}}');
+  it("serves OpenCode Zen and OpenCode Go under their exact provider ids", async () => {
+    await writeFile(
+      authFile,
+      '{"opencode":{"type":"api","key":"zen-key"},"opencode-go":{"type":"api","key":"go-key"}}',
+    );
 
     const runtime = new LocalRunnerOpencodeProviderAuthRuntime([
-      { providerId: "opencode", authFile, source: "opencode-auth-file" },
+      {
+        providerId: "opencode",
+        authFile,
+        source: "opencode-auth-file",
+        providerIdFormat: "exact",
+      },
+      {
+        providerId: "opencode-go",
+        authFile,
+        source: "opencode-auth-file",
+      },
     ]);
 
     expect(await runtime.providerAuthForProvider({ providerId: "opencode" })).toEqual({
+      opencode: { type: "api", key: "zen-key" },
+    });
+    expect(await runtime.providerAuthForProvider({ providerId: "opencode-go" })).toEqual({
       "opencode-go": { type: "api", key: "go-key" },
     });
   });
@@ -192,7 +208,7 @@ describe("Opencode provider auth runtime", () => {
     await writeCredentialStore({
       configPath,
       passphrase,
-      store: { version: 1, entries: { openai: { auth: freshAuth } } },
+      store: { entries: { openai: { auth: freshAuth } } },
     });
 
     const runtime = new LocalRunnerOpencodeProviderAuthRuntime(
@@ -213,7 +229,6 @@ describe("Opencode provider auth runtime", () => {
       configPath,
       passphrase,
       store: {
-        version: 1,
         entries: {
           openai: {
             auth: {
@@ -267,7 +282,6 @@ describe("Opencode provider auth runtime", () => {
       configPath,
       passphrase,
       store: {
-        version: 1,
         entries: {
           openai: {
             auth: {
@@ -292,7 +306,7 @@ describe("Opencode provider auth runtime", () => {
       await writeCredentialStore({
         configPath,
         passphrase,
-        store: { version: 1, entries: { openai: { auth: reconnectedAuth } } },
+        store: { entries: { openai: { auth: reconnectedAuth } } },
       });
       return {
         auth: {
@@ -324,7 +338,6 @@ describe("Opencode provider auth runtime", () => {
       configPath,
       passphrase,
       store: {
-        version: 1,
         entries: {
           openai: {
             auth: {
@@ -384,7 +397,6 @@ describe("Opencode provider auth runtime", () => {
       configPath,
       passphrase,
       store: {
-        version: 1,
         entries: {
           openai: {
             auth: {

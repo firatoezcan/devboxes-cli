@@ -7,17 +7,19 @@ import { join } from "node:path";
 
 import * as prompts from "@clack/prompts";
 import { treaty } from "@elysiajs/eden";
+import { armor, Encrypter } from "age-encryption";
 
 import { opencodeProviderCredentials } from "@/db/schema";
 import { createApiIntegrationHarness } from "@/test/api-integration";
 
 import { createDevboxesCommand } from "../cli";
 import { cliVersion } from "../devboxes";
+import { credentialStoreFileName } from "../protocol/frozen";
 import type {
   ActiveOpencodeCredentialTask,
   OpencodeCredentialBrokerApi,
 } from "./credential-broker";
-import { writeCredentialStore } from "./credential-store";
+import { readCredentialStore, writeCredentialStore } from "./credential-store";
 import { LocalRunnerOpencodeProviderAuthRuntime } from "./local-provider-auth";
 import {
   connectOpencodeProviderSubscription,
@@ -157,7 +159,7 @@ describe("runner Opencode credentials", () => {
   // Clack log/note/spinner output goes through process.stdout.write, not
   // console.info; both land in infoMessages (ANSI-stripped) so assertions stay
   // plain-substring checks over everything the user would read.
-  const originalStdoutWrite = process.stdout.write;
+  const originalStdoutWrite = process.stdout.write.bind(process.stdout);
   // The credential discovery probes XDG_DATA_HOME, XDG_CONFIG_HOME, CODEX_HOME,
   // and homedir()-derived paths; every one must point into the fixture so a
   // developer machine's real opencode/codex credentials never leak into runs.
@@ -251,8 +253,11 @@ describe("runner Opencode credentials", () => {
     expect(savedConfig).not.toContain("openai-key");
   });
 
-  it("discovers the Opencode gateway credential under its routable provider id", async () => {
-    await writeFile(authFile, '{"opencode-go":{"type":"api","key":"zen-key"}}');
+  it("discovers OpenCode Zen and OpenCode Go as exact providers", async () => {
+    await writeFile(
+      authFile,
+      '{"opencode":{"type":"api","key":"zen-key"},"opencode-go":{"type":"api","key":"go-key"}}',
+    );
     const configPath = join(fixtureDir, "config.json");
 
     const selected = await setupOpencodeProviderCredentials(
@@ -263,17 +268,33 @@ describe("runner Opencode credentials", () => {
           authBaseUrl: "http://localhost:3001/api/auth",
         },
       },
-      { all: false, provider: "opencode" },
+      { all: true },
     );
 
-    expect(selected).toEqual([
-      { providerId: "opencode", authFile, source: "opencode-auth-file", authType: "api" },
-    ]);
+    expect(selected).toEqual(
+      expect.arrayContaining([
+        { providerId: "opencode", authFile, source: "opencode-auth-file", authType: "api" },
+        { providerId: "opencode-go", authFile, source: "opencode-auth-file", authType: "api" },
+      ]),
+    );
     const savedConfig = await readFile(configPath, "utf8");
-    expect(JSON.parse(savedConfig).opencodeProviderCredentials).toEqual([
-      { providerId: "opencode", authFile, source: "opencode-auth-file" },
-    ]);
+    expect(JSON.parse(savedConfig).opencodeProviderCredentials).toEqual(
+      expect.arrayContaining([
+        {
+          providerId: "opencode",
+          authFile,
+          source: "opencode-auth-file",
+          providerIdFormat: "exact",
+        },
+        {
+          providerId: "opencode-go",
+          authFile,
+          source: "opencode-auth-file",
+        },
+      ]),
+    );
     expect(savedConfig).not.toContain("zen-key");
+    expect(savedConfig).not.toContain("go-key");
   });
 
   it("discovers the XDG-style macOS Opencode auth file", async () => {
@@ -297,6 +318,13 @@ describe("runner Opencode credentials", () => {
           config: {
             apiBaseUrl: "http://localhost:3001/api",
             authBaseUrl: "http://localhost:3001/api/auth",
+            opencodeProviderCredentials: [
+              {
+                providerId: "opencode",
+                authFile: macAuthFile,
+                source: "opencode-auth-file",
+              },
+            ],
           },
         },
         { all: true },
@@ -307,7 +335,11 @@ describe("runner Opencode credentials", () => {
 
     const savedConfig = await readFile(configPath, "utf8");
     expect(JSON.parse(savedConfig).opencodeProviderCredentials).toEqual([
-      { providerId: "opencode", authFile: macAuthFile, source: "opencode-auth-file" },
+      {
+        providerId: "opencode-go",
+        authFile: macAuthFile,
+        source: "opencode-auth-file",
+      },
     ]);
   });
 
@@ -489,6 +521,72 @@ describe("runner Opencode credentials", () => {
     }
   });
 
+  it("reconnecting OpenCode Go removes ambiguous v1 Zen-or-Go state", async () => {
+    const configPath = join(fixtureDir, "config.json");
+    const passphrase = "exact-opencode-store-passphrase";
+    const encrypter = new Encrypter();
+    encrypter.setScryptWorkFactor(12);
+    encrypter.setPassphrase(passphrase);
+    const ciphertext = await encrypter.encrypt(
+      JSON.stringify({
+        version: 1,
+        entries: {
+          openai: { auth: { type: "api", key: "openai-key" } },
+          opencode: { auth: { type: "api", key: "ambiguous-key" } },
+        },
+      }),
+    );
+    await writeFile(join(fixtureDir, credentialStoreFileName), `${armor.encode(ciphertext)}\n`);
+
+    const server = createServer((request, response) => {
+      response.setHeader("Content-Type", "application/json");
+      if (request.url?.endsWith("/credential-store-passphrase")) {
+        response.end(JSON.stringify({ passphrase }));
+        return;
+      }
+      response.statusCode = 404;
+      response.end(JSON.stringify({ error: "Unexpected request." }));
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const port = (server.address() as { port: number }).port;
+    const context = {
+      configPath,
+      config: {
+        apiBaseUrl: `http://127.0.0.1:${port}/api`,
+        authBaseUrl: `http://127.0.0.1:${port}/api/auth`,
+        organizationId: "org_1",
+        apiKey: "runner-api-key",
+        opencodeProviderCredentials: [
+          { providerId: "openai", authFile, source: "opencode-auth-file" as const },
+          { providerId: "opencode", authFile, source: "opencode-auth-file" as const },
+        ],
+      },
+    };
+    const apiKey = spyOn(prompts, "password").mockResolvedValue("go-key");
+    Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+    Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+    try {
+      expect(await connectOpencodeProviderSubscription(context, "opencode-go")).toBe("opencode-go");
+    } finally {
+      apiKey.mockRestore();
+      Object.defineProperty(process.stdin, "isTTY", { value: false, configurable: true });
+      Object.defineProperty(process.stdout, "isTTY", { value: false, configurable: true });
+      server.close();
+    }
+
+    expect(await readCredentialStore({ configPath, passphrase })).toEqual({
+      entries: {
+        openai: { auth: { type: "api", key: "openai-key" } },
+        "opencode-go": { auth: { type: "api", key: "go-key" } },
+      },
+    });
+    expect(JSON.parse(await readFile(configPath, "utf8")).opencodeProviderCredentials).toEqual([
+      { providerId: "openai", authFile, source: "opencode-auth-file" },
+    ]);
+  });
+
   it("keeps registration config untouched when setup finds no auth file", async () => {
     const configPath = join(fixtureDir, "config.json");
     const config = {
@@ -534,7 +632,8 @@ describe("runner Opencode credentials", () => {
       authFile,
       JSON.stringify({
         openai: { type: "api", key: "openai-key" },
-        "opencode-go": { type: "api", key: "zen-key" },
+        opencode: { type: "api", key: "zen-key" },
+        "opencode-go": { type: "api", key: "go-key" },
         "github-copilot": { type: "oauth", refresh: "gho_local", access: "gho_local", expires: 0 },
       }),
     );
@@ -611,7 +710,17 @@ describe("runner Opencode credentials", () => {
             apiKey: "runner-api-key",
             opencodeProviderCredentials: [
               { providerId: "openai", authFile, source: "opencode-auth-file" },
-              { providerId: "opencode", authFile, source: "opencode-auth-file" },
+              {
+                providerId: "opencode",
+                authFile,
+                source: "opencode-auth-file",
+                providerIdFormat: "exact",
+              },
+              {
+                providerId: "opencode-go",
+                authFile,
+                source: "opencode-auth-file",
+              },
               { providerId: "github-copilot", authFile, source: "opencode-auth-file" },
             ],
           },
@@ -625,7 +734,7 @@ describe("runner Opencode credentials", () => {
     }
 
     const syncRequests = requests.filter((entry) => entry.path.includes("/sync"));
-    expect(syncRequests).toHaveLength(2);
+    expect(syncRequests).toHaveLength(3);
     expect(syncRequests.map((request) => JSON.parse(request.body))).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -635,6 +744,10 @@ describe("runner Opencode credentials", () => {
         expect.objectContaining({
           providerId: "opencode",
           auth: { type: "api", key: "zen-key" },
+        }),
+        expect.objectContaining({
+          providerId: "opencode-go",
+          auth: { type: "api", key: "go-key" },
         }),
       ]),
     );
@@ -647,6 +760,7 @@ describe("runner Opencode credentials", () => {
     expect(output).toContain("credentials setup --connect github-copilot");
     expect(output).toContain("Synced openai");
     expect(output).toContain("Synced opencode");
+    expect(output).toContain("Synced opencode-go");
   });
 
   it("confirms and retries unavailable API-key validation against the real route", async () => {
@@ -754,7 +868,7 @@ describe("runner Opencode credentials", () => {
       }),
     );
 
-    await expect(
+    await assert.rejects(
       syncOpencodeProviderCredentials(
         {
           configPath: join(fixtureDir, "config.json"),
@@ -769,7 +883,8 @@ describe("runner Opencode credentials", () => {
         },
         {},
       ),
-    ).rejects.toThrow(/Nothing to sync/);
+      /Nothing to sync/,
+    );
   });
 
   it("merges machine-readable status into doctor and keeps its script exit code", async () => {
@@ -826,7 +941,6 @@ describe("runner Opencode credentials", () => {
       configPath,
       passphrase,
       store: {
-        version: 1,
         entries: { openai: { auth: storedAuth, accountLabel: "user@example.com" } },
       },
     });
@@ -934,6 +1048,96 @@ describe("runner Opencode credentials", () => {
     expect(await readFile(authFile, "utf8")).toContain("openai-key");
   });
 
+  it("removes ambiguous v1 OpenCode credentials explicitly or with all", async () => {
+    const passphrase = "remove-ambiguous-store-passphrase";
+    const server = createServer((request, response) => {
+      response.setHeader("Content-Type", "application/json");
+      if (request.url?.endsWith("/credential-store-passphrase")) {
+        response.end(JSON.stringify({ passphrase }));
+        return;
+      }
+      response.statusCode = 404;
+      response.end(JSON.stringify({ error: "Unexpected request." }));
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const port = (server.address() as { port: number }).port;
+
+    try {
+      for (const [name, options, expectedEntries, expectedReferences] of [
+        [
+          "selected",
+          { provider: "opencode", all: false },
+          { openai: { auth: { type: "api", key: "openai-key" } } },
+          [{ providerId: "openai", authFile, source: "opencode-auth-file" }],
+        ],
+        [
+          "go",
+          { provider: "opencode-go", all: false },
+          { openai: { auth: { type: "api", key: "openai-key" } } },
+          [
+            { providerId: "openai", authFile, source: "opencode-auth-file" },
+            {
+              providerId: "opencode",
+              authFile,
+              source: "opencode-auth-file",
+              providerIdFormat: "exact",
+            },
+          ],
+        ],
+        ["all", { all: true }, {}, []],
+      ] as const) {
+        const caseDir = join(fixtureDir, name);
+        const configPath = join(caseDir, "config.json");
+        await mkdir(caseDir, { recursive: true });
+        const encrypter = new Encrypter();
+        encrypter.setScryptWorkFactor(12);
+        encrypter.setPassphrase(passphrase);
+        const ciphertext = await encrypter.encrypt(
+          JSON.stringify({
+            version: 1,
+            entries: {
+              openai: { auth: { type: "api", key: "openai-key" } },
+              opencode: { auth: { type: "api", key: "ambiguous-key" } },
+            },
+          }),
+        );
+        await writeFile(join(caseDir, credentialStoreFileName), `${armor.encode(ciphertext)}\n`);
+        const context = {
+          configPath,
+          config: {
+            apiBaseUrl: `http://127.0.0.1:${port}/api`,
+            authBaseUrl: `http://127.0.0.1:${port}/api/auth`,
+            organizationId: "org_1",
+            apiKey: "runner-api-key",
+            opencodeProviderCredentials: [
+              { providerId: "openai", authFile, source: "opencode-auth-file" as const },
+              { providerId: "opencode", authFile, source: "opencode-auth-file" as const },
+              {
+                providerId: "opencode",
+                authFile,
+                source: "opencode-auth-file" as const,
+                providerIdFormat: "exact" as const,
+              },
+            ],
+          },
+        };
+
+        await removeOpencodeProviderCredentials(context, options);
+
+        expect((await readCredentialStore({ configPath, passphrase })).entries).toEqual(
+          expectedEntries,
+        );
+        expect(JSON.parse(await readFile(configPath, "utf8")).opencodeProviderCredentials).toEqual(
+          expectedReferences,
+        );
+      }
+    } finally {
+      server.close();
+    }
+  });
+
   it("doctor --live proves stored subscriptions against the vendor", async () => {
     const configPath = join(fixtureDir, "config.json");
     const passphrase = "doctor-live-passphrase";
@@ -941,7 +1145,6 @@ describe("runner Opencode credentials", () => {
       configPath,
       passphrase,
       store: {
-        version: 1,
         entries: {
           openai: {
             auth: {
@@ -1180,7 +1383,6 @@ describe("runner Opencode credentials", () => {
       configPath,
       passphrase,
       store: {
-        version: 1,
         entries: { openai: { auth: storedAuth, accountLabel: "user@example.com" } },
       },
     });

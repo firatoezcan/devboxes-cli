@@ -18,7 +18,7 @@ const daemonApiBaseUrl = "http://host.docker.internal:3001/api";
 // A server-authored launch spec as the claim response serves it; this runtime
 // executes it and overlays only the machine-local env keys.
 const launchSpec = {
-  launchProtocol: "devboxes-launch-v1" as const,
+  launchProtocol: "devboxes-launch-v2" as const,
   workingDir: "/workspace",
   entrypoint: "/entrypoint.sh",
   env: {

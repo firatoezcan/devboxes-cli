@@ -1,10 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import {
-  normalizeOpencodeProviderId,
-  opencodeProviderAuthJsonKey,
-  validateOpencodeProviderAuth,
-} from "./provider-auth";
+import { normalizeOpencodeProviderId, validateOpencodeProviderAuth } from "./provider-auth";
 
 describe("normalizeOpencodeProviderId", () => {
   it("trims and lowercases valid provider ids", () => {
@@ -138,16 +134,5 @@ describe("validateOpencodeProviderAuth", () => {
         "Opencode credentials for provider openai are invalid.",
       );
     }
-  });
-});
-
-describe("opencodeProviderAuthJsonKey", () => {
-  it("maps the opencode gateway to its well-known opencode-go auth key", () => {
-    expect(opencodeProviderAuthJsonKey("opencode")).toBe("opencode-go");
-  });
-
-  it("keeps every other provider id as its own auth key", () => {
-    expect(opencodeProviderAuthJsonKey("openai")).toBe("openai");
-    expect(opencodeProviderAuthJsonKey("deepseek")).toBe("deepseek");
   });
 });

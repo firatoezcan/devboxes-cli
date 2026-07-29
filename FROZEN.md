@@ -15,7 +15,7 @@ are about to break shipped artifacts.
 
 | Contract                      | Value                                                                                                                    | Reader that would break                                                                                                                                  |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Launch protocol tag           | `devboxes-launch-v1`                                                                                                     | Every runner's claim negotiation; the server refuses non-mutual claims with `listener_upgrade_required`                                                  |
+| Legacy launch protocol tag    | `devboxes-launch-v1`                                                                                                     | Every shipped v1 runner's claim negotiation; the server refuses it with `listener_upgrade_required` before leasing work                                  |
 | Client-owned launch env keys  | `DEVBOX_BACKEND_BASE_URL`, `DEVBOX_OPENCODE_PROVIDER_AUTH_URL`, `DEVBOX_OPENCODE_CONFIG_JSON_FILE`                       | Shipped runtimes overlay exactly these keys over the served spec; serving them would be silently ignored, renaming them orphans the overlay              |
 | Daemon bootstrap protocol tag | `devboxes-daemon-bootstrap-v1`                                                                                           | `/entrypoint.sh` baked into every published runner image exits `upgrade_required` on mismatch                                                            |
 | Container home                | `/home/workspace`                                                                                                        | Published images (user, permissions), served spec env, daemon auth-file path                                                                             |
@@ -30,6 +30,20 @@ are about to break shipped artifacts.
 | Task-callback stop code       | `task_callback_terminal`                                                                                                 | Daemons in published runner images stop on a per-task callback 401 carrying it; dropping it revives the unbounded poll loop                              |
 | Device registration client id | `devboxes-listener-registration`                                                                                         | Shipped runners send it on device-auth start; the server validates it                                                                                    |
 | Credential store format       | age-encrypted `provider-credentials.json.age`, version 1                                                                 | Every existing on-device store; a format change strands stored subscriptions                                                                             |
+
+## Current exact-provider protocol
+
+`devboxes-launch-v2` requires exact provider ids. New runners advertise it and
+the server serves only its launch specs; v1 runners stop at claim with
+`listener_upgrade_required`. Its literal is pinned separately in
+`src/protocol/launch-spec.test.ts` so the shipped v1 frozen test remains
+unchanged.
+
+New runners write credential-store version 2, where every entry key is an exact
+provider id. They migrate unambiguous v1 entries in memory, but a v1 `opencode`
+entry must be reconnected because it could mean OpenCode Go or OpenCode Zen.
+Shipped v1 readers reject version 2 as newer instead of serving an exact Zen
+credential under their old Go mapping.
 
 ## Not frozen (churn lands here, server-side)
 
