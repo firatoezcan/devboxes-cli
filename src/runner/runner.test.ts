@@ -35,6 +35,7 @@ import {
 const credentialSyncHarness = createApiIntegrationHarness(
   "devboxes-runner-credential-sync",
   {},
+  "pglite",
   30_000,
 );
 const credentialSyncOrganizationId = "00000000-0000-7000-8000-000000000171";
