@@ -61,13 +61,13 @@ export const createDevboxesMcpServer = (context: DevboxesContext) => {
       const current = await readDevboxesSession(context, input.agentSessionId);
       return jsonResult({
         agentSessionId: current.session.id,
-        sessionStatus: current.session.status,
-        runId: current.session.runId,
-        runStatus: current.run?.status ?? null,
+        sessionStatus: current.currentTask.status,
+        runId: current.currentRun.id,
+        runStatus: current.run?.status ?? current.currentRun.status,
         currentStep: current.run?.currentStep ?? null,
         terminal: sessionReachedTerminalState(current),
         pullRequestUrl: current.run?.pullRequestUrl ?? null,
-        errorMessage: current.run?.errorMessage ?? current.session.errorMessage ?? null,
+        errorMessage: current.run?.errorMessage ?? current.currentTask.errorMessage ?? null,
       });
     },
   );
@@ -85,11 +85,11 @@ export const createDevboxesMcpServer = (context: DevboxesContext) => {
       const result = await readDevboxesSessionResult(context, input.agentSessionId);
       return jsonResult({
         agentSessionId: result.session.id,
-        sessionStatus: result.session.status,
-        runStatus: result.run?.status ?? null,
+        sessionStatus: result.currentTask.status,
+        runStatus: result.run?.status ?? result.currentRun.status,
         terminal: result.terminal,
         pullRequestUrl: result.run?.pullRequestUrl ?? null,
-        errorMessage: result.run?.errorMessage ?? result.session.errorMessage ?? null,
+        errorMessage: result.run?.errorMessage ?? result.currentTask.errorMessage ?? null,
         costUsd: result.run?.costUsd ?? null,
         finalOutput: result.finalOutput,
         finalOutputError: result.finalOutputError,

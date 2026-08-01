@@ -626,6 +626,12 @@ export const readDevboxesSession = async (context: DevboxesContext, agentSession
   if (sessionResponse.error) throw apiRequestError("Agent session lookup", sessionResponse.error);
   const session = sessionResponse.data;
   if (!session) throw new Error("Agent session lookup returned no session.");
+  const currentRun = session.runs.at(-1);
+  if (!currentRun) throw new Error("Session lookup returned no Run.");
+  const currentTask = session.currentTask;
+  if (currentTask.runId !== currentRun.id) {
+    throw new Error("Session lookup returned a task for a different Run.");
+  }
 
   // The run row is the product truth for outcome and PR link. A missing run
   // (404) degrades to session-status truth instead of failing status/result —
@@ -634,26 +640,22 @@ export const readDevboxesSession = async (context: DevboxesContext, agentSession
   // in-between window (and a run hidden by soft deletion).
   const runResponse = await backend.api
     .org({ organizationId })
-    .runs({ runId: session.runId })
+    .runs({ runId: currentRun.id })
     .get();
   if (runResponse.error && runResponse.error.status !== 404) {
     throw apiRequestError("Run lookup", runResponse.error);
   }
   const run = runResponse.data ?? null;
 
-  return { session, run };
+  return { session, currentRun, currentTask, run };
 };
 
 const terminalRunStatuses = new Set(["succeeded", "failed", "cancelled"]);
-const terminalSessionStatuses = new Set(["completed", "stopped", "failed", "cancelled"]);
 
 export const sessionReachedTerminalState = (input: {
-  session: { status: string };
+  currentRun: { status: string };
   run: { status: string } | null;
-}) =>
-  input.run
-    ? terminalRunStatuses.has(input.run.status)
-    : terminalSessionStatuses.has(input.session.status);
+}) => terminalRunStatuses.has(input.run?.status ?? input.currentRun.status);
 
 // A stalled read must not hang `result` forever; the read leg gets the same
 // ceiling as the login flow's browser-approval poll.
@@ -705,14 +707,17 @@ export const readDevboxesSessionResult = async (
   context: DevboxesContext,
   agentSessionId: string,
 ) => {
-  const { session, run } = await readDevboxesSession(context, agentSessionId);
+  const { session, currentRun, currentTask, run } = await readDevboxesSession(
+    context,
+    agentSessionId,
+  );
   let finalOutput: string | null = null;
   let finalOutputError: string | null = null;
   try {
     finalOutput = await readFinalAssistantMessage(
       context,
       agentSessionId,
-      session.opencodeSessionId,
+      currentTask.opencodeSessionId,
     );
   } catch (error) {
     // The outcome and PR link stay useful even when event storage is
@@ -721,8 +726,10 @@ export const readDevboxesSessionResult = async (
   }
   return {
     session,
+    currentRun,
+    currentTask,
     run,
-    terminal: sessionReachedTerminalState({ session, run }),
+    terminal: sessionReachedTerminalState({ currentRun, run }),
     finalOutput,
     finalOutputError,
   };
@@ -730,19 +737,19 @@ export const readDevboxesSessionResult = async (
 
 const sessionStatusJson = (input: Awaited<ReturnType<typeof readDevboxesSession>>) => ({
   agentSessionId: input.session.id,
-  sessionStatus: input.session.status,
-  runId: input.session.runId,
-  runStatus: input.run?.status ?? null,
+  sessionStatus: input.currentTask.status,
+  runId: input.currentRun.id,
+  runStatus: input.run?.status ?? input.currentRun.status,
   currentStep: input.run?.currentStep ?? null,
   terminal: sessionReachedTerminalState(input),
-  repository: input.session.repositoryFullName,
-  branch: input.run?.branch ?? input.session.baseBranch,
-  model: `${input.session.modelProviderId}/${input.session.modelId}`,
+  repository: input.currentTask.repositoryFullName,
+  branch: input.run?.branch ?? input.currentTask.baseBranch,
+  model: `${input.currentTask.modelProviderId}/${input.currentTask.modelId}`,
   pullRequestUrl: input.run?.pullRequestUrl ?? null,
-  errorMessage: input.run?.errorMessage ?? input.session.errorMessage ?? null,
-  queuedAt: input.run?.queuedAt ?? null,
-  startedAt: input.run?.startedAt ?? null,
-  completedAt: input.run?.completedAt ?? null,
+  errorMessage: input.run?.errorMessage ?? input.currentTask.errorMessage ?? null,
+  queuedAt: input.run?.queuedAt ?? input.currentRun.queuedAt,
+  startedAt: input.run?.startedAt ?? input.currentRun.startedAt,
+  completedAt: input.run?.completedAt ?? input.currentRun.completedAt,
   costUsd: input.run?.costUsd ?? null,
 });
 

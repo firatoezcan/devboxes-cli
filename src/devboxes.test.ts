@@ -13,6 +13,7 @@ import { createApiIntegrationHarness } from "@/test/api-integration";
 
 import { createDevboxesCommand } from "./cli";
 import {
+  bearerBackend,
   dispatchDevboxesTask,
   loginDevboxes,
   loadContext,
@@ -576,6 +577,7 @@ describe("devboxes CLI", () => {
 
   let dispatchedSessionId: string;
   let dispatchedRunId: string;
+  let dispatchedTaskId: string;
 
   it("dispatches free-form task text to the project matching --repo", async () => {
     const dispatched = await dispatchDevboxesTask(context, {
@@ -592,8 +594,15 @@ describe("devboxes CLI", () => {
     expect(dispatched.repository).toBe(fixture.repositoryFullName);
 
     const task = await dbClient.db.query.opencodeDispatchTasks.findFirst({
-      where: { id: dispatched.agentSessionId, organizationId },
+      where: {
+        sessionId: dispatched.agentSessionId,
+        runId: dispatched.runId,
+        organizationId,
+      },
     });
+    if (!task) throw new Error("Expected the dispatched task.");
+    dispatchedTaskId = task.id;
+    expect(task.id).not.toBe(dispatched.agentSessionId);
     expect(task?.status).toBe("queued");
     expect(task?.taskPrompt).toContain("Fix the flaky retry handling in the queue worker.");
     expect(task?.modelProviderId).toBe("opencode");
@@ -613,7 +622,11 @@ describe("devboxes CLI", () => {
 
     expect(dispatched.projectId).toBe(fixture.projectId);
     const task = await dbClient.db.query.opencodeDispatchTasks.findFirst({
-      where: { id: dispatched.agentSessionId, organizationId },
+      where: {
+        sessionId: dispatched.agentSessionId,
+        runId: dispatched.runId,
+        organizationId,
+      },
     });
     expect(task?.taskPrompt).toContain(`ISSUE_URL=${issueUrl}`);
     expect(task?.taskPrompt).toContain("DESTINATION_BRANCH=main");
@@ -648,7 +661,11 @@ describe("devboxes CLI", () => {
     expect(dispatched.inferredFromGitRemote).toBe("github.com/acme/other-service");
 
     const task = await dbClient.db.query.opencodeDispatchTasks.findFirst({
-      where: { id: dispatched.agentSessionId, organizationId },
+      where: {
+        sessionId: dispatched.agentSessionId,
+        runId: dispatched.runId,
+        organizationId,
+      },
     });
     expect(task?.repositoryFullName).toBe("acme/other-service");
   });
@@ -758,7 +775,7 @@ describe("devboxes CLI", () => {
   it("reads session and run status for a dispatched session", async () => {
     const current = await readDevboxesSession(context, dispatchedSessionId);
     expect(current.session.id).toBe(dispatchedSessionId);
-    expect(current.session.status).toBe("queued");
+    expect(current.currentTask.status).toBe("queued");
     expect(current.run?.id).toBe(dispatchedRunId);
     expect(current.run?.status).toBe("queued");
     // The run route serves the current step's name, not the step row.
@@ -795,12 +812,17 @@ describe("devboxes CLI", () => {
     // the latest assistant message's text parts.
     await dbClient.db
       .update(schema.opencodeDispatchTasks)
-      .set({ opencodeSessionId: "ses-cli" })
-      .where(eq(schema.opencodeDispatchTasks.id, dispatchedSessionId));
+      .set({
+        opencodeSessionId: "ses-cli",
+        status: "completed",
+        startedAt: new Date(Date.now() - 1_000),
+        completedAt: new Date(),
+      })
+      .where(eq(schema.opencodeDispatchTasks.id, dispatchedTaskId));
     const { appendRawOpencodeEventsToClickHouse } = await import("@/clickhouse/opencode-events");
     await appendRawOpencodeEventsToClickHouse({
       organizationId,
-      agentSessionId: dispatchedSessionId,
+      agentSessionId: dispatchedTaskId,
       events: [
         {
           id: "evt-input",
@@ -948,6 +970,51 @@ describe("devboxes CLI", () => {
       expect(sessionResult.finalOutput).toBe(
         "Retry handling now backs off exponentially; opened a pull request.",
       );
+
+      const sessionToken = context.config.sessionToken;
+      if (!sessionToken) throw new Error("Expected connected CLI credentials.");
+      const continuation = await bearerBackend(context.config.apiBaseUrl, sessionToken)
+        .api.org({ organizationId })
+        ["agent-sessions"]({ agentSessionId: dispatchedSessionId })
+        .continuations.post({});
+      expect(continuation.status).toBe(200);
+      const continuedSession = continuation.data;
+      if (!continuedSession) throw new Error("Expected the continued Session.");
+      const runB = continuedSession.runs.at(-1);
+      if (!runB) throw new Error("Expected continuation Run B.");
+      expect(runB).toMatchObject({
+        sessionSequence: 2,
+        previousRunId: dispatchedRunId,
+        status: "queued",
+      });
+      expect(continuedSession.currentTask.id).not.toBe(dispatchedTaskId);
+
+      const current = await readDevboxesSession(context, dispatchedSessionId);
+      expect(current.currentRun.id).toBe(runB.id);
+      expect(current.currentTask.runId).toBe(runB.id);
+      expect(current.currentTask.id).toBe(continuedSession.currentTask.id);
+      expect(current.run?.id).toBe(runB.id);
+
+      const continuedStatusResult = await client.callTool({
+        name: "get_session_status",
+        arguments: { agentSessionId: dispatchedSessionId },
+      });
+      const continuedStatusContent = continuedStatusResult.content as Array<{
+        type: string;
+        text: string;
+      }>;
+      const continuedStatus = JSON.parse(continuedStatusContent[0]!.text) as {
+        runId: string;
+        runStatus: string;
+        sessionStatus: string;
+        terminal: boolean;
+      };
+      expect(continuedStatus).toMatchObject({
+        runId: runB.id,
+        runStatus: "queued",
+        sessionStatus: "queued",
+        terminal: false,
+      });
 
       const missing = await client.callTool({
         name: "get_session_status",
