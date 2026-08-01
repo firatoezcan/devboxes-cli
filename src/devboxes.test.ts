@@ -8,6 +8,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { eq } from "drizzle-orm";
 
+import { serializedJsonb } from "@/db/jsonb";
 import * as schema from "@/db/schema";
 import { createApiIntegrationHarness } from "@/test/api-integration";
 
@@ -130,6 +131,8 @@ describe("devboxes CLI", () => {
         name: "Implement",
         order: 1,
         action: "opencode.run",
+        kind: "agentic",
+        inputTemplate: serializedJsonb({}),
       });
     }
 
@@ -753,6 +756,8 @@ describe("devboxes CLI", () => {
       name: "Implement",
       order: 1,
       action: "opencode.run",
+      kind: "agentic",
+      inputTemplate: serializedJsonb({}),
     });
 
     const soloContext = await loadContext({
