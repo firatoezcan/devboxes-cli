@@ -11,7 +11,7 @@ export const listenerUpgradeRequiredCode = "listener_upgrade_required";
 // The daemon half of listener_upgrade_required: a per-task callback 401 that
 // carries this code says the task is over for the token holder, so the
 // in-container daemon stops instead of polling a dead task at POLL_MS
-// forever. Daemons baked into published runner images match the literal.
+// forever. Daemons baked into published Workspace Images match the literal.
 export const opencodeTaskCallbackTerminalCode = "task_callback_terminal";
 export const listenerRegistrationDeviceClientId = "devboxes-listener-registration";
 export const credentialStoreFileName = "provider-credentials.json.age";

@@ -30,7 +30,15 @@ const ownerUserId = "devboxes-cli-owner";
 const ownerEmail = "devboxes-cli-owner@example.com";
 const ownerPassword = "devboxes-cli-owner-password";
 
-const harness = createApiIntegrationHarness("devboxes-cli", {}, "pglite", 30_000);
+const harness = createApiIntegrationHarness(
+  "devboxes-cli",
+  {
+    DEVBOX_WORKSPACE_IMAGE_BUILDER_URL: "https://image-builder.test",
+    DEVBOX_WORKSPACE_IMAGE_BUILDER_CALLBACK_TOKEN: "test-builder-token",
+  },
+  "pglite",
+  30_000,
+);
 
 // Real repositories for cwd project inference: dispatch reads the origin
 // remote of an actual git checkout, exactly like a user's terminal would.
@@ -781,14 +789,37 @@ describe("devboxes CLI", () => {
     const current = await readDevboxesSession(context, dispatchedSessionId);
     expect(current.session.id).toBe(dispatchedSessionId);
     expect(current.currentTask.status).toBe("queued");
-    expect(current.run?.id).toBe(dispatchedRunId);
-    expect(current.run?.status).toBe("queued");
+    expect(current.run.id).toBe(dispatchedRunId);
+    expect(current.run.status).toBe("queued");
     // The run route serves the current step's name, not the step row.
-    expect(current.run?.currentStep).toBe("Implement");
+    expect(current.run.currentStep).toBe("Implement");
+    expect(current.run.usage).toEqual({
+      tokensInput: 0,
+      tokensOutput: 0,
+      tokensCacheRead: 0,
+      tokensCacheWrite: 0,
+      monetaryBasis: "unavailable",
+    });
 
     await expect(
       readDevboxesSession(context, "00000000-0000-7000-8000-00000000dead"),
     ).rejects.toThrow("404");
+  });
+
+  it("fails status when its canonical Run is unavailable", async () => {
+    await dbClient.db
+      .update(schema.runs)
+      .set({ deletedAt: new Date() })
+      .where(eq(schema.runs.id, dispatchedRunId));
+
+    try {
+      await expect(readDevboxesSession(context, dispatchedSessionId)).rejects.toThrow("404");
+    } finally {
+      await dbClient.db
+        .update(schema.runs)
+        .set({ deletedAt: null })
+        .where(eq(schema.runs.id, dispatchedRunId));
+    }
   });
 
   it("extends the session expiry when a connected command is used", async () => {
@@ -889,9 +920,16 @@ describe("devboxes CLI", () => {
 
     const result = await readDevboxesSessionResult(context, dispatchedSessionId);
     expect(result.terminal).toBe(true);
-    expect(result.run?.pullRequestUrl).toBe(
+    expect(result.run.pullRequestUrl).toBe(
       "https://github.com/firatoezcan/devboxes-dashboard/pull/77",
     );
+    expect(result.run.usage).toEqual({
+      tokensInput: 0,
+      tokensOutput: 0,
+      tokensCacheRead: 0,
+      tokensCacheWrite: 0,
+      monetaryBasis: "unavailable",
+    });
     expect(result.finalOutputError).toBeNull();
     expect(result.finalOutput).toBe(
       "Retry handling now backs off exponentially; opened a pull request.",
@@ -959,22 +997,28 @@ describe("devboxes CLI", () => {
         runStatus: string;
         terminal: boolean;
         pullRequestUrl: string;
+        usage: { monetaryBasis: string };
       };
       expect(status.runStatus).toBe("succeeded");
       expect(status.terminal).toBe(true);
       expect(status.pullRequestUrl).toBe(
         "https://github.com/firatoezcan/devboxes-dashboard/pull/77",
       );
+      expect(status.usage.monetaryBasis).toBe("unavailable");
 
       const resultCall = await client.callTool({
         name: "get_session_result",
         arguments: { agentSessionId: dispatchedSessionId },
       });
       const resultContent = resultCall.content as Array<{ type: string; text: string }>;
-      const sessionResult = JSON.parse(resultContent[0]!.text) as { finalOutput: string };
+      const sessionResult = JSON.parse(resultContent[0]!.text) as {
+        finalOutput: string;
+        usage: { monetaryBasis: string };
+      };
       expect(sessionResult.finalOutput).toBe(
         "Retry handling now backs off exponentially; opened a pull request.",
       );
+      expect(sessionResult.usage.monetaryBasis).toBe("unavailable");
 
       const sessionToken = context.config.sessionToken;
       if (!sessionToken) throw new Error("Expected connected CLI credentials.");
@@ -995,10 +1039,9 @@ describe("devboxes CLI", () => {
       expect(continuedSession.currentTask.id).not.toBe(dispatchedTaskId);
 
       const current = await readDevboxesSession(context, dispatchedSessionId);
-      expect(current.currentRun.id).toBe(runB.id);
       expect(current.currentTask.runId).toBe(runB.id);
       expect(current.currentTask.id).toBe(continuedSession.currentTask.id);
-      expect(current.run?.id).toBe(runB.id);
+      expect(current.run.id).toBe(runB.id);
 
       const continuedStatusResult = await client.callTool({
         name: "get_session_status",

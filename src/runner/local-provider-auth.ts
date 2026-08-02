@@ -35,15 +35,10 @@ const CodexAuthCacheSchema = Type.Object(
   { additionalProperties: true },
 );
 
-// Mirrors the dashboard provider-auth route: refresh before serving when the
-// access token expires within the skew so the container starts with useful
-// lifetime; `expires: 0` marks tokens that never expire.
+// Local OAuth is refreshed before its credential is advertised for a claim.
+// The claimed task then keeps that exact material; `expires: 0` marks tokens
+// that never expire.
 const refreshSkewMs = 10 * 60 * 1000;
-
-// A vendor-side failure (5xx, network) while refreshing, as opposed to the
-// vendor definitively rejecting the token family. The broker maps this to 502
-// so the daemon's retry loop keeps the task boot alive through the blip.
-export class TransientProviderRefreshError extends Error {}
 
 export class LocalRunnerOpencodeProviderAuthRuntime {
   private readonly pendingRefreshes = new Map<string, Promise<OAuth>>();
@@ -121,8 +116,7 @@ export class LocalRunnerOpencodeProviderAuthRuntime {
 
   // Idle keep-alive sweep for the `listen` cron (which ignores the returned
   // outcomes) and the proof-of-life half of `doctor --live` (which reports
-  // them). Refresh-on-serve only fires when tasks boot, so a machine that
-  // sits unused would let its stored rotating token families lapse. Never
+  // them). Claim-time refresh cannot keep an idle token family alive. Never
   // throws — a cron callback that rejects would take the runner down.
   async refreshExpiringStoredCredentials(input: {
     windowMs: number;
@@ -189,10 +183,9 @@ export class LocalRunnerOpencodeProviderAuthRuntime {
     try {
       connectors = this.fetchConnectors ? await this.fetchConnectors() : [];
     } catch (error) {
-      throw new TransientProviderRefreshError(
-        `Opencode credentials for provider ${providerId} could not be refreshed.`,
-        { cause: error },
-      );
+      throw new Error(`Opencode credentials for provider ${providerId} could not be refreshed.`, {
+        cause: error,
+      });
     }
     const connector = connectors.find((candidate) => candidate.providerId === providerId);
     if (!connector) {
@@ -204,10 +197,9 @@ export class LocalRunnerOpencodeProviderAuthRuntime {
     try {
       refreshed = await refreshOpencodeOauthAccess(connector, { auth });
     } catch (error) {
-      throw new TransientProviderRefreshError(
-        `Opencode credentials for provider ${providerId} could not be refreshed.`,
-        { cause: error },
-      );
+      throw new Error(`Opencode credentials for provider ${providerId} could not be refreshed.`, {
+        cause: error,
+      });
     }
     if ("error" in refreshed) {
       throw new Error(

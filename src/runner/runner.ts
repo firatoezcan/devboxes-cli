@@ -29,10 +29,14 @@ import {
   listenerUpgradeRequiredCode,
 } from "../protocol/frozen";
 import {
-  opencodeExactProviderIdsLaunchProtocol,
   OpencodeLaunchSpecSchema,
+  opencodeUsageAuthorityLaunchProtocol,
 } from "../protocol/launch-spec";
-import { normalizeOpencodeProviderId } from "../protocol/provider-auth";
+import {
+  normalizeOpencodeProviderId,
+  opencodeProviderAuthFingerprint,
+  type OpencodeProviderAuthJson,
+} from "../protocol/provider-auth";
 import { taskContainerName } from "../protocol/task-runtime";
 import {
   OpencodeConnectorDescriptorSchema,
@@ -80,6 +84,7 @@ type ActiveTask = {
   containerId: string | null;
   containerName: string | null;
   attemptCount: number;
+  providerAuth?: OpencodeProviderAuthJson;
 };
 
 const OpencodeAuthFileSchema = Type.Record(
@@ -1288,7 +1293,6 @@ export const runRunnerDoctor = async (
 };
 
 export const startCredentialBroker = (
-  runtime: LocalRunnerOpencodeProviderAuthRuntime,
   activeCredentials: ReadonlyMap<string, ActiveOpencodeCredentialTask>,
 ) => {
   // Task containers reach the broker through host.docker.internal, which on
@@ -1302,7 +1306,7 @@ export const startCredentialBroker = (
   for (let attempt = 0; attempt < 20 && !app; attempt++) {
     const candidatePort = 34000 + Math.floor(Math.random() * 1000);
     try {
-      app = createOpencodeCredentialBroker({ runtime, activeCredentials }).listen({
+      app = createOpencodeCredentialBroker({ activeCredentials }).listen({
         hostname: "0.0.0.0",
         port: candidatePort,
       });
@@ -1369,35 +1373,50 @@ const listen = async (
     if (result.error) throw apiRequestError("Heartbeat", result.error, "connect");
     return result.data;
   };
-  const openedStore = await openCredentialStoreIfPresent(context);
-  const ambiguousReference = context.config.opencodeProviderCredentials?.find(
-    (credential) => credential.providerId === "opencode" && credential.providerIdFormat !== "exact",
-  );
-  if (ambiguousReference) {
-    throw new Error(ambiguousOpencodeCredentialMessage);
+  const openedStore = await openCredentialStoreIfPresent(context).catch((error) => {
+    console.error(
+      `Device credential store is unavailable for runner claims: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return undefined;
+  });
+  let providerSnapshotPassphrase = openedStore?.access.passphrase;
+  const credentialSnapshotPassphrase = async () => {
+    if (!providerSnapshotPassphrase) {
+      providerSnapshotPassphrase = (await credentialStoreAccess(context)).passphrase;
+    }
+    return providerSnapshotPassphrase;
+  };
+  const configuredCredentials: LocalOpencodeProviderCredentialReference[] = [];
+  for (const credential of context.config.opencodeProviderCredentials ?? []) {
+    if (credential.providerId === "opencode" && credential.providerIdFormat !== "exact") {
+      console.error(
+        `Local provider credential opencode is unavailable for runner claims: ${ambiguousOpencodeCredentialMessage}`,
+      );
+      continue;
+    }
+    configuredCredentials.push(credential);
   }
-  // Providers this machine serves from disk through the broker. Both lists are
-  // fixed at startup; `devboxes credentials setup` during a running listen needs a
-  // restart to be advertised. Org-stored credentials qualify further tasks
+  // Provider ids this machine serves from disk through the broker are fixed at
+  // startup; `devboxes credentials setup` needs a restart to advertise a new id.
+  // The credential behind an existing id is read before every claim so replacing
+  // an API key with OAuth, or OAuth with an API key, changes the next claim's
+  // immutable monetary authority. Org-stored credentials qualify further tasks
   // server-side and those launch against the dashboard route instead.
   const localProviderIds = new Set([
-    ...(context.config.opencodeProviderCredentials ?? []).map(
-      (credential) => credential.providerId,
-    ),
+    ...configuredCredentials.map((credential) => credential.providerId),
     ...Object.keys(openedStore?.store.entries ?? {}),
   ]);
   const credentialRuntime = new LocalRunnerOpencodeProviderAuthRuntime(
-    context.config.opencodeProviderCredentials ?? [],
+    configuredCredentials,
     openedStore?.access,
     () => fetchOpencodeConnectors(context),
   );
-  const credentialBroker = startCredentialBroker(credentialRuntime, activeTasks);
-  // Idle keep-alive for stored subscription token families: refresh-on-serve
-  // only fires when a task boots, so a machine that sits unused would let its
-  // rotating refresh tokens lapse. Sweep at startup for anything that expired
-  // while the runner was off, then hourly; the 70-minute window outlasts a
-  // full cron period so nothing expires between fires. The sweep shares the
-  // broker's runtime, so cron and task boots single-flight per family.
+  const credentialBroker = startCredentialBroker(activeTasks);
+  // Claim-time refresh cannot keep an idle subscription token family alive.
+  // Sweep at startup for anything that expired while the runner was off, then
+  // hourly; the 70-minute window outlasts a full cron period so nothing expires
+  // between fires. The sweep shares the claim runtime, so cron and claim refresh
+  // single-flight per family.
   const credentialRefreshWindowMs = 70 * 60 * 1000;
   if (openedStore) {
     void credentialRuntime.refreshExpiringStoredCredentials({
@@ -1457,11 +1476,65 @@ const listen = async (
           continue;
         }
         if (state?.Running) {
-          if (!task.modelProviderId || !task.perTaskToken) {
+          if (
+            !task.modelProviderId ||
+            !task.perTaskToken ||
+            !task.providerAuthSource ||
+            !task.providerCredentialFingerprint
+          ) {
             console.info(
               `Skipped re-adopting task ${task.taskId}: provider auth context is absent.`,
             );
             continue;
+          }
+          let providerAuth: OpencodeProviderAuthJson | undefined;
+          if (task.providerAuthSource === "local-broker") {
+            let snapshotPassphrase: string;
+            try {
+              snapshotPassphrase = await credentialSnapshotPassphrase();
+            } catch (error) {
+              console.info(
+                `Skipped re-adopting task ${task.taskId}: ${error instanceof Error ? error.message : String(error)}`,
+              );
+              continue;
+            }
+            try {
+              providerAuth = await taskRuntime.readProviderAuthSnapshot({
+                organizationId: task.organizationId,
+                taskId: task.taskId,
+                providerId: task.modelProviderId,
+                passphrase: snapshotPassphrase,
+              });
+            } catch {
+              providerAuth = undefined;
+            }
+            const auth = providerAuth?.[task.modelProviderId];
+            if (
+              !auth ||
+              (auth.type !== "api" && auth.type !== "oauth") ||
+              opencodeProviderAuthFingerprint(task.modelProviderId, auth) !==
+                task.providerCredentialFingerprint
+            ) {
+              const errorMessage =
+                "The claim-captured local provider credential is unavailable after runner restart.";
+              await taskRuntime.stopTask({
+                taskId: task.taskId,
+                organizationId: task.organizationId,
+                containerId: task.containerId,
+              });
+              const reported = await backend.api.internal["runner-machines"]
+                .tasks({ taskId: task.taskId })
+                .report.post({
+                  status: "failed",
+                  errorMessage,
+                  attemptCount: task.attemptCount,
+                });
+              if (reported.error) {
+                throw apiRequestError("Credential authority report", reported.error, "connect");
+              }
+              console.info(`Failed task ${task.taskId}: ${errorMessage}`);
+              continue;
+            }
           }
           // The reconciliation minted a fresh per-task token; the container's
           // mounted secret file must hold the same token the broker serves.
@@ -1482,6 +1555,7 @@ const listen = async (
             containerId: task.containerId,
             containerName: task.containerName,
             attemptCount: task.attemptCount,
+            ...(providerAuth ? { providerAuth } : {}),
           });
           console.info(`Re-adopted running task ${task.taskId}.`);
           continue;
@@ -1649,21 +1723,78 @@ const listen = async (
         }
 
         if (activeTasks.size < maxConcurrent) {
+          const localProviderCredentials: Array<{
+            providerId: string;
+            authType: "api" | "oauth";
+            credentialFingerprint: string;
+          }> = [];
+          const claimProviderAuth = new Map<string, OpencodeProviderAuthJson>();
+          for (const providerId of [...localProviderIds].sort()) {
+            try {
+              const providerAuth = await credentialRuntime.providerAuthForProvider({ providerId });
+              const auth = providerAuth[providerId];
+              if (!auth) {
+                throw new Error(
+                  `Local provider credential ${providerId} did not return its auth type.`,
+                );
+              }
+              if (auth.type !== "api" && auth.type !== "oauth") {
+                throw new Error(
+                  `Local provider credential ${providerId} has unsupported auth type.`,
+                );
+              }
+              localProviderCredentials.push({
+                providerId,
+                authType: auth.type,
+                credentialFingerprint: opencodeProviderAuthFingerprint(providerId, auth),
+              });
+              claimProviderAuth.set(providerId, providerAuth);
+            } catch (error) {
+              console.error(
+                `Local provider credential ${providerId} is unavailable for this claim: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            }
+          }
           const claimResult = await backend.api.internal["runner-machines"].claim.post({
             leaseMs: 120_000,
             // Providers the local broker can serve; the server unions these
             // with the org's stored credentials, which run on any machine
             // through the dashboard provider-auth route.
-            availableProviderIds: [...localProviderIds],
+            localProviderCredentials,
             // The launch-spec protocols this binary executes; a server that
             // serves none of them answers listener_upgrade_required.
-            launchProtocols: [opencodeExactProviderIdsLaunchProtocol],
+            launchProtocols: [opencodeUsageAuthorityLaunchProtocol],
           });
           if (claimResult.error) throw apiRequestError("Claim", claimResult.error, "connect");
           // An empty queue answers 204, which Eden types as the "No Content" literal.
           const task = claimResult.data;
           if (task && typeof task !== "string") {
             console.info(`Claimed task ${task.taskId}; launching on ${task.platform}...`);
+            const providerAuth =
+              task.launchSpec.providerAuthSource === "local-broker"
+                ? claimProviderAuth.get(task.modelProviderId)
+                : undefined;
+            const pinnedAuth = providerAuth?.[task.modelProviderId];
+            if (
+              task.launchSpec.providerAuthSource === "local-broker" &&
+              (!pinnedAuth ||
+                (pinnedAuth.type !== "api" && pinnedAuth.type !== "oauth") ||
+                opencodeProviderAuthFingerprint(task.modelProviderId, pinnedAuth) !==
+                  task.providerCredentialFingerprint)
+            ) {
+              throw new Error(
+                `Claimed task ${task.taskId} did not retain its local credential authority.`,
+              );
+            }
+            if (providerAuth) {
+              await taskRuntime.persistProviderAuthSnapshot({
+                organizationId: task.organizationId,
+                taskId: task.taskId,
+                providerId: task.modelProviderId,
+                providerAuth,
+                passphrase: await credentialSnapshotPassphrase(),
+              });
+            }
             let activeTask: ActiveTask = {
               taskId: task.taskId,
               organizationId: task.organizationId,
@@ -1672,6 +1803,7 @@ const listen = async (
               containerId: null,
               containerName: null,
               attemptCount: task.attemptCount,
+              ...(providerAuth ? { providerAuth } : {}),
             };
             activeTasks.set(task.taskId, activeTask);
             const launchLeaseRefresh = setInterval(() => {

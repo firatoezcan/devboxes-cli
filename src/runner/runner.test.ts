@@ -15,12 +15,13 @@ import { createApiIntegrationHarness } from "@/test/api-integration";
 import { createDevboxesCommand } from "../cli";
 import { cliVersion } from "../devboxes";
 import { credentialStoreFileName } from "../protocol/frozen";
+import { opencodeProviderAuthFingerprint } from "../protocol/provider-auth";
+import { taskContainerName } from "../protocol/task-runtime";
 import type {
   ActiveOpencodeCredentialTask,
   OpencodeCredentialBrokerApi,
 } from "./credential-broker";
 import { readCredentialStore, writeCredentialStore } from "./credential-store";
-import { LocalRunnerOpencodeProviderAuthRuntime } from "./local-provider-auth";
 import {
   connectOpencodeProviderSubscription,
   removeOpencodeProviderCredentials,
@@ -164,6 +165,7 @@ describe("runner Opencode credentials", () => {
     "CODEX_HOME",
     "HOME",
     "DEVBOX_OPENCODE_DOCKER_SOCKET_PATH",
+    "DEVBOX_OPENCODE_HOME_ROOT",
     "DOCKER_HOST",
   ] as const;
   const originalEnv = new Map(redirectedEnvKeys.map((key) => [key, process.env[key]] as const));
@@ -1307,6 +1309,752 @@ describe("runner Opencode credentials", () => {
     expect(output).not.toContain("openai-key");
   });
 
+  it("omits a broken local credential without blocking a valid claim advertisement", async () => {
+    const dockerSocketPath = join(fixtureDir, "docker-listen.sock");
+    const dockerServer = createServer((_request, response) => {
+      response.setHeader("Content-Type", "application/json");
+      response.end("[]");
+    });
+    await new Promise<void>((resolve, reject) => {
+      dockerServer.once("error", reject);
+      dockerServer.listen(dockerSocketPath, () => {
+        dockerServer.off("error", reject);
+        resolve();
+      });
+    });
+
+    const configPath = join(fixtureDir, "listen-config.json");
+    const claim = Promise.withResolvers<unknown>();
+    const apiServer = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        const pathname = new URL(request.url).pathname;
+        if (pathname.endsWith("/heartbeat")) {
+          await writeFile(
+            authFile,
+            JSON.stringify({
+              openai: {
+                type: "oauth",
+                refresh: "replacement-refresh",
+                access: "replacement-access",
+                expires: 0,
+              },
+            }),
+          );
+          return Response.json({});
+        }
+        if (pathname.endsWith("/tasks")) return Response.json({ tasks: [] });
+        if (pathname.endsWith("/claim")) {
+          claim.resolve(await request.json());
+          return new Response(null, { status: 204 });
+        }
+        return Response.json({ error: "Unexpected request." }, { status: 404 });
+      },
+    });
+    await writeFile(
+      configPath,
+      `${JSON.stringify(
+        {
+          apiBaseUrl: `http://127.0.0.1:${apiServer.port}/api`,
+          authBaseUrl: `http://127.0.0.1:${apiServer.port}/api/auth`,
+          organizationId: "org_1",
+          apiKey: "runner-api-key",
+          opencodeProviderCredentials: [
+            { providerId: "openai", authFile, source: "opencode-auth-file" },
+            {
+              providerId: "anthropic",
+              authFile: join(fixtureDir, "missing-anthropic-auth.json"),
+              source: "opencode-auth-file",
+            },
+          ],
+        },
+        null,
+        2,
+      )}\n`,
+      { mode: 0o600 },
+    );
+
+    const listening = Bun.spawn(
+      [process.execPath, join(import.meta.dir, "../cli.ts"), "--config", configPath, "listen"],
+      {
+        cwd: join(import.meta.dir, "../.."),
+        env: { ...process.env, DEVBOX_OPENCODE_DOCKER_SOCKET_PATH: dockerSocketPath },
+        stdout: "ignore",
+        stderr: "pipe",
+      },
+    );
+    const stderrText = new Response(listening.stderr).text();
+    try {
+      const outcome = await Promise.race([
+        claim.promise.then((body) => ({ kind: "claim" as const, body })),
+        listening.exited.then((exitCode) => ({ kind: "exit" as const, exitCode })),
+        Bun.sleep(10_000).then(() => ({ kind: "timeout" as const })),
+      ]);
+      if (outcome.kind !== "claim") {
+        if (!listening.killed) listening.kill("SIGTERM");
+        const exitCode = await listening.exited;
+        const stderr = await stderrText;
+        throw new Error(
+          outcome.kind === "exit"
+            ? `devboxes listen exited ${outcome.exitCode} before claiming: ${stderr}`
+            : `devboxes listen did not claim within 10 seconds (exit ${exitCode}): ${stderr}`,
+        );
+      }
+      expect(outcome.body).toMatchObject({
+        localProviderCredentials: [
+          {
+            providerId: "openai",
+            authType: "oauth",
+            credentialFingerprint: expect.any(String),
+          },
+        ],
+        launchProtocols: ["devboxes-launch-v3"],
+      });
+    } finally {
+      if (!listening.killed) listening.kill("SIGTERM");
+      await listening.exited;
+      await apiServer.stop(true);
+      await new Promise<void>((resolve, reject) => {
+        dockerServer.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+    expect(await stderrText).toContain(
+      "Local provider credential anthropic is unavailable for this claim:",
+    );
+  });
+
+  it("polls with healthy or empty credentials when startup credential state is unusable", async () => {
+    const dockerSocketPath = join(fixtureDir, "docker-startup-credentials.sock");
+    const dockerServer = createServer((_request, response) => {
+      response.setHeader("Content-Type", "application/json");
+      response.end("[]");
+    });
+    await new Promise<void>((resolve, reject) => {
+      dockerServer.once("error", reject);
+      dockerServer.listen(dockerSocketPath, () => {
+        dockerServer.off("error", reject);
+        resolve();
+      });
+    });
+
+    let passphrase = "";
+    let claim = Promise.withResolvers<unknown>();
+    const apiServer = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        const pathname = new URL(request.url).pathname;
+        if (pathname.endsWith("/credential-store-passphrase")) {
+          return Response.json({ passphrase });
+        }
+        if (pathname.endsWith("/heartbeat")) return Response.json({});
+        if (pathname.endsWith("/tasks")) return Response.json({ tasks: [] });
+        if (pathname.endsWith("/claim")) {
+          claim.resolve(await request.json());
+          return new Response(null, { status: 204 });
+        }
+        return Response.json({ error: "Unexpected request." }, { status: 404 });
+      },
+    });
+
+    const scenarios: Array<{
+      name: string;
+      configuredProviderIds?: string[];
+      configuredAmbiguousOpencode?: boolean;
+      store?: { plaintext: string; encryptionPassphrase?: string };
+      expectedProviders: Array<{ providerId: string; authType: "api" }>;
+      expectedError?: string;
+    }> = [
+      {
+        name: "ambiguous-config-reference",
+        configuredProviderIds: ["openai"],
+        configuredAmbiguousOpencode: true,
+        expectedProviders: [{ providerId: "openai", authType: "api" }],
+        expectedError: "Local provider credential opencode is unavailable for runner claims:",
+      },
+      {
+        name: "ambiguous-store",
+        configuredProviderIds: ["openai"],
+        store: {
+          plaintext: JSON.stringify({
+            version: 1,
+            entries: { opencode: { auth: { type: "api", key: "ambiguous-key" } } },
+          }),
+        },
+        expectedProviders: [{ providerId: "openai", authType: "api" }],
+        expectedError: "Legacy OpenCode credentials are ambiguous",
+      },
+      {
+        name: "invalid-store-entry",
+        configuredProviderIds: ["openai"],
+        store: {
+          plaintext: JSON.stringify({
+            version: 2,
+            entries: { xai: { auth: { type: "api" } } },
+          }),
+        },
+        expectedProviders: [{ providerId: "openai", authType: "api" }],
+        expectedError: "decrypts but does not parse",
+      },
+      {
+        name: "unreadable-store",
+        store: {
+          plaintext: JSON.stringify({ version: 2, entries: {} }),
+          encryptionPassphrase: "different-store-passphrase",
+        },
+        expectedProviders: [],
+        expectedError: "could not be decrypted",
+      },
+      {
+        name: "newer-store",
+        store: {
+          plaintext: JSON.stringify({
+            version: 3,
+            entries: { openai: { auth: { type: "api", key: "newer-key" } } },
+          }),
+        },
+        expectedProviders: [],
+        expectedError: "written by a newer Devboxes version",
+      },
+      {
+        name: "healthy-store",
+        store: {
+          plaintext: JSON.stringify({
+            version: 2,
+            entries: { xai: { auth: { type: "api", key: "healthy-store-key" } } },
+          }),
+        },
+        expectedProviders: [{ providerId: "xai", authType: "api" }],
+      },
+    ];
+
+    try {
+      for (const scenario of scenarios) {
+        const scenarioDirectory = join(fixtureDir, scenario.name);
+        const configPath = join(scenarioDirectory, "config.json");
+        await mkdir(scenarioDirectory, { recursive: true });
+        passphrase = `${scenario.name}-passphrase`;
+        claim = Promise.withResolvers<unknown>();
+        const storePath = join(scenarioDirectory, credentialStoreFileName);
+        let originalStoreContents: string | undefined;
+        if (scenario.store) {
+          const encrypter = new Encrypter();
+          encrypter.setScryptWorkFactor(12);
+          encrypter.setPassphrase(scenario.store.encryptionPassphrase ?? passphrase);
+          const ciphertext = await encrypter.encrypt(scenario.store.plaintext);
+          originalStoreContents = `${armor.encode(ciphertext)}\n`;
+          await writeFile(storePath, originalStoreContents, { mode: 0o600 });
+        }
+        await writeFile(
+          configPath,
+          `${JSON.stringify({
+            apiBaseUrl: `http://127.0.0.1:${apiServer.port}/api`,
+            authBaseUrl: `http://127.0.0.1:${apiServer.port}/api/auth`,
+            organizationId: "org_1",
+            apiKey: "runner-api-key",
+            opencodeProviderCredentials: [
+              ...(scenario.configuredProviderIds ?? []).map((providerId) => ({
+                providerId,
+                authFile,
+                source: "opencode-auth-file",
+              })),
+              ...(scenario.configuredAmbiguousOpencode
+                ? [{ providerId: "opencode", authFile, source: "opencode-auth-file" }]
+                : []),
+            ],
+          })}\n`,
+          { mode: 0o600 },
+        );
+
+        const listening = Bun.spawn(
+          [process.execPath, join(import.meta.dir, "../cli.ts"), "--config", configPath, "listen"],
+          {
+            cwd: join(import.meta.dir, "../.."),
+            env: { ...process.env, DEVBOX_OPENCODE_DOCKER_SOCKET_PATH: dockerSocketPath },
+            stdout: "ignore",
+            stderr: "pipe",
+          },
+        );
+        const stderrText = new Response(listening.stderr).text();
+        try {
+          const outcome = await Promise.race([
+            claim.promise.then((body) => ({ kind: "claim" as const, body })),
+            listening.exited.then((exitCode) => ({ kind: "exit" as const, exitCode })),
+            Bun.sleep(10_000).then(() => ({ kind: "timeout" as const })),
+          ]);
+          if (outcome.kind !== "claim") {
+            if (!listening.killed) listening.kill("SIGTERM");
+            const exitCode = await listening.exited;
+            const stderr = await stderrText;
+            throw new Error(
+              outcome.kind === "exit"
+                ? `${scenario.name}: devboxes listen exited ${outcome.exitCode} before claiming: ${stderr}`
+                : `${scenario.name}: devboxes listen did not claim within 10 seconds (exit ${exitCode}): ${stderr}`,
+            );
+          }
+          expect(outcome.body).toMatchObject({
+            localProviderCredentials: scenario.expectedProviders.map((provider) => ({
+              ...provider,
+              credentialFingerprint: expect.any(String),
+            })),
+            launchProtocols: ["devboxes-launch-v3"],
+          });
+        } finally {
+          if (!listening.killed) listening.kill("SIGTERM");
+          await listening.exited;
+        }
+        const stderr = await stderrText;
+        if (scenario.expectedError) {
+          expect(stderr).toContain(scenario.expectedError);
+        } else {
+          expect(stderr).not.toContain("credential store is unavailable for runner claims");
+        }
+        if (originalStoreContents) {
+          expect(await readFile(storePath, "utf8")).toBe(originalStoreContents);
+        }
+      }
+    } finally {
+      await apiServer.stop(true);
+      await new Promise<void>((resolve, reject) => {
+        dockerServer.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
+
+  it("serves the exact local credential material advertised by the successful claim", async () => {
+    const dockerSocketPath = join(fixtureDir, "docker-claim-authority.sock");
+    const launched = Promise.withResolvers<{ providerAuthUrl: string }>();
+    const launchFailed = Promise.withResolvers<string>();
+    const dockerServer = createServer(async (request, response) => {
+      const url = new URL(request.url ?? "/", "http://docker.local");
+      response.setHeader("Content-Type", "application/json");
+      if (request.method === "GET" && url.pathname.endsWith("/containers/json")) {
+        response.end("[]");
+        return;
+      }
+      if (request.method === "GET" && url.pathname.endsWith("/json")) {
+        response.statusCode = 404;
+        response.end(JSON.stringify({ message: "No such container" }));
+        return;
+      }
+      if (request.method === "POST" && url.pathname.endsWith("/images/create")) {
+        response.end(`${JSON.stringify({ status: "Downloaded" })}\n`);
+        return;
+      }
+      if (request.method === "POST" && url.pathname.endsWith("/containers/create")) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { Env: string[] };
+        const providerAuthEnv = body.Env.find((entry) =>
+          entry.startsWith("DEVBOX_OPENCODE_PROVIDER_AUTH_URL="),
+        );
+        if (!providerAuthEnv) throw new Error("Docker create omitted the provider-auth URL.");
+        launched.resolve({
+          providerAuthUrl: providerAuthEnv.slice(providerAuthEnv.indexOf("=") + 1),
+        });
+        response.statusCode = 201;
+        response.end(JSON.stringify({ Id: "container-claim-authority" }));
+        return;
+      }
+      if (request.method === "POST" && url.pathname.endsWith("/start")) {
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
+      response.statusCode = 404;
+      response.end(
+        JSON.stringify({ message: `Unexpected Docker request ${request.method} ${url.pathname}` }),
+      );
+    });
+    await new Promise<void>((resolve, reject) => {
+      dockerServer.once("error", reject);
+      dockerServer.listen(dockerSocketPath, () => {
+        dockerServer.off("error", reject);
+        resolve();
+      });
+    });
+
+    const configPath = join(fixtureDir, "listen-claim-authority.json");
+    const taskId = "00000000-0000-7000-8000-000000000391";
+    const runId = "00000000-0000-7000-8000-000000000392";
+    let claimed = false;
+    let claimedCredentialFingerprint: string | undefined;
+    const apiServer = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        const pathname = new URL(request.url).pathname;
+        if (pathname.endsWith("/credential-store-passphrase")) {
+          return Response.json({ passphrase: "claim-authority-provider-snapshot-passphrase" });
+        }
+        if (pathname.endsWith("/heartbeat")) return Response.json({});
+        if (pathname.endsWith("/tasks")) return Response.json({ tasks: [] });
+        if (pathname.endsWith("/claim")) {
+          if (claimed) return new Response(null, { status: 204 });
+          claimed = true;
+          const body = (await request.json()) as {
+            localProviderCredentials: Array<{ credentialFingerprint: string }>;
+          };
+          const credentialFingerprint = body.localProviderCredentials[0]?.credentialFingerprint;
+          if (!credentialFingerprint) throw new Error("Claim omitted the credential fingerprint.");
+          claimedCredentialFingerprint = credentialFingerprint;
+          await writeFile(
+            authFile,
+            JSON.stringify({
+              openai: {
+                type: "oauth",
+                refresh: "rotated-after-claim-refresh",
+                access: "rotated-after-claim-access",
+                expires: 0,
+              },
+            }),
+          );
+          return Response.json({
+            taskId,
+            organizationId: "org_1",
+            runId,
+            imageRef: "ghcr.io/firatoezcan/devboxes:test",
+            modelProviderId: "openai",
+            providerCredentialFingerprint: credentialFingerprint,
+            daemonArtifact: {
+              version: "0.8.1",
+              bootstrapProtocol: "devboxes-daemon-bootstrap-v1",
+              platform: "linux/amd64",
+              sha256: "a".repeat(64),
+            },
+            platform: "linux/amd64",
+            opencodeSessionId: null,
+            attemptCount: 0,
+            leaseExpiresAt: new Date(Date.now() + 120_000).toISOString(),
+            perTaskToken: "claim-authority-task-token",
+            launchSpec: {
+              launchProtocol: "devboxes-launch-v3",
+              entrypoint: "/entrypoint.sh",
+              workingDir: "/workspace",
+              env: {
+                HOME: "/home/workspace",
+                XDG_CONFIG_HOME: "/home/workspace/.config",
+                XDG_DATA_HOME: "/home/workspace/.local/share",
+                OPENCODE_CONFIG: "/home/workspace/.config/opencode/opencode.json",
+                OPENCODE_EXPERIMENTAL_HTTPAPI: "true",
+                OPENCODE_EXPERIMENTAL_WORKSPACES: "true",
+                DEVBOX_OPENCODE_TASK_ID: taskId,
+                DEVBOX_RUN_ID: runId,
+                DEVBOX_BACKEND_TOKEN_FILE: "/run/devboxes/secrets/backend-token",
+                DEVBOX_DAEMON_VERSION: "0.8.1",
+                DEVBOX_DAEMON_PLATFORM: "linux/amd64",
+                DEVBOX_DAEMON_SHA256: "a".repeat(64),
+                DEVBOX_DAEMON_BOOTSTRAP_PROTOCOL: "devboxes-daemon-bootstrap-v1",
+              },
+              memoryBackedPaths: ["/home/workspace/.local/share/opencode"],
+              labels: {},
+              providerAuthSource: "local-broker",
+            },
+          });
+        }
+        if (pathname.endsWith("/report")) {
+          const body = (await request.json()) as { status: string; errorMessage?: string };
+          if (body.status === "failed") {
+            launchFailed.resolve(body.errorMessage ?? "Runner omitted the launch failure.");
+          }
+          return Response.json({});
+        }
+        if (pathname.endsWith("/lease")) {
+          return Response.json({ status: "running", terminal: false, stopRequested: false });
+        }
+        return Response.json({ error: "Unexpected request." }, { status: 404 });
+      },
+    });
+    await writeFile(
+      authFile,
+      JSON.stringify({ openai: { type: "api", key: "claim-time-api-key" } }),
+    );
+    await writeFile(
+      configPath,
+      `${JSON.stringify({
+        apiBaseUrl: `http://127.0.0.1:${apiServer.port}/api`,
+        authBaseUrl: `http://127.0.0.1:${apiServer.port}/api/auth`,
+        organizationId: "org_1",
+        apiKey: "runner-api-key",
+        opencodeProviderCredentials: [
+          { providerId: "openai", authFile, source: "opencode-auth-file" },
+        ],
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    const listening = Bun.spawn(
+      [process.execPath, join(import.meta.dir, "../cli.ts"), "--config", configPath, "listen"],
+      {
+        cwd: join(import.meta.dir, "../.."),
+        env: {
+          ...process.env,
+          DEVBOX_OPENCODE_DOCKER_SOCKET_PATH: dockerSocketPath,
+          DEVBOX_OPENCODE_HOME_ROOT: join(fixtureDir, "claim-authority-runtime"),
+        },
+        stdout: "ignore",
+        stderr: "pipe",
+      },
+    );
+    try {
+      const outcome = await Promise.race([
+        launched.promise.then((value) => ({ kind: "launched" as const, value })),
+        launchFailed.promise.then((message) => ({ kind: "failure" as const, message })),
+        listening.exited.then((exitCode) => ({ kind: "exit" as const, exitCode })),
+        Bun.sleep(10_000).then(() => ({ kind: "timeout" as const })),
+      ]);
+      if (outcome.kind !== "launched") {
+        if (!listening.killed) listening.kill("SIGTERM");
+        const exitCode = await listening.exited;
+        const stderr = await new Response(listening.stderr).text();
+        throw new Error(
+          outcome.kind === "failure"
+            ? `devboxes listen reported launch failure: ${outcome.message}`
+            : outcome.kind === "exit"
+              ? `devboxes listen exited ${outcome.exitCode} before launch: ${stderr}`
+              : `devboxes listen did not launch within 10 seconds (exit ${exitCode}): ${stderr}`,
+        );
+      }
+      const providerAuthUrl = new URL(outcome.value.providerAuthUrl);
+      providerAuthUrl.hostname = "127.0.0.1";
+      providerAuthUrl.pathname = `/opencode-tasks/${taskId}/provider-auth`;
+      let providerAuth: Response | undefined;
+      let providerAuthError: unknown;
+      for (let attempt = 0; attempt < 20 && !providerAuth; attempt++) {
+        try {
+          providerAuth = await fetch(providerAuthUrl, {
+            headers: { Authorization: "Bearer claim-authority-task-token" },
+          });
+        } catch (error) {
+          providerAuthError = error;
+          await Bun.sleep(10);
+        }
+      }
+      if (!providerAuth) throw providerAuthError;
+      expect(providerAuth.status).toBe(200);
+      expect(await providerAuth.json()).toEqual({
+        openai: { type: "api", key: "claim-time-api-key" },
+      });
+      expect(claimedCredentialFingerprint).toBe(
+        opencodeProviderAuthFingerprint("openai", {
+          type: "api",
+          key: "claim-time-api-key",
+        }),
+      );
+    } finally {
+      if (!listening.killed) listening.kill("SIGTERM");
+      await listening.exited;
+      await apiServer.stop(true);
+      await new Promise<void>((resolve, reject) => {
+        dockerServer.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
+
+  it("re-adopts the encrypted claim snapshot after source credential rotation", async () => {
+    const dockerSocketPath = join(fixtureDir, "docker-restart-authority.sock");
+    const taskId = "00000000-0000-7000-8000-000000000393";
+    const organizationId = "00000000-0000-7000-8000-000000000394";
+    const runId = "00000000-0000-7000-8000-000000000395";
+    const containerName = taskContainerName(taskId);
+    const passphrase = "restart-provider-snapshot-passphrase";
+    const claimAuth = { openai: { type: "api" as const, key: "claim-snapshot-api-key" } };
+    const claimFingerprint = opencodeProviderAuthFingerprint("openai", claimAuth.openai);
+    const homeRoot = join(fixtureDir, "restart-authority-runtime");
+    process.env.DEVBOX_OPENCODE_DOCKER_SOCKET_PATH = dockerSocketPath;
+    process.env.DEVBOX_OPENCODE_HOME_ROOT = homeRoot;
+    const { DockerOpencodeTaskRuntime } = await import("./docker-task-runtime");
+    await new DockerOpencodeTaskRuntime({
+      daemonApiBaseUrl: "http://host.docker.internal:33001/api",
+    }).persistProviderAuthSnapshot({
+      organizationId,
+      taskId,
+      providerId: "openai",
+      providerAuth: claimAuth,
+      passphrase,
+    });
+    await writeFile(
+      authFile,
+      JSON.stringify({
+        openai: {
+          type: "oauth",
+          refresh: "rotated-after-claim-refresh",
+          access: "rotated-after-claim-access",
+          expires: 0,
+        },
+      }),
+    );
+
+    const dockerServer = createServer((request, response) => {
+      const url = new URL(request.url ?? "/", "http://docker.local");
+      response.setHeader("Content-Type", "application/json");
+      if (request.method === "GET" && url.pathname.endsWith("/containers/json")) {
+        response.end(
+          JSON.stringify([
+            {
+              Id: "container-restart-authority",
+              Names: [`/${containerName}`],
+              Labels: {
+                "devboxes.firops.io/workload": "opencode-dispatch-task",
+                "devboxes.firops.io/organization-id": organizationId,
+                "devboxes.firops.io/task-id": taskId,
+              },
+            },
+          ]),
+        );
+        return;
+      }
+      if (
+        request.method === "GET" &&
+        url.pathname.endsWith("/containers/container-restart-authority/json")
+      ) {
+        response.end(
+          JSON.stringify({
+            Id: "container-restart-authority",
+            State: {
+              Status: "running",
+              Running: true,
+              OOMKilled: false,
+              ExitCode: 0,
+              Error: "",
+              FinishedAt: "0001-01-01T00:00:00Z",
+            },
+          }),
+        );
+        return;
+      }
+      response.statusCode = 404;
+      response.end(JSON.stringify({ message: `Unexpected Docker request ${url.pathname}` }));
+    });
+    await new Promise<void>((resolve, reject) => {
+      dockerServer.once("error", reject);
+      dockerServer.listen(dockerSocketPath, () => {
+        dockerServer.off("error", reject);
+        resolve();
+      });
+    });
+
+    const configPath = join(fixtureDir, "listen-restart-authority.json");
+    const apiServer = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        const pathname = new URL(request.url).pathname;
+        if (pathname.endsWith("/credential-store-passphrase")) {
+          return Response.json({ passphrase });
+        }
+        if (pathname.endsWith("/heartbeat")) return Response.json({});
+        if (pathname.endsWith("/tasks")) {
+          return Response.json({
+            tasks: [
+              {
+                taskId,
+                organizationId,
+                runId,
+                status: "running",
+                terminal: false,
+                runningOnThisMachine: true,
+                stopRequested: false,
+                containerId: "container-restart-authority",
+                containerName,
+                attemptCount: 0,
+                modelProviderId: "openai",
+                providerAuthSource: "local-broker",
+                providerCredentialFingerprint: claimFingerprint,
+                perTaskToken: "restart-authority-task-token",
+              },
+            ],
+          });
+        }
+        if (pathname.endsWith("/lease")) {
+          return Response.json({ status: "running", terminal: false, stopRequested: false });
+        }
+        if (pathname.endsWith("/claim")) return new Response(null, { status: 204 });
+        if (pathname.endsWith("/report")) return Response.json({});
+        return Response.json({ error: "Unexpected request." }, { status: 404 });
+      },
+    });
+    await writeFile(
+      configPath,
+      `${JSON.stringify({
+        apiBaseUrl: `http://127.0.0.1:${apiServer.port}/api`,
+        authBaseUrl: `http://127.0.0.1:${apiServer.port}/api/auth`,
+        organizationId,
+        apiKey: "runner-api-key",
+        opencodeProviderCredentials: [
+          { providerId: "openai", authFile, source: "opencode-auth-file" },
+        ],
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    const listening = Bun.spawn(
+      [process.execPath, join(import.meta.dir, "../cli.ts"), "--config", configPath, "listen"],
+      {
+        cwd: join(import.meta.dir, "../.."),
+        env: {
+          ...process.env,
+          DEVBOX_OPENCODE_DOCKER_SOCKET_PATH: dockerSocketPath,
+          DEVBOX_OPENCODE_HOME_ROOT: homeRoot,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const brokerPort = Promise.withResolvers<number>();
+    const reAdopted = Promise.withResolvers<void>();
+    let stdoutText = "";
+    const stdoutPump = (async () => {
+      const reader = listening.stdout.getReader();
+      const decoder = new TextDecoder();
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        stdoutText += decoder.decode(chunk.value, { stream: true });
+        const portMatch = stdoutText.match(
+          /Local Opencode credential broker listening on port (\d+)\./,
+        );
+        if (portMatch?.[1]) brokerPort.resolve(Number(portMatch[1]));
+        if (stdoutText.includes(`Re-adopted running task ${taskId}.`)) reAdopted.resolve();
+      }
+      stdoutText += decoder.decode();
+    })().catch((error) => {
+      brokerPort.reject(error);
+      reAdopted.reject(error);
+    });
+    try {
+      const outcome = await Promise.race([
+        Promise.all([brokerPort.promise, reAdopted.promise]).then(([port]) => ({
+          kind: "ready" as const,
+          port,
+        })),
+        listening.exited.then((exitCode) => ({ kind: "exit" as const, exitCode })),
+        Bun.sleep(10_000).then(() => ({ kind: "timeout" as const })),
+      ]);
+      if (outcome.kind !== "ready") {
+        if (!listening.killed) listening.kill("SIGTERM");
+        const stderr = await new Response(listening.stderr).text();
+        throw new Error(
+          outcome.kind === "exit"
+            ? `devboxes listen exited ${outcome.exitCode} during re-adoption: ${stderr}`
+            : `devboxes listen did not re-adopt within 10 seconds: ${stdoutText}\n${stderr}`,
+        );
+      }
+
+      const response = await fetch(
+        `http://127.0.0.1:${outcome.port}/opencode-tasks/${taskId}/provider-auth`,
+        { headers: { Authorization: "Bearer restart-authority-task-token" } },
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual(claimAuth);
+    } finally {
+      if (!listening.killed) listening.kill("SIGTERM");
+      await listening.exited;
+      await stdoutPump;
+      await apiServer.stop(true);
+      await new Promise<void>((resolve, reject) => {
+        dockerServer.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  }, 20_000);
+
   it("serves provider auth only for the active task with the matching bearer token", async () => {
     const activeCredentials = new Map<string, ActiveOpencodeCredentialTask>([
       [
@@ -1316,16 +2064,23 @@ describe("runner Opencode credentials", () => {
           organizationId: "org_1",
           modelProviderId: "openai",
           perTaskToken: "task-token",
+          providerAuth: { openai: { type: "api", key: "openai-key" } },
         },
       ],
     ]);
-    const broker = startCredentialBroker(
-      new LocalRunnerOpencodeProviderAuthRuntime([
-        { providerId: "openai", authFile, source: "opencode-auth-file" },
-      ]),
-      activeCredentials,
-    );
+    const broker = startCredentialBroker(activeCredentials);
     try {
+      await writeFile(
+        authFile,
+        JSON.stringify({
+          openai: {
+            type: "oauth",
+            refresh: "rotated-refresh",
+            access: "rotated-access",
+            expires: 0,
+          },
+        }),
+      );
       expect(broker.providerAuthUrl).toContain("host.docker.internal");
       // Broker ports come from the reserved Devboxes dev range, not the full
       // OS-ephemeral range.
@@ -1390,13 +2145,11 @@ describe("runner Opencode credentials", () => {
           organizationId: "org_1",
           modelProviderId: "openai",
           perTaskToken: "task-token",
+          providerAuth: { openai: storedAuth },
         },
       ],
     ]);
-    const broker = startCredentialBroker(
-      new LocalRunnerOpencodeProviderAuthRuntime([], { configPath, passphrase }),
-      activeCredentials,
-    );
+    const broker = startCredentialBroker(activeCredentials);
     try {
       const brokerUrl = new URL(broker.providerAuthUrl);
       brokerUrl.hostname = "127.0.0.1";

@@ -633,29 +633,24 @@ export const readDevboxesSession = async (context: DevboxesContext, agentSession
     throw new Error("Session lookup returned a task for a different Run.");
   }
 
-  // The run row is the product truth for outcome and PR link. A missing run
-  // (404) degrades to session-status truth instead of failing status/result —
-  // defensive only: run deletion cascades to the dispatch task, so in steady
-  // state the session lookup above 404s first and this branch covers just the
-  // in-between window (and a run hidden by soft deletion).
+  // The Run is the product truth for status, outcome, PR link, and usage. A
+  // session without its canonical Run is an invalid read, not another public
+  // status shape.
   const runResponse = await backend.api
     .org({ organizationId })
     .runs({ runId: currentRun.id })
     .get();
-  if (runResponse.error && runResponse.error.status !== 404) {
-    throw apiRequestError("Run lookup", runResponse.error);
-  }
-  const run = runResponse.data ?? null;
+  if (runResponse.error) throw apiRequestError("Run lookup", runResponse.error);
+  const run = runResponse.data;
+  if (!run) throw new Error("Run lookup returned no Run.");
 
-  return { session, currentRun, currentTask, run };
+  return { session, currentTask, run };
 };
 
 const terminalRunStatuses = new Set(["succeeded", "failed", "cancelled"]);
 
-export const sessionReachedTerminalState = (input: {
-  currentRun: { status: string };
-  run: { status: string } | null;
-}) => terminalRunStatuses.has(input.run?.status ?? input.currentRun.status);
+export const sessionReachedTerminalState = (input: { run: { status: string } }) =>
+  terminalRunStatuses.has(input.run.status);
 
 // A stalled read must not hang `result` forever; the read leg gets the same
 // ceiling as the login flow's browser-approval poll.
@@ -707,10 +702,7 @@ export const readDevboxesSessionResult = async (
   context: DevboxesContext,
   agentSessionId: string,
 ) => {
-  const { session, currentRun, currentTask, run } = await readDevboxesSession(
-    context,
-    agentSessionId,
-  );
+  const { session, currentTask, run } = await readDevboxesSession(context, agentSessionId);
   let finalOutput: string | null = null;
   let finalOutputError: string | null = null;
   try {
@@ -726,10 +718,9 @@ export const readDevboxesSessionResult = async (
   }
   return {
     session,
-    currentRun,
     currentTask,
     run,
-    terminal: sessionReachedTerminalState({ currentRun, run }),
+    terminal: sessionReachedTerminalState({ run }),
     finalOutput,
     finalOutputError,
   };
@@ -738,19 +729,19 @@ export const readDevboxesSessionResult = async (
 const sessionStatusJson = (input: Awaited<ReturnType<typeof readDevboxesSession>>) => ({
   agentSessionId: input.session.id,
   sessionStatus: input.currentTask.status,
-  runId: input.currentRun.id,
-  runStatus: input.run?.status ?? input.currentRun.status,
-  currentStep: input.run?.currentStep ?? null,
+  runId: input.run.id,
+  runStatus: input.run.status,
+  currentStep: input.run.currentStep,
   terminal: sessionReachedTerminalState(input),
   repository: input.currentTask.repositoryFullName,
-  branch: input.run?.branch ?? input.currentTask.baseBranch,
+  branch: input.run.branch ?? input.currentTask.baseBranch,
   model: `${input.currentTask.modelProviderId}/${input.currentTask.modelId}`,
-  pullRequestUrl: input.run?.pullRequestUrl ?? null,
-  errorMessage: input.run?.errorMessage ?? input.currentTask.errorMessage ?? null,
-  queuedAt: input.run?.queuedAt ?? input.currentRun.queuedAt,
-  startedAt: input.run?.startedAt ?? input.currentRun.startedAt,
-  completedAt: input.run?.completedAt ?? input.currentRun.completedAt,
-  costUsd: input.run?.costUsd ?? null,
+  pullRequestUrl: input.run.pullRequestUrl,
+  errorMessage: input.run.errorMessage ?? input.currentTask.errorMessage ?? null,
+  queuedAt: input.run.queuedAt,
+  startedAt: input.run.startedAt,
+  completedAt: input.run.completedAt,
+  usage: input.run.usage,
 });
 
 const printSessionStatus = (input: Awaited<ReturnType<typeof readDevboxesSession>>) => {
@@ -758,7 +749,7 @@ const printSessionStatus = (input: Awaited<ReturnType<typeof readDevboxesSession
   note(
     [
       `Session: ${status.agentSessionId} (${status.sessionStatus})`,
-      `Run: ${status.runId} (${status.runStatus ?? "unknown"})`,
+      `Run: ${status.runId} (${status.runStatus})`,
       ...(status.currentStep ? [`Step: ${status.currentStep}`] : []),
       `Repository: ${status.repository} → ${status.branch}`,
       `Model: ${status.model}`,
@@ -884,7 +875,7 @@ export const addAccountCommands = (program: Command) => {
           log.warn(`Final output unavailable: ${result.finalOutputError}`);
         if (!result.terminal) {
           log.warn(
-            `The session is still ${status.runStatus ?? status.sessionStatus}; poll \`${cliCommandName} status ${agentSessionId}\` until it finishes.`,
+            `The Run is still ${status.runStatus}; poll \`${cliCommandName} status ${agentSessionId}\` until it finishes.`,
           );
         }
       }

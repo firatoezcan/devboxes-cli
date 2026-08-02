@@ -62,12 +62,13 @@ export const createDevboxesMcpServer = (context: DevboxesContext) => {
       return jsonResult({
         agentSessionId: current.session.id,
         sessionStatus: current.currentTask.status,
-        runId: current.currentRun.id,
-        runStatus: current.run?.status ?? current.currentRun.status,
-        currentStep: current.run?.currentStep ?? null,
+        runId: current.run.id,
+        runStatus: current.run.status,
+        currentStep: current.run.currentStep,
         terminal: sessionReachedTerminalState(current),
-        pullRequestUrl: current.run?.pullRequestUrl ?? null,
-        errorMessage: current.run?.errorMessage ?? current.currentTask.errorMessage ?? null,
+        pullRequestUrl: current.run.pullRequestUrl,
+        errorMessage: current.run.errorMessage ?? current.currentTask.errorMessage ?? null,
+        usage: current.run.usage,
       });
     },
   );
@@ -86,11 +87,11 @@ export const createDevboxesMcpServer = (context: DevboxesContext) => {
       return jsonResult({
         agentSessionId: result.session.id,
         sessionStatus: result.currentTask.status,
-        runStatus: result.run?.status ?? result.currentRun.status,
+        runStatus: result.run.status,
         terminal: result.terminal,
-        pullRequestUrl: result.run?.pullRequestUrl ?? null,
-        errorMessage: result.run?.errorMessage ?? result.currentTask.errorMessage ?? null,
-        costUsd: result.run?.costUsd ?? null,
+        pullRequestUrl: result.run.pullRequestUrl,
+        errorMessage: result.run.errorMessage ?? result.currentTask.errorMessage ?? null,
+        usage: result.run.usage,
         finalOutput: result.finalOutput,
         finalOutputError: result.finalOutputError,
       });

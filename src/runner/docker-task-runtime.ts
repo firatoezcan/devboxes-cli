@@ -1,11 +1,16 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
+import { armor, Decrypter, Encrypter } from "age-encryption";
 import Docker from "dockerode";
 
 import { reconciliationLabels } from "../protocol/frozen";
+import {
+  validateOpencodeProviderAuth,
+  type OpencodeProviderAuthJson,
+} from "../protocol/provider-auth";
 import {
   containerBackendTokenFile,
   containerOpencodeConfigJsonFile,
@@ -19,6 +24,7 @@ import {
   type OpencodeTaskLaunchInput,
   type OpencodeTaskStopInput,
 } from "../protocol/task-runtime";
+import { writeSecretFile } from "../secret-file";
 import { runnerRuntimeEnv } from "./runtime-env";
 
 type TaskSecretFiles = {
@@ -47,14 +53,22 @@ const taskSecretRoot = () => {
   return defaultTaskSecretRoot;
 };
 
+const taskSecretDirectory = (organizationId: string, taskId: string) => {
+  const secretRoot = taskSecretRoot();
+  const secretDir = resolve(secretRoot, organizationId, taskId);
+  if (!secretDir.startsWith(`${secretRoot}${sep}`)) {
+    throw new Error("Opencode task secret path escaped the task secret root.");
+  }
+  return secretDir;
+};
+
 const prepareTaskSecretFiles = async (input: {
   organizationId: string;
   tokenScopeId: string;
   backendToken: string;
   opencodeConfigJsonBase64?: string;
 }): Promise<TaskSecretFiles> => {
-  const secretRoot = taskSecretRoot();
-  const secretDir = resolve(secretRoot, input.organizationId, input.tokenScopeId);
+  const secretDir = taskSecretDirectory(input.organizationId, input.tokenScopeId);
   // Owner-only directories, matching writeSecretFile: the default root lives
   // under the world-writable tmpdir, and 0755 intermediate dirs would let any
   // local user enumerate live organization and task ids.
@@ -86,11 +100,7 @@ const removeOpencodeTaskDockerSecrets = async (input: {
   organizationId: string;
   taskId: string;
 }) => {
-  const secretRoot = taskSecretRoot();
-  const taskSecretDir = resolve(secretRoot, input.organizationId, input.taskId);
-  if (!taskSecretDir.startsWith(`${secretRoot}${sep}`)) {
-    throw new Error("Opencode task secret path escaped the task secret root.");
-  }
+  const taskSecretDir = taskSecretDirectory(input.organizationId, input.taskId);
   await rm(taskSecretDir, {
     recursive: true,
     force: true,
@@ -119,6 +129,67 @@ const removeStateImage = async (docker: Docker, stateImage: string) => {
 
 export class DockerOpencodeTaskRuntime {
   constructor(private readonly options: { daemonApiBaseUrl: string }) {}
+
+  async persistProviderAuthSnapshot(input: {
+    organizationId: string;
+    taskId: string;
+    providerId: string;
+    providerAuth: OpencodeProviderAuthJson;
+    passphrase: string;
+  }) {
+    const auth = input.providerAuth[input.providerId];
+    if (!auth) {
+      throw new Error(`Claimed provider auth for ${input.providerId} is unavailable.`);
+    }
+    const validated = validateOpencodeProviderAuth(input.providerId, auth);
+    const encrypter = new Encrypter();
+    encrypter.setScryptWorkFactor(12);
+    encrypter.setPassphrase(input.passphrase);
+    const ciphertext = await encrypter.encrypt(
+      JSON.stringify({ providerId: input.providerId, auth: validated }),
+    );
+    await writeSecretFile({
+      path: join(taskSecretDirectory(input.organizationId, input.taskId), "provider-auth.age"),
+      contents: `${armor.encode(ciphertext)}\n`,
+      tmpPrefix: ".provider-auth.",
+    });
+  }
+
+  async readProviderAuthSnapshot(input: {
+    organizationId: string;
+    taskId: string;
+    providerId: string;
+    passphrase: string;
+  }): Promise<OpencodeProviderAuthJson> {
+    try {
+      const armored = await readFile(
+        join(taskSecretDirectory(input.organizationId, input.taskId), "provider-auth.age"),
+        "utf8",
+      );
+      const decrypter = new Decrypter();
+      decrypter.addPassphrase(input.passphrase);
+      const plaintext = await decrypter.decrypt(armor.decode(armored), "text");
+      const snapshot: unknown = JSON.parse(plaintext);
+      if (
+        !snapshot ||
+        typeof snapshot !== "object" ||
+        Array.isArray(snapshot) ||
+        !("providerId" in snapshot) ||
+        snapshot.providerId !== input.providerId ||
+        !("auth" in snapshot)
+      ) {
+        throw new Error("Provider auth snapshot identity does not match the task claim.");
+      }
+      return {
+        [input.providerId]: validateOpencodeProviderAuth(input.providerId, snapshot.auth),
+      };
+    } catch (error) {
+      throw new Error(
+        `Claim-captured provider auth for ${input.providerId} is unavailable after runner restart.`,
+        { cause: error },
+      );
+    }
+  }
 
   // Surfaces every task container and per-task secret directory left on this host so
   // the runner can tear down the ones whose tasks already finished elsewhere.

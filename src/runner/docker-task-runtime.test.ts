@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,7 +18,7 @@ const daemonApiBaseUrl = "http://host.docker.internal:3001/api";
 // A server-authored launch spec as the claim response serves it; this runtime
 // executes it and overlays only the machine-local env keys.
 const launchSpec = {
-  launchProtocol: "devboxes-launch-v2" as const,
+  launchProtocol: "devboxes-launch-v3" as const,
   workingDir: "/workspace",
   entrypoint: "/entrypoint.sh",
   env: {
@@ -159,9 +159,17 @@ describe("opencode Docker task runtime against the engine API", () => {
       return { status: 500, body: { message: `unexpected ${request.pathname}` } };
     });
     const { DockerOpencodeTaskRuntime } = await import("./docker-task-runtime");
+    const runtime = new DockerOpencodeTaskRuntime({ daemonApiBaseUrl });
+    await runtime.persistProviderAuthSnapshot({
+      organizationId: "org_1",
+      taskId: "task_1",
+      providerId: "openai",
+      providerAuth: { openai: { type: "api", key: "claim-captured-openai-key" } },
+      passphrase: "machine-provider-snapshot-passphrase",
+    });
 
     try {
-      const container = await new DockerOpencodeTaskRuntime({ daemonApiBaseUrl }).launchTask({
+      const container = await runtime.launchTask({
         organizationId: "org_1",
         taskId: "task_1",
         runId: "run_1",
@@ -246,6 +254,24 @@ describe("opencode Docker task runtime against the engine API", () => {
       for (const secret of ["runner-api-key", opencodeConfigJsonBase64, "deepseek-key"]) {
         expect(serializedEnv).not.toContain(secret);
       }
+      const providerSnapshotPath = join(
+        homeRoot,
+        "secrets",
+        "org_1",
+        "task_1",
+        "provider-auth.age",
+      );
+      const encryptedProviderSnapshot = await readFile(providerSnapshotPath, "utf8");
+      expect(encryptedProviderSnapshot).not.toContain("claim-captured-openai-key");
+      expect(
+        await new DockerOpencodeTaskRuntime({ daemonApiBaseUrl }).readProviderAuthSnapshot({
+          organizationId: "org_1",
+          taskId: "task_1",
+          providerId: "openai",
+          passphrase: "machine-provider-snapshot-passphrase",
+        }),
+      ).toEqual({ openai: { type: "api", key: "claim-captured-openai-key" } });
+      expect((await stat(providerSnapshotPath)).mode & 0o777).toBe(0o600);
       expect(engine.requests.at(-1)?.pathname).toBe("/containers/container_1/start");
     } finally {
       await engine.close();
@@ -371,11 +397,12 @@ describe("opencode Docker task runtime against the engine API", () => {
       });
       // No image pull: the relaunch runs from the committed state snapshot.
       const create = engine.requests[3];
-      expect(create?.body).toMatchObject({
+      assert(create);
+      expect(create.body).toMatchObject({
         Image: "firops/opencode-task-state:5f5d08238327",
         Entrypoint: ["/entrypoint.sh"],
       });
-      expect((create?.body as { Env: string[] }).Env).toEqual(
+      expect((create.body as { Env: string[] }).Env).toEqual(
         expect.arrayContaining([
           "DEVBOX_RUN_ID=run_1",
           "DEVBOX_OPENCODE_PROVIDER_AUTH_URL=http://host.docker.internal:43111",

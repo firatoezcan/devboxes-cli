@@ -25,9 +25,9 @@ const userAgent = "devboxes-dashboard";
 // when the vendor response carries no explicit expiry.
 const attemptMaxAgeMs = 15 * 60 * 1000;
 
-// Vendor calls sit on interactive paths (dialog polls, the task-container boot
-// fetch via refresh-on-serve); a hung connection must become a thrown —
-// transient — error instead of a stuck handler.
+// Vendor calls sit on interactive connection and credential-maintenance paths;
+// a hung connection must become a thrown — transient — error instead of a
+// stuck handler.
 const vendorFetchTimeoutMs = 10_000;
 
 // Zero and negatives mean "no usable interval" (opencode's parseInt||5 does
@@ -659,10 +659,9 @@ export const pollOpencodeOauthDeviceFlow = async (
   );
 };
 
-// Refresh is served-credential maintenance: called by the provider-auth route
-// when a stored access token nears expiry. A thrown error is transient
-// (network); a returned error is the vendor's definitive rejection and means
-// the credential needs a reconnect.
+// Refresh prepares an OAuth credential source for a later claim. A thrown
+// error is transient (network); a returned error is the vendor's definitive
+// rejection and means the credential needs a reconnect.
 export const refreshOpencodeOauthAccess = async (
   descriptor: OpencodeConnectorDescriptor,
   input: { auth: OpencodeOauthAuth },

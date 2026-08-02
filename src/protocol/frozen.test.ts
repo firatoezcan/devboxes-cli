@@ -49,7 +49,7 @@ describe("frozen runner contracts", () => {
     ]);
   });
 
-  it("pins the container paths baked into published runner images", () => {
+  it("pins the container paths baked into published Workspace Images", () => {
     expect(containerHome).toBe("/home/workspace");
     expect(containerSecretsDir).toBe("/run/devboxes/secrets");
     expect(containerBackendTokenFile).toBe("/run/devboxes/secrets/backend-token");

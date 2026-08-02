@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import Type, { type Static } from "typebox";
 import Value from "typebox/value";
 
@@ -32,10 +34,10 @@ export type OpencodeProviderAuthJson = Record<
 export type OpencodeProviderAuth = OpencodeApiAuth | OpencodeOauthAuth;
 
 // The provider-auth endpoint has two complete server implementations — the
-// dashboard's internal route (Postgres-backed org credentials) and the runner
-// machine's local credential broker (operator auth files). Both serve this
-// route shape with a per-task bearer token, and the in-container daemon talks
-// to whichever base URL its task was launched with.
+// dashboard's internal route (claim-captured organization credentials) and the
+// runner machine's local credential broker (claim-captured local credentials).
+// Both serve this route shape with a per-task bearer token, and the in-container
+// daemon talks to whichever base URL its task was launched with.
 export const opencodeProviderAuthPath = "/opencode-tasks/:taskId/provider-auth";
 
 export const OpencodeProviderAuthResponseSchema = Type.Record(
@@ -146,4 +148,33 @@ export const validateOpencodeProviderAuth = (
   throw new Error(
     `Opencode credentials for provider ${providerId} must be API-key or OAuth entries.`,
   );
+};
+
+export const opencodeProviderAuthFingerprint = (providerId: string, auth: OpencodeProviderAuth) => {
+  const canonicalAuth =
+    auth.type === "api"
+      ? {
+          type: auth.type,
+          key: auth.key,
+          ...(auth.metadata
+            ? {
+                metadata: Object.fromEntries(
+                  Object.entries(auth.metadata).sort(([left], [right]) =>
+                    left.localeCompare(right),
+                  ),
+                ),
+              }
+            : {}),
+        }
+      : {
+          type: auth.type,
+          refresh: auth.refresh,
+          access: auth.access,
+          expires: auth.expires,
+          ...(auth.accountId !== undefined ? { accountId: auth.accountId } : {}),
+          ...(auth.enterpriseUrl !== undefined ? { enterpriseUrl: auth.enterpriseUrl } : {}),
+        };
+  return createHash("sha256")
+    .update(`${normalizeOpencodeProviderId(providerId)}\0${JSON.stringify(canonicalAuth)}`)
+    .digest("hex");
 };

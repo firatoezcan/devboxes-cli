@@ -13,7 +13,6 @@ await mock.module("../provider-connect/flows", () => ({
 
 const { LocalRunnerOpencodeProviderAuthRuntime } = await import("./local-provider-auth");
 const { readCredentialStore, writeCredentialStore } = await import("./credential-store");
-const { createOpencodeCredentialBroker } = await import("./credential-broker");
 type OpencodeConnectorDescriptor =
   import("../provider-connect/descriptor-schema").OpencodeConnectorDescriptor;
 
@@ -329,64 +328,6 @@ describe("Opencode provider auth runtime", () => {
     expect(served.openai).toMatchObject({ refresh: "rotated-old-refresh" });
     const persisted = await readCredentialStore({ configPath, passphrase });
     expect(persisted.entries.openai?.auth).toEqual(reconnectedAuth);
-  });
-
-  it("maps transient vendor failures to 502 and definitive rejections to 404 at the broker", async () => {
-    const configPath = join(fixtureDir, "config.json");
-    const passphrase = "runtime-store-passphrase";
-    await writeCredentialStore({
-      configPath,
-      passphrase,
-      store: {
-        entries: {
-          openai: {
-            auth: {
-              type: "oauth",
-              refresh: "old-refresh",
-              access: "old-access",
-              expires: Date.now() + 60_000,
-            },
-          },
-        },
-      },
-    });
-    const broker = createOpencodeCredentialBroker({
-      runtime: new LocalRunnerOpencodeProviderAuthRuntime(
-        [],
-        { configPath, passphrase },
-        async () => testConnectors,
-      ),
-      activeCredentials: new Map([
-        [
-          "task_1",
-          {
-            taskId: "task_1",
-            organizationId: "org_1",
-            modelProviderId: "openai",
-            perTaskToken: "task-token",
-          },
-        ],
-      ]),
-    });
-    const providerAuthRequest = new Request(
-      "http://broker.local/opencode-tasks/task_1/provider-auth",
-      { headers: { Authorization: "Bearer task-token" } },
-    );
-
-    // Vendor 5xx/network blip: the daemon retries 5xx, so the boot survives.
-    refreshOpencodeOauthAccess.mockImplementation(async () => {
-      throw new Error("ChatGPT token refresh failed upstream (503).");
-    });
-    const transient = await broker.handle(providerAuthRequest.clone());
-    expect(transient.status).toBe(502);
-
-    // Definitive vendor rejection: fail the boot with the reconnect pointer.
-    refreshOpencodeOauthAccess.mockImplementation(async () => ({ error: "invalid_grant." }));
-    const rejected = await broker.handle(providerAuthRequest.clone());
-    expect(rejected.status).toBe(404);
-    expect(((await rejected.json()) as { error: string }).error).toContain(
-      "credentials setup --connect openai",
-    );
   });
 
   it("keep-alive sweep refreshes only families expiring inside the window and never throws", async () => {

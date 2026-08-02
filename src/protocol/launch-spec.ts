@@ -17,6 +17,7 @@ import Type, { type Static } from "typebox";
 // would interpret differently is a new tag.
 export const opencodeLaunchProtocol = "devboxes-launch-v1";
 export const opencodeExactProviderIdsLaunchProtocol = "devboxes-launch-v2";
+export const opencodeUsageAuthorityLaunchProtocol = "devboxes-launch-v3";
 
 // Env keys the RUNTIME owns because only it knows their values — the
 // runner's broker port and host.docker.internal rewrites, the Kubernetes
@@ -35,7 +36,7 @@ export const clientOwnedLaunchEnvKeys = [
 // is by definition a launch-protocol bump.
 export const OpencodeLaunchSpecSchema = Type.Object(
   {
-    launchProtocol: Type.Literal(opencodeExactProviderIdsLaunchProtocol),
+    launchProtocol: Type.Literal(opencodeUsageAuthorityLaunchProtocol),
     workingDir: Type.String({ minLength: 1 }),
     entrypoint: Type.String({ minLength: 1 }),
     // The full server-composed env (opencode flags, XDG homes, task ids, the
