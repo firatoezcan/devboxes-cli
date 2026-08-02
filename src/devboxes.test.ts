@@ -63,8 +63,8 @@ describe("devboxes CLI", () => {
   let configDir: string;
   let context: DevboxesContext;
   let organizationId: string;
-  let fixture: Awaited<ReturnType<typeof harness.seedGithubProjectRun>>;
-  let secondFixture: Awaited<ReturnType<typeof harness.seedGithubProjectRun>>;
+  let fixture: Awaited<ReturnType<typeof harness.seedGithubProject>>;
+  let secondFixture: Awaited<ReturnType<typeof harness.seedGithubProject>>;
   const heartbeatAuthorizations: string[] = [];
 
   beforeAll(async () => {
@@ -97,13 +97,13 @@ describe("devboxes CLI", () => {
       createdByUserId: ownerUserId,
       providerId: "opencode",
     });
-    fixture = await harness.seedGithubProjectRun({
+    fixture = await harness.seedGithubProject({
       organizationId,
       createdByUserId: ownerUserId,
     });
     // A second project proves --repo/issue-URL project selection instead of a
     // single-project fallback.
-    secondFixture = await harness.seedGithubProjectRun({
+    secondFixture = await harness.seedGithubProject({
       organizationId,
       createdByUserId: ownerUserId,
       repository: { name: "acme/other-service", url: "https://github.com/acme/other-service" },
@@ -111,13 +111,13 @@ describe("devboxes CLI", () => {
     });
     // Two projects whose repository URLs normalize to the same comparison key
     // (https vs scp-like), so a cwd remote can match more than one project.
-    await harness.seedGithubProjectRun({
+    await harness.seedGithubProject({
       organizationId,
       createdByUserId: ownerUserId,
       repository: { name: "acme/duplicated", url: "https://github.com/acme/duplicated" },
       githubAppInstallation: { githubInstallationId: "103" },
     });
-    await harness.seedGithubProjectRun({
+    await harness.seedGithubProject({
       organizationId,
       createdByUserId: ownerUserId,
       repository: { name: "acme/duplicated", url: "git@github.com:acme/duplicated.git" },
@@ -743,7 +743,7 @@ describe("devboxes CLI", () => {
       createdByUserId: ownerUserId,
       providerId: "opencode",
     });
-    const soloFixture = await harness.seedGithubProjectRun({
+    const soloFixture = await harness.seedGithubProject({
       organizationId: soloOrganizationId,
       createdByUserId: ownerUserId,
       repository: { name: "acme/solo-service", url: "https://github.com/acme/solo-service" },
