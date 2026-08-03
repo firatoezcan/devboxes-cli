@@ -32,6 +32,10 @@ export type DevboxesCliOptions = {
 export type DevboxesConfig = {
   apiBaseUrl: string;
   authBaseUrl: string;
+  telemetry?: {
+    dsn: string;
+    environment: string;
+  };
   organizationId?: string;
   sessionToken?: string;
   machineId?: string;
@@ -65,6 +69,15 @@ const LocalCredentialReferenceSchema = Type.Object(
 const ConfigFileSchema = Type.Object({
   apiBaseUrl: Type.Optional(Type.String({ minLength: 1 })),
   authBaseUrl: Type.Optional(Type.String({ minLength: 1 })),
+  telemetry: Type.Optional(
+    Type.Object(
+      {
+        dsn: Type.String(),
+        environment: Type.String(),
+      },
+      { additionalProperties: false },
+    ),
+  ),
   organizationId: Type.Optional(Type.String({ minLength: 1 })),
   sessionToken: Type.Optional(Type.String({ minLength: 1 })),
   machineId: Type.Optional(Type.String({ format: "uuid" })),
@@ -102,22 +115,20 @@ export const platformDataHome = () => {
 
 const defaultConfigPath = () => join(platformConfigHome(), "devboxes", "config.json");
 
-export const writeConfig = async (context: DevboxesContext) => {
-  // The config carries both the terminal session and runner API key: atomic
-  // fsync'd tmp+rename, 0600.
-  // Known fields win over preserved unknown keys from a newer binary.
+// The config can carry the terminal session and runner API key, so every write
+// uses the same atomic fsync'd tmp+rename boundary and 0600 file mode.
+const writeConfigFile = async (configPath: string, config: object) => {
   await writeSecretFile({
-    path: context.configPath,
-    contents: `${JSON.stringify({ ...context.configExtras, ...context.config }, null, 2)}\n`,
+    path: configPath,
+    contents: `${JSON.stringify(config, null, 2)}\n`,
     tmpPrefix: ".config.",
   });
-  if (context.configPath === defaultConfigPath()) {
-    await chmod(dirname(context.configPath), 0o700);
+  if (configPath === defaultConfigPath()) {
+    await chmod(dirname(configPath), 0o700);
   }
 };
 
-export const loadContext = async (options: DevboxesCliOptions): Promise<DevboxesContext> => {
-  const configPath = options.config ?? defaultConfigPath();
+const readConfigFile = async (configPath: string, customConfigPath: boolean) => {
   let fileConfig: ConfigFile = {};
   let rawConfigText: string | null = null;
   try {
@@ -128,13 +139,11 @@ export const loadContext = async (options: DevboxesCliOptions): Promise<Devboxes
     if (!missing) throw error;
   }
   if (rawConfigText !== null) {
-    if (!options.config) await chmod(dirname(configPath), 0o700);
+    if (!customConfigPath) await chmod(dirname(configPath), 0o700);
     await chmod(configPath, 0o600);
     try {
       fileConfig = Value.Parse(ConfigFileSchema, JSON.parse(rawConfigText));
     } catch (error) {
-      // A raw TypeBox/JSON error prints as little as the word "Parse": name
-      // the file and the recovery at the boundary instead.
       throw new Error(
         `Devboxes CLI config at ${configPath} is invalid: ${
           error instanceof Error ? error.message : String(error)
@@ -142,6 +151,31 @@ export const loadContext = async (options: DevboxesCliOptions): Promise<Devboxes
       );
     }
   }
+  return fileConfig;
+};
+
+export const writeConfig = async (context: DevboxesContext) =>
+  writeConfigFile(context.configPath, { ...context.configExtras, ...context.config });
+
+export const persistTelemetrySetting = async (
+  options: Pick<DevboxesCliOptions, "config">,
+  telemetry: DevboxesConfig["telemetry"],
+) => {
+  const configPath = options.config ?? defaultConfigPath();
+  const fileConfig = await readConfigFile(configPath, options.config !== undefined);
+  if (telemetry) {
+    fileConfig.telemetry = telemetry;
+    await writeConfigFile(configPath, fileConfig);
+  } else if (fileConfig.telemetry) {
+    delete fileConfig.telemetry;
+    await writeConfigFile(configPath, fileConfig);
+  }
+  return configPath;
+};
+
+export const loadContext = async (options: DevboxesCliOptions): Promise<DevboxesContext> => {
+  const configPath = options.config ?? defaultConfigPath();
+  const fileConfig = await readConfigFile(configPath, options.config !== undefined);
   // Unknown keys written by a newer CLI round-trip through writeConfig.
   const knownConfigKeys = new Set(Object.keys(ConfigFileSchema.properties));
   const configExtras = Object.fromEntries(
@@ -228,6 +262,7 @@ export const loadContext = async (options: DevboxesCliOptions): Promise<Devboxes
     config: {
       apiBaseUrl,
       authBaseUrl,
+      telemetry: fileConfig.telemetry,
       organizationId:
         options.organization ?? process.env.DEVBOX_ORGANIZATION_ID ?? fileConfig.organizationId,
       sessionToken: process.env.DEVBOX_CLI_SESSION_TOKEN ?? fileConfig.sessionToken,

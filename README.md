@@ -55,6 +55,36 @@ devboxes result <agentSessionId>
 devboxes mcp
 ```
 
+## Error telemetry
+
+The CLI sends no error telemetry unless you enable it with a self-hosted Sentry
+DSN and an environment name:
+
+```sh
+devboxes telemetry enable \
+  --dsn https://PUBLIC_KEY@sentry.devboxes.ai/PROJECT_ID \
+  --environment production
+```
+
+Disable it through the same CLI setting:
+
+```sh
+devboxes telemetry disable
+```
+
+Enabled events contain a fixed CLI error marker, the CLI runtime, version, and
+the environment name you supplied. They exclude command arguments, credentials,
+environment-variable values, prompts, transcripts, cookies, authorization
+headers, OAuth codes, task tokens, request data, breadcrumbs, and user context.
+The organization running the self-hosted Sentry instance controls storage and
+retention.
+
+Telemetry initialization or delivery failures append a local record containing
+only the timestamp, CLI runtime, version, and failure class to
+`<config path>.telemetry.log`. They do not change command output or exit status.
+An initialization failure or command-error report gets one second in total
+before the CLI continues.
+
 See the [Devboxes documentation](https://docs.devboxes.ai) for the user guide.
 Report bugs on the [issue tracker](https://github.com/firatoezcan/devboxes-cli/issues)
 and security concerns through the

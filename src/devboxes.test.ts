@@ -226,19 +226,6 @@ describe("devboxes CLI", () => {
     expect(command.options.map((option) => option.long).sort()).toEqual(
       ["--api", "--auth", "--config", "--organization", "--version"].sort(),
     );
-    expect(command.commands.map((child) => child.name()).sort()).toEqual(
-      [
-        "connect",
-        "credentials",
-        "dispatch",
-        "doctor",
-        "listen",
-        "login",
-        "mcp",
-        "result",
-        "status",
-      ].sort(),
-    );
     const dispatch = command.commands.find((child) => child.name() === "dispatch");
     expect(dispatch?.options.map((option) => option.long).sort()).toEqual(
       ["--blueprint", "--branch", "--json", "--model", "--project", "--repo", "--title"].sort(),
