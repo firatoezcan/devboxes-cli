@@ -10,6 +10,7 @@ import {
   credentialStoreVersion,
   listenerRegistrationDeviceClientId,
   listenerUpgradeRequiredCode,
+  opencodeEnginePermissionPolicyErrorCode,
   opencodeTaskCallbackTerminalCode,
   reconciliationLabels,
   runnerMachineApiPrefix,
@@ -89,6 +90,7 @@ describe("frozen runner contracts", () => {
     expect(runnerMachineRoutePrefix).toBe("/internal/runner-machines");
     expect(listenerUpgradeRequiredCode).toBe("listener_upgrade_required");
     expect(opencodeTaskCallbackTerminalCode).toBe("task_callback_terminal");
+    expect(opencodeEnginePermissionPolicyErrorCode).toBe("engine_permission_policy_violation");
     expect(listenerRegistrationDeviceClientId).toBe("devboxes-listener-registration");
     expect(credentialStoreFileName).toBe("provider-credentials.json.age");
     expect(credentialStoreVersion).toBe(1);

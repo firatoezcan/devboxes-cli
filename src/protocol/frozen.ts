@@ -13,6 +13,9 @@ export const listenerUpgradeRequiredCode = "listener_upgrade_required";
 // in-container daemon stops instead of polling a dead task at POLL_MS
 // forever. Daemons baked into published Workspace Images match the literal.
 export const opencodeTaskCallbackTerminalCode = "task_callback_terminal";
+// A permission request proves the Run's full-permission engine policy did not
+// hold. The API fails the Run with this wire code and the daemon stops.
+export const opencodeEnginePermissionPolicyErrorCode = "engine_permission_policy_violation";
 export const listenerRegistrationDeviceClientId = "devboxes-listener-registration";
 export const credentialStoreFileName = "provider-credentials.json.age";
 export const credentialStoreVersion = 1;

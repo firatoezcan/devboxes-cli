@@ -1815,22 +1815,27 @@ describe("runner Opencode credentials", () => {
       }
       const providerAuthUrl = new URL(outcome.value.providerAuthUrl);
       providerAuthUrl.hostname = "127.0.0.1";
-      providerAuthUrl.pathname = `/opencode-tasks/${taskId}/provider-auth`;
-      let providerAuth: Response | undefined;
+      const brokerTask = treaty<OpencodeCredentialBrokerApi>(providerAuthUrl.origin, {
+        onRequest(_path, options) {
+          const headers = new Headers(options.headers);
+          headers.set("Authorization", "Bearer claim-authority-task-token");
+          return { ...options, headers };
+        },
+      })["opencode-tasks"]({ taskId })["provider-auth"];
+      let providerAuth: Awaited<ReturnType<typeof brokerTask.get>> | undefined;
       let providerAuthError: unknown;
       for (let attempt = 0; attempt < 20 && !providerAuth; attempt++) {
-        try {
-          providerAuth = await fetch(providerAuthUrl, {
-            headers: { Authorization: "Bearer claim-authority-task-token" },
-          });
-        } catch (error) {
-          providerAuthError = error;
+        const answer = await brokerTask.get();
+        // No response means the broker socket is not accepting yet.
+        if (answer.response) providerAuth = answer;
+        else {
+          providerAuthError = answer.error;
           await Bun.sleep(10);
         }
       }
       if (!providerAuth) throw providerAuthError;
       expect(providerAuth.status).toBe(200);
-      expect(await providerAuth.json()).toEqual({
+      expect(providerAuth.data).toEqual({
         openai: { type: "api", key: "claim-time-api-key" },
       });
       expect(claimedCredentialFingerprint).toBe(
@@ -2038,12 +2043,20 @@ describe("runner Opencode credentials", () => {
         );
       }
 
-      const response = await fetch(
-        `http://127.0.0.1:${outcome.port}/opencode-tasks/${taskId}/provider-auth`,
-        { headers: { Authorization: "Bearer restart-authority-task-token" } },
-      );
+      const response = await treaty<OpencodeCredentialBrokerApi>(
+        `http://127.0.0.1:${outcome.port}`,
+        {
+          onRequest(_path, options) {
+            const headers = new Headers(options.headers);
+            headers.set("Authorization", "Bearer restart-authority-task-token");
+            return { ...options, headers };
+          },
+        },
+      )
+        ["opencode-tasks"]({ taskId })
+        ["provider-auth"].get();
       expect(response.status).toBe(200);
-      expect(await response.json()).toEqual(claimAuth);
+      expect(response.data).toEqual(claimAuth);
     } finally {
       if (!listening.killed) listening.kill("SIGTERM");
       await listening.exited;
