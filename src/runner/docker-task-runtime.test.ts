@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 // The runtime is exercised against a real Docker Engine API server on a unix
 // socket — the same wire dockerode speaks to a live dockerd — so these tests
@@ -31,6 +31,7 @@ const launchSpec = {
     DEVBOX_OPENCODE_TASK_ID: "task_1",
     DEVBOX_RUN_ID: "run_1",
     DEVBOX_BACKEND_TOKEN_FILE: "/run/devboxes/secrets/backend-token",
+    DEVBOX_DAEMON_PRIVATE_DIR: "/run/devboxes/daemon",
     DEVBOX_DAEMON_VERSION: "0.8.1",
     DEVBOX_DAEMON_PLATFORM: "linux/amd64",
     DEVBOX_DAEMON_SHA256: "a".repeat(64),
@@ -237,6 +238,19 @@ describe("opencode Docker task runtime against the engine API", () => {
         },
         ExtraHosts: ["host.docker.internal:host-gateway"],
       });
+      const tmpfs = createBody.HostConfig.Tmpfs as Record<string, string>;
+      const repositoryExecutableDirectory = join(
+        dirname(launchSpec.env.DEVBOX_DAEMON_PRIVATE_DIR),
+        "exec",
+      );
+      expect(
+        Object.entries(tmpfs).some(
+          ([path, options]) =>
+            options.split(",").includes("noexec") &&
+            (repositoryExecutableDirectory === path ||
+              repositoryExecutableDirectory.startsWith(`${path}/`)),
+        ),
+      ).toBe(false);
       expect(createBody.Env).toEqual(
         expect.arrayContaining([
           "DEVBOX_OPENCODE_TASK_ID=task_1",
