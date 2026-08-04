@@ -812,6 +812,9 @@ export const syncOpencodeProviderCredentials = async (
   if (!context.config.organizationId) {
     throw new Error("Credential sync requires a registered runner organization.");
   }
+  if (!context.config.machineId) {
+    throw new Error("Credential sync requires a registered Runner machine.");
+  }
 
   const references = context.config.opencodeProviderCredentials ?? [];
   const store = (await openCredentialStoreIfPresent(context))?.store ?? {
@@ -914,37 +917,15 @@ export const syncOpencodeProviderCredentials = async (
   for (const { providerId, auth, accountLabel } of syncable) {
     const syncBody = {
       providerId,
-      // OAuth omits the label so the server applies the connector label.
-      ...(auth.type === "api" ? { label: `${providerId} API key` } : {}),
+      runnerMachineId: context.config.machineId,
       ...(accountLabel ? { accountLabel } : {}),
       auth,
     };
-    let response = await backend.api
+    const response = await backend.api
       .org({ organizationId: context.config.organizationId })
       .credentials["opencode-provider-credentials"].sync.post(syncBody);
     if (response.error) {
-      const error = apiRequestError(`Sync provider ${providerId}`, response.error, "connect");
-      if (
-        error.code !== "provider_credential_unavailable" ||
-        !process.stdin.isTTY ||
-        !process.stdout.isTTY
-      ) {
-        throw error;
-      }
-      const saveAnyway = await prompts.confirm({
-        message: `Validation for ${providerId} is unavailable. Save this credential anyway?`,
-        initialValue: false,
-      });
-      if (isCancel(saveAnyway) || !saveAnyway) throw error;
-      response = await backend.api
-        .org({ organizationId: context.config.organizationId })
-        .credentials["opencode-provider-credentials"].sync.post({
-          ...syncBody,
-          saveAnyway: true,
-        });
-      if (response.error) {
-        throw apiRequestError(`Sync provider ${providerId}`, response.error, "connect");
-      }
+      throw apiRequestError(`Sync provider ${providerId}`, response.error, "connect");
     }
     log.success(`Synced ${providerId} provider credentials to Devboxes.`);
   }

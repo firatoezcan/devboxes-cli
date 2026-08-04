@@ -660,12 +660,14 @@ export const pollOpencodeOauthDeviceFlow = async (
 };
 
 // Refresh prepares an OAuth credential source for a later claim. A thrown
-// error is transient (network); a returned error is the vendor's definitive
-// rejection and means the credential needs a reconnect.
+// error is transient (network); a returned error carries the vendor status so
+// callers can distinguish throttling from a definitive rejection.
 export const refreshOpencodeOauthAccess = async (
   descriptor: OpencodeConnectorDescriptor,
   input: { auth: OpencodeOauthAuth },
-): Promise<{ auth: OpencodeOauthAuth; accountLabel?: string } | { error: string }> => {
+): Promise<
+  { auth: OpencodeOauthAuth; accountLabel?: string } | { error: string; status?: number }
+> => {
   if (descriptor.kind === "github-device") {
     return { error: `Opencode provider ${descriptor.providerId} has no OAuth refresh flow.` };
   }
@@ -687,7 +689,10 @@ export const refreshOpencodeOauthAccess = async (
     throw new Error(`${descriptor.label} token refresh failed upstream (${response.status}).`);
   }
   if (!response.ok) {
-    return { error: `${descriptor.label} token refresh was rejected (${response.status}).` };
+    return {
+      error: `${descriptor.label} token refresh was rejected (${response.status}).`,
+      status: response.status,
+    };
   }
   const tokens = parsedVendorBody(
     TokenResponseSchema,

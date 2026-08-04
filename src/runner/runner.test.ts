@@ -42,6 +42,7 @@ const credentialSyncHarness = createApiIntegrationHarness(
 const credentialSyncOrganizationId = "00000000-0000-7000-8000-000000000171";
 const credentialSyncUserId = "runner-credential-sync-user";
 const credentialSyncSessionToken = "runner-credential-sync-session";
+const credentialSyncRunnerMachineId = "00000000-0000-7000-8000-000000000172";
 
 beforeAll(async () => {
   await credentialSyncHarness.seedUsers({
@@ -65,6 +66,13 @@ beforeAll(async () => {
     organizationId: credentialSyncOrganizationId,
     userId: credentialSyncUserId,
     role: "owner",
+  });
+  await credentialSyncHarness.seedRunnerMachines({
+    id: credentialSyncRunnerMachineId,
+    organizationId: credentialSyncOrganizationId,
+    createdByUserId: credentialSyncUserId,
+    apiKeyId: null,
+    name: "Runner Credential Sync",
   });
 });
 
@@ -704,6 +712,7 @@ describe("runner Opencode credentials", () => {
             apiBaseUrl: `http://127.0.0.1:${port}/api`,
             authBaseUrl: `http://127.0.0.1:${port}/api/auth`,
             organizationId: "00000000-0000-7000-8000-000000000042",
+            machineId: "00000000-0000-7000-8000-000000000043",
             apiKey: "runner-api-key",
             opencodeProviderCredentials: [
               { providerId: "openai", authFile, source: "opencode-auth-file" },
@@ -736,6 +745,7 @@ describe("runner Opencode credentials", () => {
       expect.arrayContaining([
         expect.objectContaining({
           providerId: "openai",
+          runnerMachineId: "00000000-0000-7000-8000-000000000043",
           auth: { type: "api", key: "openai-key" },
         }),
         expect.objectContaining({
@@ -760,13 +770,11 @@ describe("runner Opencode credentials", () => {
     expect(output).toContain("Synced opencode-go");
   });
 
-  it("confirms and retries unavailable API-key validation against the real route", async () => {
+  it("syncs unavailable API-key validation as persisted account health", async () => {
     await writeFile(authFile, '{"xai":{"type":"api","key":"xai-runner-key"}}');
     const originalFetch = globalThis.fetch;
     const originalBrowser = process.env.BROWSER;
     const apiServer = await credentialSyncHarness.server();
-    const confirmSaveAnyway = spyOn(prompts, "confirm").mockResolvedValue(true);
-    let confirmationCalls = 0;
     const syncBodies: Record<string, unknown>[] = [];
     process.env.BROWSER = "none";
     Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
@@ -804,6 +812,7 @@ describe("runner Opencode credentials", () => {
             apiBaseUrl: "https://runner-route.invalid/api",
             authBaseUrl: "https://runner-route.invalid/api/auth",
             organizationId: credentialSyncOrganizationId,
+            machineId: credentialSyncRunnerMachineId,
             opencodeProviderCredentials: [
               { providerId: "xai", authFile, source: "opencode-auth-file" },
             ],
@@ -813,26 +822,17 @@ describe("runner Opencode credentials", () => {
       );
     } finally {
       globalThis.fetch = originalFetch;
-      confirmationCalls = confirmSaveAnyway.mock.calls.length;
-      confirmSaveAnyway.mockRestore();
       Object.defineProperty(process.stdin, "isTTY", { value: false, configurable: true });
       Object.defineProperty(process.stdout, "isTTY", { value: false, configurable: true });
       if (originalBrowser === undefined) delete process.env.BROWSER;
       else process.env.BROWSER = originalBrowser;
     }
 
-    expect(confirmationCalls).toBe(1);
     expect(syncBodies).toEqual([
       {
         providerId: "xai",
-        label: "xai API key",
+        runnerMachineId: credentialSyncRunnerMachineId,
         auth: { type: "api", key: "xai-runner-key" },
-      },
-      {
-        providerId: "xai",
-        label: "xai API key",
-        auth: { type: "api", key: "xai-runner-key" },
-        saveAnyway: true,
       },
     ]);
     const credentials = await (
@@ -873,6 +873,7 @@ describe("runner Opencode credentials", () => {
             apiBaseUrl: "http://127.0.0.1:9/api",
             authBaseUrl: "http://127.0.0.1:9/api/auth",
             organizationId: "00000000-0000-7000-8000-000000000042",
+            machineId: "00000000-0000-7000-8000-000000000043",
             opencodeProviderCredentials: [
               { providerId: "github-copilot", authFile, source: "opencode-auth-file" },
             ],
@@ -992,6 +993,7 @@ describe("runner Opencode credentials", () => {
             apiBaseUrl: `http://127.0.0.1:${port}/api`,
             authBaseUrl: `http://127.0.0.1:${port}/api/auth`,
             organizationId: "00000000-0000-7000-8000-000000000042",
+            machineId: "00000000-0000-7000-8000-000000000043",
             apiKey: "runner-api-key",
           },
         },
@@ -1008,11 +1010,10 @@ describe("runner Opencode credentials", () => {
     const syncBody = JSON.parse(syncRequests[0]!.body);
     expect(syncBody).toMatchObject({
       providerId: "openai",
+      runnerMachineId: "00000000-0000-7000-8000-000000000043",
       accountLabel: "user@example.com",
       auth: storedAuth,
     });
-    // The server derives the connector label for subscriptions.
-    expect(syncBody.label).toBeUndefined();
     expect(infoMessages.join("\n")).toContain("Synced openai");
   });
 
