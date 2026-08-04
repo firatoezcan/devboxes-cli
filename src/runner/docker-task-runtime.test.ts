@@ -45,7 +45,8 @@ const launchSpec = {
   },
   providerAuthSource: "local-broker" as const,
 };
-const imageRef = "ghcr.io/firatoezcan/firops-workspace:workspace.pkgset-builder_hash";
+const imageDigest = "d".repeat(64);
+const imageRef = `registry-1.docker.io/firatoezcan/devboxes@sha256:${imageDigest}`;
 const runningState = {
   Status: "running",
   Running: true,
@@ -185,8 +186,8 @@ describe("opencode Docker task runtime against the engine API", () => {
       });
 
       const pull = engine.requests.find((request) => request.pathname === "/images/create");
-      expect(pull?.query.fromImage).toBe("ghcr.io/firatoezcan/firops-workspace");
-      expect(pull?.query.tag).toBe("workspace.pkgset-builder_hash");
+      expect(pull?.query.fromImage).toBe("registry-1.docker.io/firatoezcan/devboxes");
+      expect(pull?.query.tag).toBe(`sha256:${imageDigest}`);
 
       const create = engine.requests.find((request) => request.pathname === "/containers/create");
       assert(create, "Expected a container create request.");

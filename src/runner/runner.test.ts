@@ -1711,7 +1711,8 @@ describe("runner Opencode credentials", () => {
             taskId,
             organizationId: "org_1",
             runId,
-            imageRef: "ghcr.io/firatoezcan/devboxes:test",
+            imageRef:
+              "registry-1.docker.io/firatoezcan/devboxes@sha256:0132f868cf2b6613f61148489b2cbde57f5a0e0f40cdac97b3c4f93c0971cf10",
             modelProviderId: "openai",
             providerCredentialFingerprint: credentialFingerprint,
             daemonArtifact: {
