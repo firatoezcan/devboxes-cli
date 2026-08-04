@@ -18,7 +18,7 @@ const daemonApiBaseUrl = "http://host.docker.internal:3001/api";
 // A server-authored launch spec as the claim response serves it; this runtime
 // executes it and overlays only the machine-local env keys.
 const launchSpec = {
-  launchProtocol: "devboxes-launch-v3" as const,
+  launchProtocol: "devboxes-launch-v4" as const,
   workingDir: "/workspace",
   entrypoint: "/entrypoint.sh",
   env: {
@@ -196,6 +196,7 @@ describe("opencode Docker task runtime against the engine API", () => {
         Image: imageRef,
         WorkingDir: "/workspace",
         Entrypoint: ["/entrypoint.sh"],
+        User: "0:1000",
         Labels: {
           "app.kubernetes.io/managed-by": "firops-control-plane",
           "devboxes.firops.io/workload": "opencode-dispatch-task",
@@ -212,6 +213,9 @@ describe("opencode Docker task runtime against the engine API", () => {
       };
       expect(createBody.HostConfig).toEqual({
         AutoRemove: false,
+        CapDrop: ["ALL"],
+        CapAdd: ["DAC_OVERRIDE", "SETGID", "SETUID"],
+        SecurityOpt: ["no-new-privileges"],
         Mounts: expect.arrayContaining([
           expect.objectContaining({
             Type: "bind",
@@ -227,8 +231,9 @@ describe("opencode Docker task runtime against the engine API", () => {
           }),
         ]),
         Tmpfs: {
+          "/run/devboxes/daemon": "rw,noexec,nosuid,size=512m,mode=0700,uid=0,gid=1000",
           "/home/workspace/.local/share/opencode":
-            "rw,noexec,nosuid,size=512m,mode=0700,uid=1000,gid=1000",
+            "rw,noexec,nosuid,size=512m,mode=0770,uid=0,gid=1000",
         },
         ExtraHosts: ["host.docker.internal:host-gateway"],
       });

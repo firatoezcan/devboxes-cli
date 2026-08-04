@@ -16,6 +16,7 @@ are about to break shipped artifacts.
 | Contract                      | Value                                                                                                                    | Reader that would break                                                                                                                                  |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Legacy launch protocol tag    | `devboxes-launch-v1`                                                                                                     | Every shipped v1 runner's claim negotiation; the server refuses it with `listener_upgrade_required` before leasing work                                  |
+| Usage-authority protocol tag  | `devboxes-launch-v3`                                                                                                     | Shipped v3 runners advertise it; the server now refuses it before leasing work because those runtimes do not isolate agent processes                     |
 | Client-owned launch env keys  | `DEVBOX_BACKEND_BASE_URL`, `DEVBOX_OPENCODE_PROVIDER_AUTH_URL`, `DEVBOX_OPENCODE_CONFIG_JSON_FILE`                       | Shipped runtimes overlay exactly these keys over the served spec; serving them would be silently ignored, renaming them orphans the overlay              |
 | Daemon bootstrap protocol tag | `devboxes-daemon-bootstrap-v1`                                                                                           | `/entrypoint.sh` baked into every published Workspace Image exits `upgrade_required` on mismatch                                                         |
 | Container home                | `/home/workspace`                                                                                                        | Published Workspace Images (user, permissions), served spec env, daemon auth-file path                                                                   |
@@ -32,14 +33,20 @@ are about to break shipped artifacts.
 | Device registration client id | `devboxes-listener-registration`                                                                                         | Shipped runners send it on device-auth start; the server validates it                                                                                    |
 | Credential store format       | age-encrypted `provider-credentials.json.age`, version 1                                                                 | Every existing on-device store; a format change strands stored subscriptions                                                                             |
 
-## Current usage-authority protocol
+## Current isolated-agent and usage-authority protocol
 
-`devboxes-launch-v3` requires exact provider ids and requires each local
+`devboxes-launch-v4` runs agent-controlled processes under uid 1001. The runtime
+starts the capability-limited daemon as uid 0 with shared gid 1000 and grants
+`SETGID` and `SETUID` so it can establish that boundary. Docker also grants
+`DAC_OVERRIDE` so the daemon can read the listener-owned mode-0600 secret bind
+mounts, and sets `no-new-privileges` before the agent boundary. The daemon alone
+can access its mode-0700 publication directory and root-readable backend token.
+The protocol also requires exact provider ids and requires each local
 provider advertisement to carry its auth type and credential fingerprint. The
 runner keeps the matching credential material with the claimed Task. For an
 Organization credential, the server keeps the encrypted claim-time material
 with the Task. Runtime delivery and the accounting token therefore use the same
-immutable authority. The server refuses v1 and v2 claims with
+immutable authority. The server refuses v1, v2, and v3 claims with
 `listener_upgrade_required`.
 
 OAuth authority is `subscription`. API-key authority is `metered` only when

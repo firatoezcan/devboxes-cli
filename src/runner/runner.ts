@@ -30,7 +30,7 @@ import {
 } from "../protocol/frozen";
 import {
   OpencodeLaunchSpecSchema,
-  opencodeUsageAuthorityLaunchProtocol,
+  opencodeIsolatedAgentLaunchProtocol,
 } from "../protocol/launch-spec";
 import {
   normalizeOpencodeProviderId,
@@ -1744,7 +1744,7 @@ const listen = async (
             localProviderCredentials,
             // The launch-spec protocols this binary executes; a server that
             // serves none of them answers listener_upgrade_required.
-            launchProtocols: [opencodeUsageAuthorityLaunchProtocol],
+            launchProtocols: [opencodeIsolatedAgentLaunchProtocol],
           });
           if (claimResult.error) throw apiRequestError("Claim", claimResult.error, "connect");
           // An empty queue answers 204, which Eden types as the "No Content" literal.

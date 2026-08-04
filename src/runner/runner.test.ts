@@ -1409,7 +1409,7 @@ describe("runner Opencode credentials", () => {
             credentialFingerprint: expect.any(String),
           },
         ],
-        launchProtocols: ["devboxes-launch-v3"],
+        launchProtocols: ["devboxes-launch-v4"],
       });
     } finally {
       if (!listening.killed) listening.kill("SIGTERM");
@@ -1597,7 +1597,7 @@ describe("runner Opencode credentials", () => {
               ...provider,
               credentialFingerprint: expect.any(String),
             })),
-            launchProtocols: ["devboxes-launch-v3"],
+            launchProtocols: ["devboxes-launch-v4"],
           });
         } finally {
           if (!listening.killed) listening.kill("SIGTERM");
@@ -1728,7 +1728,7 @@ describe("runner Opencode credentials", () => {
             leaseExpiresAt: new Date(Date.now() + 120_000).toISOString(),
             perTaskToken: "claim-authority-task-token",
             launchSpec: {
-              launchProtocol: "devboxes-launch-v3",
+              launchProtocol: "devboxes-launch-v4",
               entrypoint: "/entrypoint.sh",
               workingDir: "/workspace",
               env: {

@@ -13,7 +13,10 @@ import {
 } from "../protocol/provider-auth";
 import {
   containerBackendTokenFile,
+  containerDaemonPrivateDir,
+  containerDaemonUid,
   containerOpencodeConfigJsonFile,
+  containerSharedGid,
   hostOpencodeConfigJsonBase64,
   taskContainerName,
   taskStateImage,
@@ -336,6 +339,7 @@ export class DockerOpencodeTaskRuntime {
         }).map(([name, value]) => `${name}=${value}`),
         WorkingDir: input.launchSpec.workingDir,
         Entrypoint: [input.launchSpec.entrypoint],
+        User: `${containerDaemonUid}:${containerSharedGid}`,
         Labels: {
           ...input.launchSpec.labels,
           // Reconciliation reads these back after restarts, so the reader
@@ -347,6 +351,9 @@ export class DockerOpencodeTaskRuntime {
         },
         HostConfig: {
           AutoRemove: false,
+          CapDrop: ["ALL"],
+          CapAdd: ["DAC_OVERRIDE", "SETGID", "SETUID"],
+          SecurityOpt: ["no-new-privileges"],
           Mounts: [
             {
               Type: "bind" as const,
@@ -369,15 +376,19 @@ export class DockerOpencodeTaskRuntime {
           // keys; tmpfs keeps them out of the writable layer that the
           // crash-recovery `docker commit` snapshots into an image. The
           // option string is docker mechanics and stays runtime-owned.
-          Tmpfs: Object.fromEntries(
-            input.launchSpec.memoryBackedPaths.map((path) => [
+          Tmpfs: Object.fromEntries([
+            [
+              containerDaemonPrivateDir,
+              `rw,noexec,nosuid,size=512m,mode=0700,uid=${containerDaemonUid},gid=${containerSharedGid}`,
+            ],
+            ...input.launchSpec.memoryBackedPaths.map((path) => [
               path,
               // opencode's working SQLite database lives under the memory-backed
               // opencode data dir, so the size must fit a real session's DB and
               // WAL, not just the small provider auth file.
-              "rw,noexec,nosuid,size=512m,mode=0700,uid=1000,gid=1000",
+              `rw,noexec,nosuid,size=512m,mode=0770,uid=${containerDaemonUid},gid=${containerSharedGid}`,
             ]),
-          ),
+          ]),
           ExtraHosts: ["host.docker.internal:host-gateway"],
         },
       });

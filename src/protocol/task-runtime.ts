@@ -6,6 +6,10 @@ import { join } from "node:path";
 import type { OpencodeLaunchSpec } from "./launch-spec";
 
 export const containerHome = "/home/workspace";
+export const containerDaemonUid = 0;
+export const containerAgentUid = 1001;
+export const containerSharedGid = 1000;
+export const containerDaemonPrivateDir = "/run/devboxes/daemon";
 export const containerSecretsDir = "/run/devboxes/secrets";
 export const containerBackendTokenFile = `${containerSecretsDir}/backend-token`;
 export const containerOpencodeConfigJsonFile = `${containerSecretsDir}/opencode-config.json`;
