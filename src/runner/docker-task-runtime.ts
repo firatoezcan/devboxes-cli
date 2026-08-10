@@ -12,6 +12,7 @@ import {
   type OpencodeProviderAuthJson,
 } from "../protocol/provider-auth";
 import {
+  containerAgentUid,
   containerBackendTokenFile,
   containerDaemonPrivateDir,
   containerDaemonUid,
@@ -385,8 +386,9 @@ export class DockerOpencodeTaskRuntime {
               path,
               // opencode's working SQLite database lives under the memory-backed
               // opencode data dir, so the size must fit a real session's DB and
-              // WAL, not just the small provider auth file.
-              `rw,noexec,nosuid,size=512m,mode=0770,uid=${containerDaemonUid},gid=${containerSharedGid}`,
+              // WAL. The stable engine owns its runtime tree; the daemon retains
+              // shared-group access.
+              `rw,noexec,nosuid,size=512m,mode=0770,uid=${containerAgentUid},gid=${containerSharedGid}`,
             ]),
           ]),
           ExtraHosts: ["host.docker.internal:host-gateway"],

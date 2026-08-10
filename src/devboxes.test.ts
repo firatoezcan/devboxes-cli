@@ -228,7 +228,15 @@ describe("devboxes CLI", () => {
     );
     const dispatch = command.commands.find((child) => child.name() === "dispatch");
     expect(dispatch?.options.map((option) => option.long).sort()).toEqual(
-      ["--blueprint", "--branch", "--json", "--model", "--project", "--repo", "--title"].sort(),
+      [
+        "--blueprint-version",
+        "--branch",
+        "--json",
+        "--model",
+        "--project",
+        "--repo",
+        "--title",
+      ].sort(),
     );
     expect(
       dispatch?.options.find((option) => option.long === "--model")?.defaultValue,
@@ -582,7 +590,7 @@ describe("devboxes CLI", () => {
       task: "Fix the flaky retry handling in the queue worker.",
       repo: fixture.repositoryFullName,
       model: "opencode/big-pickle",
-      blueprint: fixture.blueprintId,
+      blueprintVersionId: fixture.blueprintVersionId,
     });
     dispatchedSessionId = dispatched.agentSessionId;
     dispatchedRunId = dispatched.runId;
@@ -615,7 +623,7 @@ describe("devboxes CLI", () => {
     const issueUrl = `https://github.com/${fixture.repositoryFullName}/issues/42`;
     const dispatched = await dispatchDevboxesTask(context, {
       task: issueUrl,
-      blueprint: fixture.blueprintId,
+      blueprintVersionId: fixture.blueprintVersionId,
     });
 
     expect(dispatched.projectId).toBe(fixture.projectId);
@@ -647,7 +655,7 @@ describe("devboxes CLI", () => {
     const repoDir = await gitRepoWithOrigin("git@github.com:acme/other-service.git");
     const dispatched = await dispatchDevboxesTask(context, {
       task: "Tighten the reconnect backoff.",
-      blueprint: secondFixture.blueprintId,
+      blueprintVersionId: secondFixture.blueprintVersionId,
       cwd: repoDir,
     });
 
@@ -677,7 +685,7 @@ describe("devboxes CLI", () => {
     );
     const dispatched = await dispatchDevboxesTask(context, {
       task: "Rotate the webhook signing key.",
-      blueprint: secondFixture.blueprintId,
+      blueprintVersionId: secondFixture.blueprintVersionId,
       cwd: repoDir,
     });
 
@@ -692,7 +700,7 @@ describe("devboxes CLI", () => {
     const dispatched = await dispatchDevboxesTask(context, {
       task: "Ship it on the dashboard project instead.",
       repo: fixture.repositoryFullName,
-      blueprint: fixture.blueprintId,
+      blueprintVersionId: fixture.blueprintVersionId,
       cwd: repoDir,
     });
     expect(dispatched.projectId).toBe(fixture.projectId);
@@ -762,7 +770,7 @@ describe("devboxes CLI", () => {
     // configDir is not a git checkout, so no remote can tip the selection.
     const dispatched = await dispatchDevboxesTask(soloContext, {
       task: "Ship the only project.",
-      blueprint: soloFixture.blueprintId,
+      blueprintVersionId: soloFixture.blueprintVersionId,
       cwd: configDir,
     });
 
@@ -831,8 +839,8 @@ describe("devboxes CLI", () => {
   });
 
   it.skip("reads the result with pull request link and final assistant output; delivery quarantine: https://github.com/firatoezcan/devboxes-dashboard/issues/609", async () => {
-    // The v2 read API projects the durable session log; the final output is
-    // the latest assistant message's text parts.
+    // The final output comes from the latest assistant turn in the generated
+    // stable event history.
     await dbClient.db
       .update(schema.opencodeDispatchTasks)
       .set({
@@ -842,57 +850,70 @@ describe("devboxes CLI", () => {
         completedAt: new Date(),
       })
       .where(eq(schema.opencodeDispatchTasks.id, dispatchedTaskId));
-    const { appendRawOpencodeEventsToClickHouse } = await import("@/clickhouse/opencode-events");
-    await appendRawOpencodeEventsToClickHouse({
+    const { appendOpencodeEventsToClickHouse } = await import("@/clickhouse/opencode-events");
+    await appendOpencodeEventsToClickHouse({
       organizationId,
       agentSessionId: dispatchedTaskId,
       events: [
         {
-          id: "evt-input",
-          created: 1,
-          type: "session.input.admitted",
-          durable: { aggregateID: "ses-cli", seq: 1, version: 1 },
+          id: "evt_input",
+          type: "session.next.prompt.admitted",
+          durable: { aggregateID: "ses_cli", seq: 1, version: 1 },
           data: {
-            sessionID: "ses-cli",
-            inputID: "msg-user",
-            input: {
-              type: "text",
-              data: { text: "Fix the flaky retry handling in the queue worker." },
-            },
+            timestamp: 1,
+            sessionID: "ses_cli",
+            messageID: "msg_user",
+            prompt: { text: "Fix the flaky retry handling in the queue worker." },
+            delivery: "queue",
           },
         },
         {
-          id: "evt-step-started",
-          created: 2,
-          type: "session.step.started",
-          durable: { aggregateID: "ses-cli", seq: 2, version: 1 },
-          data: { sessionID: "ses-cli", assistantMessageID: "msg-assistant" },
-        },
-        {
-          id: "evt-text-started",
-          created: 3,
-          type: "session.text.started",
-          durable: { aggregateID: "ses-cli", seq: 3, version: 1 },
-          data: { sessionID: "ses-cli", assistantMessageID: "msg-assistant", ordinal: 0 },
-        },
-        {
-          id: "evt-text-ended",
-          created: 4,
-          type: "session.text.ended",
-          durable: { aggregateID: "ses-cli", seq: 4, version: 1 },
+          id: "evt_step_started",
+          type: "session.next.step.started",
+          durable: { aggregateID: "ses_cli", seq: 2, version: 1 },
           data: {
-            sessionID: "ses-cli",
-            assistantMessageID: "msg-assistant",
-            ordinal: 0,
+            timestamp: 2,
+            sessionID: "ses_cli",
+            assistantMessageID: "msg_assistant",
+            agent: "build",
+            model: { id: "big-pickle", providerID: "opencode", variant: "default" },
+          },
+        },
+        {
+          id: "evt_text_started",
+          type: "session.next.text.started",
+          durable: { aggregateID: "ses_cli", seq: 3, version: 1 },
+          data: {
+            timestamp: 3,
+            sessionID: "ses_cli",
+            assistantMessageID: "msg_assistant",
+            textID: "text-0",
+          },
+        },
+        {
+          id: "evt_text_ended",
+          type: "session.next.text.ended",
+          durable: { aggregateID: "ses_cli", seq: 4, version: 1 },
+          data: {
+            timestamp: 4,
+            sessionID: "ses_cli",
+            assistantMessageID: "msg_assistant",
+            textID: "text-0",
             text: "Retry handling now backs off exponentially; opened a pull request.",
           },
         },
         {
-          id: "evt-step-ended",
-          created: 5,
-          type: "session.step.ended",
-          durable: { aggregateID: "ses-cli", seq: 5, version: 1 },
-          data: { sessionID: "ses-cli", assistantMessageID: "msg-assistant", finish: "stop" },
+          id: "evt_step_ended",
+          type: "session.next.step.ended",
+          durable: { aggregateID: "ses_cli", seq: 5, version: 1 },
+          data: {
+            timestamp: 5,
+            sessionID: "ses_cli",
+            assistantMessageID: "msg_assistant",
+            finish: "stop",
+            cost: 0,
+            tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+          },
         },
       ],
     });
@@ -947,10 +968,10 @@ describe("devboxes CLI", () => {
         "get_session_result",
         "get_session_status",
       ]);
-      // dispatch_task mirrors the CLI dispatch flags, including --blueprint.
+      // dispatch_task mirrors the CLI dispatch flags, including exact Blueprint Version selection.
       const dispatchTool = tools.tools.find((tool) => tool.name === "dispatch_task");
       expect(Object.keys(dispatchTool?.inputSchema.properties ?? {}).sort()).toEqual(
-        ["blueprint", "branch", "model", "project", "repo", "task", "title"].sort(),
+        ["blueprintVersionId", "branch", "model", "project", "repo", "task", "title"].sort(),
       );
       expect(dispatchTool?.inputSchema.properties?.model).toMatchObject({ type: "string" });
       expect(dispatchTool?.inputSchema.properties?.model).not.toHaveProperty("const");
@@ -960,7 +981,7 @@ describe("devboxes CLI", () => {
         arguments: {
           task: "Add MCP blueprint parity coverage.",
           repo: "acme/other-service",
-          blueprint: secondFixture.blueprintId,
+          blueprintVersionId: secondFixture.blueprintVersionId,
         },
       });
       expect(mcpDispatch.isError).toBeFalsy();

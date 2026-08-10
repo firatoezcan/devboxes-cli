@@ -39,10 +39,12 @@ export const createDevboxesMcpServer = (context: DevboxesContext) => {
         model: z.string().optional().describe("Model id (uses the server default when omitted)"),
         branch: z.string().optional().describe("Base branch and PR destination (default main)"),
         title: z.string().optional().describe("Run title"),
-        blueprint: z
+        blueprintVersionId: z
           .string()
           .optional()
-          .describe("Blueprint id (defaults to the Implement GitHub Issue blueprint)"),
+          .describe(
+            "Exact Blueprint Version id (defaults to the current Implement GitHub Issue version)",
+          ),
       },
     },
     async (input) => jsonResult(await dispatchDevboxesTask(context, input)),

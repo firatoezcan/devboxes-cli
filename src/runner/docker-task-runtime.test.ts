@@ -28,6 +28,9 @@ const launchSpec = {
     OPENCODE_CONFIG: "/home/workspace/.config/opencode/opencode.json",
     OPENCODE_EXPERIMENTAL_HTTPAPI: "true",
     OPENCODE_EXPERIMENTAL_WORKSPACES: "true",
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "safe.directory",
+    GIT_CONFIG_VALUE_0: "/workspace",
     DEVBOX_OPENCODE_TASK_ID: "task_1",
     DEVBOX_RUN_ID: "run_1",
     DEVBOX_BACKEND_TOKEN_FILE: "/run/devboxes/secrets/backend-token",
@@ -37,7 +40,7 @@ const launchSpec = {
     DEVBOX_DAEMON_SHA256: "a".repeat(64),
     DEVBOX_DAEMON_BOOTSTRAP_PROTOCOL: "devboxes-daemon-bootstrap-v1",
   },
-  memoryBackedPaths: ["/home/workspace/.local/share/opencode"],
+  memoryBackedPaths: ["/home/workspace/.local/share"],
   labels: {
     "app.kubernetes.io/managed-by": "firops-control-plane",
     "devboxes.firops.io/daemon-version": "0.8.1",
@@ -233,8 +236,7 @@ describe("opencode Docker task runtime against the engine API", () => {
         ]),
         Tmpfs: {
           "/run/devboxes/daemon": "rw,noexec,nosuid,size=512m,mode=0700,uid=0,gid=1000",
-          "/home/workspace/.local/share/opencode":
-            "rw,noexec,nosuid,size=512m,mode=0770,uid=0,gid=1000",
+          "/home/workspace/.local/share": "rw,noexec,nosuid,size=512m,mode=0770,uid=1001,gid=1000",
         },
         ExtraHosts: ["host.docker.internal:host-gateway"],
       });
@@ -267,8 +269,12 @@ describe("opencode Docker task runtime against the engine API", () => {
           "OPENCODE_CONFIG=/home/workspace/.config/opencode/opencode.json",
           "OPENCODE_EXPERIMENTAL_HTTPAPI=true",
           "OPENCODE_EXPERIMENTAL_WORKSPACES=true",
+          "GIT_CONFIG_COUNT=1",
+          "GIT_CONFIG_KEY_0=safe.directory",
+          "GIT_CONFIG_VALUE_0=/workspace",
         ]),
       );
+      expect(createBody.Env).not.toContain("GIT_CONFIG_VALUE_0=*");
       // No provider key, backend token, or config payload ever rides env.
       const serializedEnv = createBody.Env.join("\n");
       for (const secret of ["runner-api-key", opencodeConfigJsonBase64, "deepseek-key"]) {

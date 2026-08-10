@@ -538,7 +538,7 @@ export type DispatchInput = {
   model?: string;
   branch?: string;
   title?: string;
-  blueprint?: string;
+  blueprintVersionId?: string;
   // Directory whose git origin remote may infer the project when neither
   // --project, --repo, nor an issue reference selects one. Defaults to the
   // process working directory.
@@ -635,7 +635,9 @@ export const dispatchDevboxesTask = async (context: DevboxesContext, input: Disp
     branch,
     ...(model ? { model } : {}),
     ...(input.title?.trim() ? { title: input.title.trim() } : {}),
-    ...(input.blueprint?.trim() ? { blueprintId: input.blueprint.trim() } : {}),
+    ...(input.blueprintVersionId?.trim()
+      ? { blueprintVersionId: input.blueprintVersionId.trim() }
+      : {}),
   });
   if (dispatched.error) throw apiRequestError("Dispatch", dispatched.error);
   if (!dispatched.data) throw new Error("Dispatch returned no session.");
@@ -691,46 +693,46 @@ export const sessionReachedTerminalState = (input: { run: { status: string } }) 
 // ceiling as the login flow's browser-approval poll.
 const finalOutputReadTimeoutMs = 5 * 60_000;
 
-// Reads the session's projected message history from the v2 read API and
-// extracts the text of the latest assistant message as the session's final
-// output. A session that never reached opencode has no output yet.
-const readFinalAssistantMessage = async (
-  context: DevboxesContext,
-  agentSessionId: string,
-  opencodeSessionId: string | null,
-) => {
-  if (!opencodeSessionId) return null;
+// Reads generated stable events and extracts the latest assistant turn. A
+// Session that never reached OpenCode has no output yet.
+const readFinalAssistantMessage = async (context: DevboxesContext, agentSessionId: string) => {
   const { backend, organizationId } = connectedBackend(context);
   const readDeadline = AbortSignal.timeout(finalOutputReadTimeoutMs);
   const response = await backend.api
     .org({ organizationId })
     ["agent-sessions"]({ agentSessionId })
-    .opencode.v2.session({ sessionID: opencodeSessionId })
-    .message.get({ fetch: { signal: readDeadline } })
+    .opencode.events.get({ fetch: { signal: readDeadline } })
     .catch((error: unknown) => {
       // AbortSignal.timeout surfaces as an opaque TimeoutError; name the deadline.
       if (readDeadline.aborted) {
         throw new Error(
-          `Opencode message read timed out after ${finalOutputReadTimeoutMs / 60_000} minutes without a response.`,
+          `OpenCode event read timed out after ${finalOutputReadTimeoutMs / 60_000} minutes without a response.`,
         );
       }
       throw error;
     });
-  if (response.error) throw apiRequestError("Opencode message read", response.error);
+  if (response.error) throw apiRequestError("OpenCode stable event read", response.error);
 
-  // Messages arrive ascending; the last assistant message is the final turn.
-  const messages = response.data ?? [];
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (!message || message.info.role !== "assistant") continue;
-    const texts: string[] = [];
-    for (const part of message.parts) {
-      if (part.type !== "text" || part.synthetic || part.ignored) continue;
-      texts.push(part.text);
+  const events = response.data ?? [];
+  let assistantMessageId: string | undefined;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event?.type === "session.next.step.started") {
+      assistantMessageId = event.data.assistantMessageID;
+      break;
     }
-    return texts.join("\n\n").trim() || null;
   }
-  return null;
+  if (!assistantMessageId) return null;
+  const texts: string[] = [];
+  for (const event of events) {
+    if (
+      event.type === "session.next.text.ended" &&
+      event.data.assistantMessageID === assistantMessageId
+    ) {
+      texts.push(event.data.text);
+    }
+  }
+  return texts.join("\n\n").trim() || null;
 };
 
 export const readDevboxesSessionResult = async (
@@ -741,11 +743,7 @@ export const readDevboxesSessionResult = async (
   let finalOutput: string | null = null;
   let finalOutputError: string | null = null;
   try {
-    finalOutput = await readFinalAssistantMessage(
-      context,
-      agentSessionId,
-      currentTask.opencodeSessionId,
-    );
+    finalOutput = await readFinalAssistantMessage(context, agentSessionId);
   } catch (error) {
     // The outcome and PR link stay useful even when event storage is
     // unreachable; surface the gap instead of failing the whole result.
@@ -822,7 +820,10 @@ export const addAccountCommands = (program: Command) => {
     .option("--model <provider/model>", "model id (uses the server default when omitted)")
     .option("--branch <branch>", "base branch and PR destination", "main")
     .option("--title <title>", "run title")
-    .option("--blueprint <id>", "blueprint id (defaults to the Implement GitHub Issue blueprint)")
+    .option(
+      "--blueprint-version <id>",
+      "Blueprint Version id (defaults to the current Implement GitHub Issue version)",
+    )
     .option("--json", "print the dispatch result as JSON on stdout", false)
     .action(async (taskWords: string[]) => {
       const options = dispatchCommand.opts<{
@@ -831,7 +832,7 @@ export const addAccountCommands = (program: Command) => {
         model?: string;
         branch: string;
         title?: string;
-        blueprint?: string;
+        blueprintVersion?: string;
         json: boolean;
       }>();
       const context = await loadContext(cliOptions(dispatchCommand));
@@ -842,7 +843,7 @@ export const addAccountCommands = (program: Command) => {
         model: options.model,
         branch: options.branch,
         title: options.title,
-        blueprint: options.blueprint,
+        blueprintVersionId: options.blueprintVersion,
       });
       if (options.json) {
         process.stdout.write(`${JSON.stringify(dispatched, null, 2)}\n`);

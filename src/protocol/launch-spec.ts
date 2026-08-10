@@ -44,9 +44,9 @@ export const OpencodeLaunchSpecSchema = Type.Object(
     // daemon artifact pin) minus clientOwnedLaunchEnvKeys.
     env: Type.Record(Type.String({ minLength: 1 }), Type.String()),
     // Container paths that must live on memory-backed storage (the daemon
-    // writes decrypted provider keys under them); each runtime supplies its
-    // own memory-backing mechanics — docker tmpfs options, Kubernetes
-    // Memory-medium emptyDir.
+    // briefly stages decrypted provider auth under them while the engine
+    // loads it); each runtime supplies its own memory-backing mechanics —
+    // Docker tmpfs options or a Kubernetes Memory-medium emptyDir.
     memoryBackedPaths: Type.Array(Type.String({ minLength: 1 })),
     // Additive metadata. The reconciliation labels a runtime reads back on
     // restart (workload/task-id/organization-id) stay runtime-composed and
