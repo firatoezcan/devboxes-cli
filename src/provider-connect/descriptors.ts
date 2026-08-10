@@ -15,12 +15,24 @@ import type { OpencodeConnectorDescriptor } from "./descriptor-schema";
 
 const openaiIssuer = "https://auth.openai.com";
 
+export const opencodeApiKeyProviders = [
+  { id: "anthropic", label: "Anthropic" },
+  { id: "cerebras", label: "Cerebras" },
+  { id: "deepseek", label: "DeepSeek" },
+  { id: "groq", label: "Groq" },
+  { id: "mistral", label: "Mistral" },
+  { id: "openai", label: "OpenAI" },
+  { id: "opencode", label: "OpenCode Zen" },
+  { id: "opencode-go", label: "OpenCode Go" },
+  { id: "togetherai", label: "Together AI" },
+  { id: "xai", label: "xAI" },
+] as const;
+
 export const opencodeProviderConnectors: readonly OpencodeConnectorDescriptor[] = [
   {
     providerId: "openai",
     label: "ChatGPT Pro/Plus",
-    description:
-      "Authorize an OpenAI ChatGPT Pro or Plus subscription. Runs on this credential use the Codex model set included with the subscription.",
+    description: "Authorize an OpenAI ChatGPT Pro or Plus subscription.",
     kind: "openai-device",
     // The Codex CLI's public client; opencode reuses it for the same reason.
     clientId: "app_EMoamEEZ73f0CkXaXp7hrann",

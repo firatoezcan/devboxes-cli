@@ -473,6 +473,21 @@ export class DockerOpencodeTaskRuntime {
         if ((error as { statusCode?: number }).statusCode === 404) return;
         throw error;
       });
+    const deletionDeadline = Date.now() + 10_000;
+    for (;;) {
+      const existing = await docker
+        .getContainer(container)
+        .inspect()
+        .catch((error) => {
+          if ((error as { statusCode?: number }).statusCode === 404) return null;
+          throw error;
+        });
+      if (!existing) break;
+      if (Date.now() >= deletionDeadline) {
+        throw new Error("Docker task container still exists after removal was requested.");
+      }
+      await Bun.sleep(100);
+    }
     await removeStateImage(docker, stateImage);
     await removeOpencodeTaskDockerSecrets({
       organizationId,

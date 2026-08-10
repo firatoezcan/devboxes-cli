@@ -2,33 +2,33 @@ import { describe, expect, it } from "bun:test";
 
 import Value from "typebox/value";
 
-import {
-  opencodeExactProviderIdsLaunchProtocol,
-  opencodeIsolatedAgentLaunchProtocol,
-  OpencodeLaunchSpecSchema,
-  opencodeUsageAuthorityLaunchProtocol,
-} from "./launch-spec";
+import { opencodeWorkspaceLaunchProtocol, OpencodeLaunchSpecSchema } from "./launch-spec";
 
 describe("current launch protocol", () => {
-  it("keeps the shipped exact-provider-ids protocol literal", () => {
-    expect(opencodeExactProviderIdsLaunchProtocol).toBe("devboxes-launch-v2");
-  });
-
-  it("keeps the shipped usage-authority protocol literal", () => {
-    expect(opencodeUsageAuthorityLaunchProtocol).toBe("devboxes-launch-v3");
-  });
-
-  it("accepts a spec tagged with isolated agent execution", () => {
-    expect(opencodeIsolatedAgentLaunchProtocol).toBe("devboxes-launch-v4");
+  it("accepts the current Workspace capability protocol", () => {
+    expect(opencodeWorkspaceLaunchProtocol).toBe("devboxes-launch-v5");
     expect(
       Value.Check(OpencodeLaunchSpecSchema, {
-        launchProtocol: opencodeIsolatedAgentLaunchProtocol,
+        launchProtocol: opencodeWorkspaceLaunchProtocol,
+        workspaceCapability: "agent-task",
         workingDir: "/workspace",
         entrypoint: "/bin/devboxes-task",
         env: {},
         memoryBackedPaths: [],
         labels: {},
         providerAuthSource: "organization",
+      }),
+    ).toBe(true);
+    expect(
+      Value.Check(OpencodeLaunchSpecSchema, {
+        launchProtocol: opencodeWorkspaceLaunchProtocol,
+        workspaceCapability: "provider-model-resolution",
+        workingDir: "/workspace",
+        entrypoint: "/bin/devboxes-task",
+        env: {},
+        memoryBackedPaths: [],
+        labels: {},
+        providerAuthSource: "local-broker",
       }),
     ).toBe(true);
   });

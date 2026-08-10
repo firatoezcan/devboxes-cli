@@ -18,7 +18,8 @@ const daemonApiBaseUrl = "http://host.docker.internal:3001/api";
 // A server-authored launch spec as the claim response serves it; this runtime
 // executes it and overlays only the machine-local env keys.
 const launchSpec = {
-  launchProtocol: "devboxes-launch-v4" as const,
+  launchProtocol: "devboxes-launch-v5" as const,
+  workspaceCapability: "agent-task" as const,
   workingDir: "/workspace",
   entrypoint: "/entrypoint.sh",
   env: {
@@ -31,7 +32,7 @@ const launchSpec = {
     GIT_CONFIG_COUNT: "1",
     GIT_CONFIG_KEY_0: "safe.directory",
     GIT_CONFIG_VALUE_0: "/workspace",
-    DEVBOX_OPENCODE_TASK_ID: "task_1",
+    DEVBOX_WORKSPACE_CAPABILITY_ID: "task_1",
     DEVBOX_RUN_ID: "run_1",
     DEVBOX_BACKEND_TOKEN_FILE: "/run/devboxes/secrets/backend-token",
     DEVBOX_DAEMON_PRIVATE_DIR: "/run/devboxes/daemon",
@@ -255,7 +256,7 @@ describe("opencode Docker task runtime against the engine API", () => {
       ).toBe(false);
       expect(createBody.Env).toEqual(
         expect.arrayContaining([
-          "DEVBOX_OPENCODE_TASK_ID=task_1",
+          "DEVBOX_WORKSPACE_CAPABILITY_ID=task_1",
           "DEVBOX_RUN_ID=run_1",
           "DEVBOX_OPENCODE_PROVIDER_AUTH_URL=http://host.docker.internal:43111",
           "DEVBOX_OPENCODE_CONFIG_JSON_FILE=/run/devboxes/secrets/opencode-config.json",
@@ -501,6 +502,9 @@ describe("opencode Docker task runtime against the engine API", () => {
       if (request.method === "DELETE" && request.pathname === "/containers/container_old") {
         return { status: 204 };
       }
+      if (request.method === "GET" && request.pathname === "/containers/container_old/json") {
+        return { status: 404, body: { message: "no such container" } };
+      }
       if (
         request.method === "DELETE" &&
         request.pathname === "/images/firops/opencode-task-state:5f5d08238327"
@@ -528,8 +532,54 @@ describe("opencode Docker task runtime against the engine API", () => {
       expect(engine.requests.map((request) => `${request.method} ${request.pathname}`)).toEqual([
         "POST /containers/container_old/stop",
         "DELETE /containers/container_old",
+        "GET /containers/container_old/json",
         "DELETE /images/firops/opencode-task-state:5f5d08238327",
       ]);
+      await expectTaskBackendTokenRemoved();
+    } finally {
+      await engine.close();
+    }
+  });
+
+  it("waits for a Docker container to be absent after remove is accepted", async () => {
+    let removed = false;
+    let postDeleteInspections = 0;
+    const engine = await startEngineServer(socketPath, (request) => {
+      if (request.pathname === "/containers/container_old/stop") {
+        return { status: 204 };
+      }
+      if (request.method === "DELETE" && request.pathname === "/containers/container_old") {
+        removed = true;
+        return { status: 204 };
+      }
+      if (
+        request.method === "GET" &&
+        request.pathname === "/containers/container_old/json" &&
+        removed
+      ) {
+        postDeleteInspections += 1;
+        return postDeleteInspections === 1
+          ? { status: 200, body: { Id: "container_old", State: { Running: true } } }
+          : { status: 404, body: { message: "no such container" } };
+      }
+      if (
+        request.method === "DELETE" &&
+        request.pathname === "/images/firops/opencode-task-state:5f5d08238327"
+      ) {
+        return { status: 200, body: [] };
+      }
+      return { status: 500, body: { message: `unexpected ${request.pathname}` } };
+    });
+    const { DockerOpencodeTaskRuntime } = await import("./docker-task-runtime");
+    await writeTaskBackendTokenFile();
+
+    try {
+      await new DockerOpencodeTaskRuntime({ daemonApiBaseUrl }).stopTask({
+        taskId: "task_1",
+        containerId: "container_old",
+        organizationId: "org_1",
+      });
+      expect(postDeleteInspections).toBe(2);
       await expectTaskBackendTokenRemoved();
     } finally {
       await engine.close();

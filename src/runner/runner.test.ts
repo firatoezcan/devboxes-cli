@@ -140,6 +140,8 @@ describe("runner CLI", () => {
     expect(doctor?.options.map((option) => option.long)).toContain("--json");
     const credentialsStatus = credentials?.commands.find((child) => child.name() === "status");
     expect(credentialsStatus?.options.map((option) => option.long)).toContain("--json");
+    const credentialsSync = credentials?.commands.find((child) => child.name() === "sync");
+    expect(credentialsSync?.options.map((option) => option.long)).toContain("--credential");
   });
 
   it("uses a container-reachable API URL for local runner targets", () => {
@@ -632,7 +634,7 @@ describe("runner Opencode credentials", () => {
     expect(output).not.toContain("openai-key");
   });
 
-  it("syncs API keys and skips local OAuth logins with a connect pointer", async () => {
+  it("syncs API keys, carries an exact repair target, and skips local OAuth logins", async () => {
     await writeFile(
       authFile,
       JSON.stringify({
@@ -733,6 +735,29 @@ describe("runner Opencode credentials", () => {
         },
         {},
       );
+      await syncOpencodeProviderCredentials(
+        {
+          configPath: join(fixtureDir, "config.json"),
+          config: {
+            apiBaseUrl: `http://127.0.0.1:${port}/api`,
+            authBaseUrl: `http://127.0.0.1:${port}/api/auth`,
+            organizationId: "00000000-0000-7000-8000-000000000042",
+            machineId: "00000000-0000-7000-8000-000000000043",
+            apiKey: "runner-api-key",
+            opencodeProviderCredentials: [
+              {
+                providerId: "opencode-go",
+                authFile,
+                source: "opencode-auth-file",
+              },
+            ],
+          },
+        },
+        {
+          provider: "opencode-go",
+          credential: "00000000-0000-7000-8000-000000000044",
+        },
+      );
     } finally {
       server.close();
       if (originalBrowser === undefined) delete process.env.BROWSER;
@@ -740,7 +765,7 @@ describe("runner Opencode credentials", () => {
     }
 
     const syncRequests = requests.filter((entry) => entry.path.includes("/sync"));
-    expect(syncRequests).toHaveLength(3);
+    expect(syncRequests).toHaveLength(4);
     expect(syncRequests.map((request) => JSON.parse(request.body))).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -754,6 +779,11 @@ describe("runner Opencode credentials", () => {
         }),
         expect.objectContaining({
           providerId: "opencode-go",
+          auth: { type: "api", key: "go-key" },
+        }),
+        expect.objectContaining({
+          providerId: "opencode-go",
+          credentialId: "00000000-0000-7000-8000-000000000044",
           auth: { type: "api", key: "go-key" },
         }),
       ]),
@@ -1310,7 +1340,7 @@ describe("runner Opencode credentials", () => {
     expect(output).not.toContain("openai-key");
   });
 
-  it("omits a broken local credential without blocking a valid claim advertisement", async () => {
+  it("advertises only credential identity while unreadable sources remain explicit", async () => {
     const dockerSocketPath = join(fixtureDir, "docker-listen.sock");
     const dockerServer = createServer((_request, response) => {
       response.setHeader("Content-Type", "application/json");
@@ -1325,16 +1355,20 @@ describe("runner Opencode credentials", () => {
     });
 
     const configPath = join(fixtureDir, "listen-config.json");
+    const heartbeat = Promise.withResolvers<unknown>();
     const claim = Promise.withResolvers<unknown>();
+    let heartbeatCount = 0;
     const apiServer = Bun.serve({
       port: 0,
       async fetch(request) {
         const pathname = new URL(request.url).pathname;
         if (pathname.endsWith("/heartbeat")) {
+          heartbeatCount += 1;
+          if (heartbeatCount > 1) heartbeat.resolve(await request.json());
           await writeFile(
             authFile,
             JSON.stringify({
-              openai: {
+              "local-only": {
                 type: "oauth",
                 refresh: "replacement-refresh",
                 access: "replacement-access",
@@ -1345,6 +1379,9 @@ describe("runner Opencode credentials", () => {
           return Response.json({});
         }
         if (pathname.endsWith("/tasks")) return Response.json({ tasks: [] });
+        if (pathname.endsWith("/model-resolutions/claim")) {
+          return new Response(null, { status: 204 });
+        }
         if (pathname.endsWith("/claim")) {
           claim.resolve(await request.json());
           return new Response(null, { status: 204 });
@@ -1361,7 +1398,7 @@ describe("runner Opencode credentials", () => {
           organizationId: "org_1",
           apiKey: "runner-api-key",
           opencodeProviderCredentials: [
-            { providerId: "openai", authFile, source: "opencode-auth-file" },
+            { providerId: "local-only", authFile, source: "opencode-auth-file" },
             {
               providerId: "anthropic",
               authFile: join(fixtureDir, "missing-anthropic-auth.json"),
@@ -1387,7 +1424,11 @@ describe("runner Opencode credentials", () => {
     const stderrText = new Response(listening.stderr).text();
     try {
       const outcome = await Promise.race([
-        claim.promise.then((body) => ({ kind: "claim" as const, body })),
+        Promise.all([heartbeat.promise, claim.promise]).then(([heartbeatBody, claimBody]) => ({
+          kind: "claim" as const,
+          heartbeatBody,
+          claimBody,
+        })),
         listening.exited.then((exitCode) => ({ kind: "exit" as const, exitCode })),
         Bun.sleep(10_000).then(() => ({ kind: "timeout" as const })),
       ]);
@@ -1401,15 +1442,23 @@ describe("runner Opencode credentials", () => {
             : `devboxes listen did not claim within 10 seconds (exit ${exitCode}): ${stderr}`,
         );
       }
-      expect(outcome.body).toMatchObject({
+      expect(outcome.heartbeatBody).toMatchObject({
         localProviderCredentials: [
           {
-            providerId: "openai",
-            authType: "oauth",
-            credentialFingerprint: expect.any(String),
+            providerId: "anthropic",
+            authType: null,
+            credentialFingerprint: null,
+          },
+          {
+            providerId: "local-only",
+            authType: null,
+            credentialFingerprint: null,
           },
         ],
-        launchProtocols: ["devboxes-launch-v4"],
+      });
+      expect(outcome.claimBody).toEqual({
+        leaseMs: 120_000,
+        launchProtocols: ["devboxes-launch-v5"],
       });
     } finally {
       if (!listening.killed) listening.kill("SIGTERM");
@@ -1420,7 +1469,7 @@ describe("runner Opencode credentials", () => {
       });
     }
     expect(await stderrText).toContain(
-      "Local provider credential anthropic is unavailable for this claim:",
+      "Local provider credential anthropic could not be loaded or refreshed.",
     );
   });
 
@@ -1440,6 +1489,7 @@ describe("runner Opencode credentials", () => {
 
     let passphrase = "";
     let claim = Promise.withResolvers<unknown>();
+    let heartbeat = Promise.withResolvers<unknown>();
     const apiServer = Bun.serve({
       port: 0,
       async fetch(request) {
@@ -1447,8 +1497,14 @@ describe("runner Opencode credentials", () => {
         if (pathname.endsWith("/credential-store-passphrase")) {
           return Response.json({ passphrase });
         }
-        if (pathname.endsWith("/heartbeat")) return Response.json({});
+        if (pathname.endsWith("/heartbeat")) {
+          heartbeat.resolve(await request.json());
+          return Response.json({});
+        }
         if (pathname.endsWith("/tasks")) return Response.json({ tasks: [] });
+        if (pathname.endsWith("/model-resolutions/claim")) {
+          return new Response(null, { status: 204 });
+        }
         if (pathname.endsWith("/claim")) {
           claim.resolve(await request.json());
           return new Response(null, { status: 204 });
@@ -1535,6 +1591,7 @@ describe("runner Opencode credentials", () => {
         await mkdir(scenarioDirectory, { recursive: true });
         passphrase = `${scenario.name}-passphrase`;
         claim = Promise.withResolvers<unknown>();
+        heartbeat = Promise.withResolvers<unknown>();
         const storePath = join(scenarioDirectory, credentialStoreFileName);
         let originalStoreContents: string | undefined;
         if (scenario.store) {
@@ -1578,7 +1635,11 @@ describe("runner Opencode credentials", () => {
         const stderrText = new Response(listening.stderr).text();
         try {
           const outcome = await Promise.race([
-            claim.promise.then((body) => ({ kind: "claim" as const, body })),
+            Promise.all([heartbeat.promise, claim.promise]).then(([heartbeatBody, claimBody]) => ({
+              kind: "claim" as const,
+              heartbeatBody,
+              claimBody,
+            })),
             listening.exited.then((exitCode) => ({ kind: "exit" as const, exitCode })),
             Bun.sleep(10_000).then(() => ({ kind: "timeout" as const })),
           ]);
@@ -1592,12 +1653,15 @@ describe("runner Opencode credentials", () => {
                 : `${scenario.name}: devboxes listen did not claim within 10 seconds (exit ${exitCode}): ${stderr}`,
             );
           }
-          expect(outcome.body).toMatchObject({
+          expect(outcome.heartbeatBody).toMatchObject({
             localProviderCredentials: scenario.expectedProviders.map((provider) => ({
               ...provider,
               credentialFingerprint: expect.any(String),
             })),
-            launchProtocols: ["devboxes-launch-v4"],
+          });
+          expect(outcome.claimBody).toMatchObject({
+            leaseMs: 120_000,
+            launchProtocols: ["devboxes-launch-v5"],
           });
         } finally {
           if (!listening.killed) listening.kill("SIGTERM");
@@ -1620,6 +1684,214 @@ describe("runner Opencode credentials", () => {
       });
     }
   });
+
+  it("renews Workspace resolution ownership through failed Docker cleanup", async () => {
+    const dockerSocketPath = join(fixtureDir, "docker-model-resolution.sock");
+    const resolutionId = "00000000-0000-7000-8000-000000000493";
+    const leaseId = "00000000-0000-7000-8000-000000000495";
+    const rawFailureMarker = "credential-bearing-docker-cleanup-text";
+    let containerInspectCount = 0;
+    let containerCreateCount = 0;
+    let stopCount = 0;
+    let containerRemoved = false;
+    const dockerServer = createServer((request, response) => {
+      const url = new URL(request.url ?? "/", "http://docker.local");
+      response.setHeader("Content-Type", "application/json");
+      if (request.method === "GET" && url.pathname.endsWith("/containers/json")) {
+        response.end("[]");
+        return;
+      }
+      if (
+        request.method === "GET" &&
+        url.pathname.endsWith("/containers/container-model-resolution/json")
+      ) {
+        if (containerRemoved) {
+          response.statusCode = 404;
+          response.end(JSON.stringify({ message: "No such container" }));
+          return;
+        }
+        containerInspectCount += 1;
+        response.end(
+          JSON.stringify({
+            Id: "container-model-resolution",
+            State: {
+              Running: containerInspectCount < 3,
+              ExitCode: 0,
+              Error: "",
+              FinishedAt: "0001-01-01T00:00:00Z",
+            },
+          }),
+        );
+        return;
+      }
+      if (request.method === "GET" && url.pathname.endsWith("/json")) {
+        response.statusCode = 404;
+        response.end(JSON.stringify({ message: "No such container" }));
+        return;
+      }
+      if (request.method === "POST" && url.pathname.endsWith("/images/create")) {
+        response.end(`${JSON.stringify({ status: "Downloaded" })}\n`);
+        return;
+      }
+      if (request.method === "POST" && url.pathname.endsWith("/containers/create")) {
+        containerCreateCount += 1;
+        response.statusCode = 201;
+        response.end(JSON.stringify({ Id: "container-model-resolution" }));
+        return;
+      }
+      if (request.method === "POST" && url.pathname.endsWith("/start")) {
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
+      if (request.method === "POST" && url.pathname.endsWith("/stop")) {
+        stopCount += 1;
+        if (stopCount === 1) {
+          response.statusCode = 500;
+          response.end(JSON.stringify({ message: rawFailureMarker }));
+        } else {
+          response.statusCode = 304;
+          response.end();
+        }
+        return;
+      }
+      if (
+        request.method === "DELETE" &&
+        url.pathname.endsWith("/containers/container-model-resolution")
+      ) {
+        containerRemoved = true;
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
+      if (request.method === "DELETE" && url.pathname.includes("/images/")) {
+        response.statusCode = 404;
+        response.end(JSON.stringify({ message: "No such image" }));
+        return;
+      }
+      response.statusCode = 404;
+      response.end(
+        JSON.stringify({ message: `Unexpected Docker request ${request.method} ${url.pathname}` }),
+      );
+    });
+    await new Promise<void>((resolve, reject) => {
+      dockerServer.once("error", reject);
+      dockerServer.listen(dockerSocketPath, () => {
+        dockerServer.off("error", reject);
+        resolve();
+      });
+    });
+
+    const configPath = join(fixtureDir, "listen-model-resolution.json");
+    const cleanupReceipt = Promise.withResolvers<void>();
+    let claimed = false;
+    let leaseCount = 0;
+    const { opencodeModelResolutionLaunchSpec } = await import("@/opencode/launch-spec");
+    const daemonArtifact = {
+      version: "0.9.29",
+      bootstrapProtocol: "devboxes-daemon-bootstrap-v1" as const,
+      platform: "linux/amd64" as const,
+      sha256: "a".repeat(64),
+    };
+    const apiServer = Bun.serve({
+      port: 0,
+      fetch(request) {
+        const pathname = new URL(request.url).pathname;
+        if (pathname.endsWith("/heartbeat")) return Response.json({});
+        if (pathname.endsWith("/tasks")) return Response.json({ tasks: [] });
+        if (pathname.endsWith("/model-resolutions/claim")) {
+          if (claimed) return new Response(null, { status: 204 });
+          claimed = true;
+          return Response.json({
+            action: "resolve",
+            resolutionId,
+            leaseId,
+            resource: {
+              runtime: "docker",
+              containerName: taskContainerName(resolutionId),
+            },
+            leaseMs: 60,
+            organizationId: "00000000-0000-7000-8000-000000000494",
+            providerId: "openai",
+            credentialFingerprint: "a".repeat(64),
+            source: "organization",
+            imageRef:
+              "registry-1.docker.io/firatoezcan/devboxes@sha256:0132f868cf2b6613f61148489b2cbde57f5a0e0f40cdac97b3c4f93c0971cf10",
+            perCapabilityToken: "model-resolution-capability-token",
+            launchSpec: opencodeModelResolutionLaunchSpec({
+              resolutionId,
+              providerId: "openai",
+              daemonArtifact,
+              providerAuthSource: "organization",
+            }),
+          });
+        }
+        if (pathname.endsWith(`/model-resolutions/${resolutionId}/lease`)) {
+          leaseCount += 1;
+          return Response.json({ renewed: true });
+        }
+        if (pathname.endsWith(`/model-resolutions/${resolutionId}/cleanup`)) {
+          if (!containerRemoved) {
+            return Response.json(
+              { error: "Cleanup was acknowledged before resource deletion." },
+              { status: 409 },
+            );
+          }
+          cleanupReceipt.resolve();
+          return Response.json({ released: true });
+        }
+        if (pathname.endsWith("/claim")) return new Response(null, { status: 204 });
+        return Response.json({ error: "Unexpected request." }, { status: 404 });
+      },
+    });
+    await writeFile(
+      configPath,
+      `${JSON.stringify({
+        apiBaseUrl: `http://127.0.0.1:${apiServer.port}/api`,
+        authBaseUrl: `http://127.0.0.1:${apiServer.port}/api/auth`,
+        organizationId: "00000000-0000-7000-8000-000000000494",
+        apiKey: "runner-api-key",
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    const listening = Bun.spawn(
+      [process.execPath, join(import.meta.dir, "../cli.ts"), "--config", configPath, "listen"],
+      {
+        cwd: join(import.meta.dir, "../.."),
+        env: {
+          ...process.env,
+          DEVBOX_OPENCODE_DOCKER_SOCKET_PATH: dockerSocketPath,
+          DEVBOX_OPENCODE_HOME_ROOT: join(fixtureDir, "model-resolution-runtime"),
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const stdoutText = new Response(listening.stdout).text();
+    const stderrText = new Response(listening.stderr).text();
+    try {
+      const outcome = await Promise.race([
+        cleanupReceipt.promise.then(() => "cleaned" as const),
+        listening.exited.then(() => "exited" as const),
+        Bun.sleep(10_000).then(() => "timeout" as const),
+      ]);
+      expect(outcome).toBe("cleaned");
+      expect(containerCreateCount).toBe(1);
+      expect(stopCount).toBe(2);
+      expect(leaseCount).toBeGreaterThan(2);
+      expect(containerRemoved).toBe(true);
+    } finally {
+      if (!listening.killed) listening.kill("SIGTERM");
+      await listening.exited;
+      await apiServer.stop(true);
+      await new Promise<void>((resolve, reject) => {
+        dockerServer.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+    expect(await stdoutText).not.toContain(rawFailureMarker);
+    expect(await stderrText).not.toContain(rawFailureMarker);
+  }, 15_000);
 
   it("serves the exact local credential material advertised by the successful claim", async () => {
     const dockerSocketPath = join(fixtureDir, "docker-claim-authority.sock");
@@ -1686,17 +1958,27 @@ describe("runner Opencode credentials", () => {
         if (pathname.endsWith("/credential-store-passphrase")) {
           return Response.json({ passphrase: "claim-authority-provider-snapshot-passphrase" });
         }
-        if (pathname.endsWith("/heartbeat")) return Response.json({});
+        if (pathname.endsWith("/heartbeat")) {
+          const body = (await request.json()) as {
+            localProviderCredentials: Array<{ credentialFingerprint: string | null }>;
+          };
+          const credentialFingerprint = body.localProviderCredentials[0]?.credentialFingerprint;
+          if (!credentialFingerprint) {
+            throw new Error("Heartbeat omitted the credential fingerprint.");
+          }
+          claimedCredentialFingerprint = credentialFingerprint;
+          return Response.json({});
+        }
         if (pathname.endsWith("/tasks")) return Response.json({ tasks: [] });
+        if (pathname.endsWith("/model-resolutions/claim")) {
+          return new Response(null, { status: 204 });
+        }
         if (pathname.endsWith("/claim")) {
           if (claimed) return new Response(null, { status: 204 });
           claimed = true;
-          const body = (await request.json()) as {
-            localProviderCredentials: Array<{ credentialFingerprint: string }>;
-          };
-          const credentialFingerprint = body.localProviderCredentials[0]?.credentialFingerprint;
-          if (!credentialFingerprint) throw new Error("Claim omitted the credential fingerprint.");
-          claimedCredentialFingerprint = credentialFingerprint;
+          if (!claimedCredentialFingerprint) {
+            throw new Error("Claim arrived before the credential heartbeat.");
+          }
           await writeFile(
             authFile,
             JSON.stringify({
@@ -1715,7 +1997,7 @@ describe("runner Opencode credentials", () => {
             imageRef:
               "registry-1.docker.io/firatoezcan/devboxes@sha256:0132f868cf2b6613f61148489b2cbde57f5a0e0f40cdac97b3c4f93c0971cf10",
             modelProviderId: "openai",
-            providerCredentialFingerprint: credentialFingerprint,
+            providerCredentialFingerprint: claimedCredentialFingerprint,
             daemonArtifact: {
               version: "0.8.1",
               bootstrapProtocol: "devboxes-daemon-bootstrap-v1",
@@ -1728,7 +2010,8 @@ describe("runner Opencode credentials", () => {
             leaseExpiresAt: new Date(Date.now() + 120_000).toISOString(),
             perTaskToken: "claim-authority-task-token",
             launchSpec: {
-              launchProtocol: "devboxes-launch-v4",
+              launchProtocol: "devboxes-launch-v5",
+              workspaceCapability: "agent-task",
               entrypoint: "/entrypoint.sh",
               workingDir: "/workspace",
               env: {
@@ -1738,7 +2021,7 @@ describe("runner Opencode credentials", () => {
                 OPENCODE_CONFIG: "/home/workspace/.config/opencode/opencode.json",
                 OPENCODE_EXPERIMENTAL_HTTPAPI: "true",
                 OPENCODE_EXPERIMENTAL_WORKSPACES: "true",
-                DEVBOX_OPENCODE_TASK_ID: taskId,
+                DEVBOX_WORKSPACE_CAPABILITY_ID: taskId,
                 DEVBOX_RUN_ID: runId,
                 DEVBOX_BACKEND_TOKEN_FILE: "/run/devboxes/secrets/backend-token",
                 DEVBOX_DAEMON_VERSION: "0.8.1",
@@ -1865,6 +2148,13 @@ describe("runner Opencode credentials", () => {
     const passphrase = "restart-provider-snapshot-passphrase";
     const claimAuth = { openai: { type: "api" as const, key: "claim-snapshot-api-key" } };
     const claimFingerprint = opencodeProviderAuthFingerprint("openai", claimAuth.openai);
+    const rotatedAuth = {
+      type: "oauth" as const,
+      refresh: "rotated-after-claim-refresh",
+      access: "rotated-after-claim-access",
+      expires: 0,
+    };
+    const rotatedFingerprint = opencodeProviderAuthFingerprint("openai", rotatedAuth);
     const homeRoot = join(fixtureDir, "restart-authority-runtime");
     process.env.DEVBOX_OPENCODE_DOCKER_SOCKET_PATH = dockerSocketPath;
     process.env.DEVBOX_OPENCODE_HOME_ROOT = homeRoot;
@@ -1881,12 +2171,7 @@ describe("runner Opencode credentials", () => {
     await writeFile(
       authFile,
       JSON.stringify({
-        openai: {
-          type: "oauth",
-          refresh: "rotated-after-claim-refresh",
-          access: "rotated-after-claim-access",
-          expires: 0,
-        },
+        openai: rotatedAuth,
       }),
     );
 
@@ -1940,6 +2225,14 @@ describe("runner Opencode credentials", () => {
     });
 
     const configPath = join(fixtureDir, "listen-restart-authority.json");
+    const busyHeartbeat = Promise.withResolvers<{
+      localProviderCredentials: Array<{
+        providerId: string;
+        authType: "api" | "oauth" | null;
+        credentialFingerprint: string | null;
+      }>;
+    }>();
+    let heartbeatCount = 0;
     const apiServer = Bun.serve({
       port: 0,
       async fetch(request) {
@@ -1947,7 +2240,18 @@ describe("runner Opencode credentials", () => {
         if (pathname.endsWith("/credential-store-passphrase")) {
           return Response.json({ passphrase });
         }
-        if (pathname.endsWith("/heartbeat")) return Response.json({});
+        if (pathname.endsWith("/heartbeat")) {
+          heartbeatCount += 1;
+          const body = (await request.json()) as {
+            localProviderCredentials: Array<{
+              providerId: string;
+              authType: "api" | "oauth" | null;
+              credentialFingerprint: string | null;
+            }>;
+          };
+          if (heartbeatCount > 1) busyHeartbeat.resolve(body);
+          return Response.json({});
+        }
         if (pathname.endsWith("/tasks")) {
           return Response.json({
             tasks: [
@@ -2028,10 +2332,13 @@ describe("runner Opencode credentials", () => {
     });
     try {
       const outcome = await Promise.race([
-        Promise.all([brokerPort.promise, reAdopted.promise]).then(([port]) => ({
-          kind: "ready" as const,
-          port,
-        })),
+        Promise.all([brokerPort.promise, reAdopted.promise, busyHeartbeat.promise]).then(
+          ([port, _reAdopted, heartbeat]) => ({
+            kind: "ready" as const,
+            port,
+            heartbeat,
+          }),
+        ),
         listening.exited.then((exitCode) => ({ kind: "exit" as const, exitCode })),
         Bun.sleep(10_000).then(() => ({ kind: "timeout" as const })),
       ]);
@@ -2044,6 +2351,14 @@ describe("runner Opencode credentials", () => {
             : `devboxes listen did not re-adopt within 10 seconds: ${stdoutText}\n${stderr}`,
         );
       }
+
+      expect(outcome.heartbeat.localProviderCredentials).toMatchObject([
+        {
+          providerId: "openai",
+          authType: "oauth",
+          credentialFingerprint: rotatedFingerprint,
+        },
+      ]);
 
       const response = await treaty<OpencodeCredentialBrokerApi>(
         `http://127.0.0.1:${outcome.port}`,

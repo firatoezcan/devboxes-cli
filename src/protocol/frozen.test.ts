@@ -16,7 +16,7 @@ import {
   runnerMachineApiPrefix,
   runnerMachineRoutePrefix,
 } from "./frozen";
-import { clientOwnedLaunchEnvKeys, opencodeLaunchProtocol } from "./launch-spec";
+import { clientOwnedLaunchEnvKeys, opencodeWorkspaceLaunchProtocol } from "./launch-spec";
 import { opencodeProviderAuthPath } from "./provider-auth";
 import {
   containerBackendTokenFile,
@@ -38,7 +38,7 @@ import {
 // suite exists to catch.
 describe("frozen runner contracts", () => {
   it("pins the protocol tags shipped binaries negotiate with", () => {
-    expect(opencodeLaunchProtocol).toBe("devboxes-launch-v1");
+    expect(opencodeWorkspaceLaunchProtocol).toBe("devboxes-launch-v5");
     expect(opencodeDaemonBootstrapProtocol).toBe("devboxes-daemon-bootstrap-v1");
   });
 
