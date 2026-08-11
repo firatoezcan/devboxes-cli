@@ -93,8 +93,13 @@ export type OpencodeOauthDeviceStart = {
 
 export type OpencodeOauthPollResult =
   | { status: "pending"; intervalSeconds: number }
-  | { status: "failed"; error: string }
-  | { status: "completed"; auth: OpencodeOauthAuth; accountLabel?: string };
+  | { status: "failed"; error: string; reason?: "insufficient-scope" }
+  | {
+      status: "completed";
+      auth: OpencodeOauthAuth;
+      accountExternalId?: string;
+      accountLabel?: string;
+    };
 
 // --- Shared vendor response schemas -----------------------------------------
 
@@ -143,6 +148,7 @@ const bearerJwtClaims = (token: string) => {
     nestedChatgptAccountId: typeof nestedAccountId === "string" ? nestedAccountId : undefined,
     firstOrganizationId: typeof firstOrganizationId === "string" ? firstOrganizationId : undefined,
     email: typeof claims.email === "string" ? claims.email : undefined,
+    subject: typeof claims.sub === "string" ? claims.sub : undefined,
   };
 };
 
@@ -195,7 +201,7 @@ const openaiOauthFromTokens = (
     ...(accountId ? { accountId } : {}),
   };
   const accountLabel = tokens.id_token ? bearerJwtClaims(tokens.id_token)?.email : undefined;
-  return { auth, accountLabel };
+  return { auth, accountExternalId: accountId, accountLabel };
 };
 
 const startOpenaiDeviceFlow = async (
@@ -328,6 +334,21 @@ const GithubAccessTokenResponseSchema = Type.Object(
   { additionalProperties: true },
 );
 
+const GithubUserResponseSchema = Type.Object(
+  {
+    id: Type.Number(),
+    login: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: true },
+);
+
+const GithubCopilotTokenResponseSchema = Type.Object(
+  {
+    token: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: true },
+);
+
 const startGithubDeviceFlow = async (
   descriptor: GithubDeviceDescriptor,
 ): Promise<OpencodeOauthDeviceStart> => {
@@ -420,6 +441,65 @@ const pollGithubDeviceFlow = async (
   );
 
   if (data.access_token) {
+    const identityResponse = await fetch("https://api.github.com/user", {
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${data.access_token}`,
+        "User-Agent": userAgent,
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      signal: AbortSignal.timeout(vendorFetchTimeoutMs),
+    });
+    if (!identityResponse.ok) {
+      return {
+        status: "failed",
+        ...(identityResponse.status === 403 ? { reason: "insufficient-scope" as const } : {}),
+        error:
+          identityResponse.status === 403
+            ? "GitHub rejected the account identity check because the OAuth token has insufficient scope."
+            : "GitHub rejected the account identity check.",
+      };
+    }
+    const scopes = (identityResponse.headers.get("x-oauth-scopes") ?? "")
+      .split(",")
+      .map((scope) => scope.trim());
+    if (!scopes.includes("read:user")) {
+      return {
+        status: "failed",
+        reason: "insufficient-scope",
+        error: "GitHub did not grant the read:user scope required to bind the Provider Account.",
+      };
+    }
+    const identity = parsedVendorBody(
+      GithubUserResponseSchema,
+      await identityResponse.json(),
+      "GitHub account identity",
+    );
+    const copilotResponse = await fetch("https://api.github.com/copilot_internal/v2/token", {
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${data.access_token}`,
+        "User-Agent": userAgent,
+      },
+      signal: AbortSignal.timeout(vendorFetchTimeoutMs),
+    });
+    if (!copilotResponse.ok) {
+      return {
+        status: "failed",
+        ...(copilotResponse.status === 401 || copilotResponse.status === 403
+          ? { reason: "insufficient-scope" as const }
+          : {}),
+        error:
+          copilotResponse.status === 401 || copilotResponse.status === 403
+            ? "GitHub did not grant this account access to the Copilot execution API."
+            : "GitHub rejected the Copilot execution capability check.",
+      };
+    }
+    parsedVendorBody(
+      GithubCopilotTokenResponseSchema,
+      await copilotResponse.json(),
+      "GitHub Copilot execution token",
+    );
     return {
       status: "completed",
       auth: {
@@ -428,6 +508,8 @@ const pollGithubDeviceFlow = async (
         access: data.access_token,
         expires: 0,
       },
+      accountExternalId: String(identity.id),
+      accountLabel: identity.login,
     };
   }
   if (data.error === "authorization_pending") {
@@ -487,8 +569,8 @@ const rfc8628OauthFromTokens = (
     access: tokens.access_token,
     expires: Math.round(Date.now() + (tokens.expires_in ?? 3600) * 1000),
   };
-  const accountLabel = tokens.id_token ? bearerJwtClaims(tokens.id_token)?.email : undefined;
-  return { auth, accountLabel };
+  const claims = tokens.id_token ? bearerJwtClaims(tokens.id_token) : undefined;
+  return { auth, accountExternalId: claims?.subject, accountLabel: claims?.email };
 };
 
 const startRfc8628FormFlow = async (

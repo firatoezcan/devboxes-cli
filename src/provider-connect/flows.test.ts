@@ -26,10 +26,14 @@ afterEach(() => {
 type StubHandler = (url: string, init?: RequestInit) => Response;
 
 const stubFetch = (handler: StubHandler) => {
-  const requests: Array<{ url: string; body: string }> = [];
+  const requests: Array<{ url: string; body: string; headers: Headers }> = [];
   globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    requests.push({ url, body: typeof init?.body === "string" ? init.body : "" });
+    requests.push({
+      url,
+      body: typeof init?.body === "string" ? init.body : "",
+      headers: new Headers(init?.headers),
+    });
     return handler(url, init);
   }) as typeof fetch;
   return requests;
@@ -303,8 +307,17 @@ describe("GitHub Copilot device flow", () => {
     ).toEqual({ status: "pending", intervalSeconds: 10 });
   });
 
-  test("approval stores the github token as a never-expiring opencode oauth entry", async () => {
-    stubFetch(() => Response.json({ access_token: "gho_token" }));
+  test("approval proves Copilot token minting before storing the github oauth entry", async () => {
+    const requests = stubFetch((url) =>
+      url.endsWith("/login/oauth/access_token")
+        ? Response.json({ access_token: "gho_token" })
+        : url.endsWith("/copilot_internal/v2/token")
+          ? Response.json({ token: "copilot-api-token" })
+          : Response.json(
+              { id: 4217, login: "debug-owner" },
+              { headers: { "x-oauth-scopes": "read:user" } },
+            ),
+    );
 
     const result = await pollOpencodeOauthDeviceFlow(copilotConnector, {
       kind: "github-device",
@@ -319,6 +332,38 @@ describe("GitHub Copilot device flow", () => {
       refresh: "gho_token",
       access: "gho_token",
       expires: 0,
+    });
+    expect(result.accountExternalId).toBe("4217");
+    expect(result.accountLabel).toBe("debug-owner");
+    expect(requests[1]?.url).toBe("https://api.github.com/user");
+    expect(requests[1]?.headers.get("authorization")).toBe("Bearer gho_token");
+    expect(requests[2]?.url).toBe("https://api.github.com/copilot_internal/v2/token");
+    expect(requests[2]?.headers.get("authorization")).toBe("Bearer gho_token");
+  });
+
+  test("rejects a github identity that cannot mint a Copilot execution token", async () => {
+    stubFetch((url) =>
+      url.endsWith("/login/oauth/access_token")
+        ? Response.json({ access_token: "gho_token" })
+        : url.endsWith("/copilot_internal/v2/token")
+          ? Response.json({ message: "Copilot access is not available" }, { status: 403 })
+          : Response.json(
+              { id: 4217, login: "debug-owner" },
+              { headers: { "x-oauth-scopes": "read:user" } },
+            ),
+    );
+
+    const result = await pollOpencodeOauthDeviceFlow(copilotConnector, {
+      kind: "github-device",
+      providerId: "github-copilot",
+      deviceCode: "device-code-1",
+      intervalSeconds: 5,
+    });
+
+    expect(result).toEqual({
+      status: "failed",
+      reason: "insufficient-scope",
+      error: "GitHub did not grant this account access to the Copilot execution API.",
     });
   });
 
@@ -499,7 +544,7 @@ describe("xAI Grok device flow", () => {
   });
 
   test("approval exchanges the device code for a rotating opencode oauth entry", async () => {
-    const idToken = fakeJwt({ email: "grok@example.com" });
+    const idToken = fakeJwt({ email: "grok@example.com", sub: "xai-debug-account" });
     const requests = stubFetch(() =>
       Response.json({
         access_token: "xai-access-1",
@@ -527,6 +572,7 @@ describe("xAI Grok device flow", () => {
     expect(result.auth.access).toBe("xai-access-1");
     expect(result.auth.expires).toBeGreaterThan(Date.now());
     expect(result.accountLabel).toBe("grok@example.com");
+    expect(result.accountExternalId).toBe("xai-debug-account");
   });
 
   test("an approval without a refresh token fails instead of storing a dead credential", async () => {
