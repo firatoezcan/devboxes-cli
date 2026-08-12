@@ -24,22 +24,33 @@ afterEach(() => {
 });
 
 type StubHandler = (url: string, init?: RequestInit) => Response;
+type TestJwtClaims = {
+  email?: string;
+  sub?: string;
+  "https://api.openai.com/auth"?: { chatgpt_account_id: string };
+};
 
 const stubFetch = (handler: StubHandler) => {
   const requests: Array<{ url: string; body: string; headers: Headers }> = [];
-  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    requests.push({
-      url,
-      body: typeof init?.body === "string" ? init.body : "",
-      headers: new Headers(init?.headers),
-    });
-    return handler(url, init);
-  }) as typeof fetch;
+  globalThis.fetch = Object.assign(
+    async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const request = new Request(input, init);
+      requests.push({
+        url: request.url,
+        body: await request.text(),
+        headers: request.headers,
+      });
+      return handler(request.url, init);
+    },
+    {
+      preconnect: (...args: Parameters<typeof originalFetch.preconnect>) =>
+        originalFetch.preconnect(...args),
+    },
+  );
   return requests;
 };
 
-const fakeJwt = (payload: Record<string, unknown>) => {
+const fakeJwt = (payload: TestJwtClaims) => {
   const encodedPayload = Buffer.from(JSON.stringify(payload)).toString("base64url");
   return `header.${encodedPayload}.signature`;
 };

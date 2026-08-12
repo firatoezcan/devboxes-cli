@@ -24,11 +24,11 @@ export const playIntro = async (tagline = "Runs Devboxes tasks in containers on 
   if (played) return;
   played = true;
 
-  const eyeRows: Record<Eyes, string> = {
+  const eyeRows = {
     closed: "      ━   ━        ",
     half: "      ─   ─        ",
     open: "      ●   ●        ",
-  };
+  } satisfies Record<Eyes, string>;
 
   // An isometric devbox with shaded top and side faces; eyes and a shell
   // prompt live on the front. Diagonals step two columns per row so every

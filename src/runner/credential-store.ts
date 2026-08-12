@@ -47,6 +47,10 @@ const CredentialStoreSchema = Type.Object(
   },
   { additionalProperties: true },
 );
+const CredentialStoreVersionSchema = Type.Object(
+  { version: Type.Number() },
+  { additionalProperties: true },
+);
 
 export type LocalCredentialStore = {
   entries: Record<string, { auth: OpencodeProviderAuth; accountLabel?: string }>;
@@ -79,7 +83,7 @@ export class CredentialStoreUnreadableError extends Error {
 // The store decrypts fine but was written by a newer runner: the artifact
 // is fully recoverable by upgrading, so no caller may self-heal over it.
 class CredentialStoreVersionError extends Error {
-  constructor(storePath: string, version: unknown) {
+  constructor(storePath: string, version: number) {
     super(
       `The device credential store at ${storePath} was written by a newer Devboxes version (store version ${String(version)}; this version reads through ${currentCredentialStoreVersion}). Upgrade Devboxes instead of deleting the file.`,
     );
@@ -91,7 +95,7 @@ export const credentialStoreExists = async (configPath: string) => {
     await stat(join(dirname(configPath), credentialStoreFileName));
     return true;
   } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       return false;
     }
     // An EACCES/EPERM store must surface as the real problem, not silently
@@ -110,7 +114,7 @@ export const readCredentialStore = async (input: {
   try {
     armored = await readFile(storePath, "utf8");
   } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       return { entries: {} };
     }
     throw error;
@@ -131,9 +135,11 @@ export const readCredentialStore = async (input: {
 
   try {
     const raw: unknown = JSON.parse(plaintext);
-    const version = raw && typeof raw === "object" && "version" in raw ? raw.version : undefined;
-    if (typeof version === "number" && version > currentCredentialStoreVersion) {
-      throw new CredentialStoreVersionError(storePath, version);
+    if (
+      Value.Check(CredentialStoreVersionSchema, raw) &&
+      raw.version > currentCredentialStoreVersion
+    ) {
+      throw new CredentialStoreVersionError(storePath, raw.version);
     }
     const parsed = Value.Parse(CredentialStoreSchema, raw);
     const entries: LocalCredentialStore["entries"] = {};
@@ -142,10 +148,9 @@ export const readCredentialStore = async (input: {
         if (input.discardAmbiguousOpencode) continue;
         throw new AmbiguousOpencodeCredentialError();
       }
-      entries[providerId] = {
-        auth: validateOpencodeProviderAuth(providerId, entry.auth),
-        ...(entry.accountLabel !== undefined ? { accountLabel: entry.accountLabel } : {}),
-      };
+      const auth = validateOpencodeProviderAuth(providerId, entry.auth);
+      entries[providerId] =
+        entry.accountLabel === undefined ? { auth } : { auth, accountLabel: entry.accountLabel };
     }
     return { entries };
   } catch (error) {

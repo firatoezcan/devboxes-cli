@@ -18,6 +18,7 @@ import type { OpencodeConnectorDescriptor } from "./descriptor-schema";
 type OpenaiDeviceDescriptor = Extract<OpencodeConnectorDescriptor, { kind: "openai-device" }>;
 type GithubDeviceDescriptor = Extract<OpencodeConnectorDescriptor, { kind: "github-device" }>;
 type Rfc8628FormDescriptor = Extract<OpencodeConnectorDescriptor, { kind: "rfc8628-form" }>;
+type VendorJson = string | number | boolean | null | VendorJson[] | { [key: string]: VendorJson };
 
 const userAgent = "devboxes-dashboard";
 
@@ -33,9 +34,8 @@ const vendorFetchTimeoutMs = 10_000;
 // Zero and negatives mean "no usable interval" (opencode's parseInt||5 does
 // the same); the ceiling only guards against absurd values — a vendor asking
 // for a slower cadence must be honored, never polled faster than requested.
-const clampedIntervalSeconds = (value: unknown, fallback: number) => {
-  const seconds = typeof value === "string" ? Number.parseInt(value, 10) : value;
-  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) {
+const clampedIntervalSeconds = (seconds: number | undefined, fallback: number) => {
+  if (seconds === undefined || !Number.isFinite(seconds) || seconds <= 0) {
     return Math.min(fallback, 900);
   }
   // Ceil, not round: a fractional vendor interval must never poll faster
@@ -48,11 +48,11 @@ const clampedIntervalSeconds = (value: unknown, fallback: number) => {
 // means transient, same as any other vendor hiccup.
 const parsedVendorBody = <T extends TSchema>(
   schema: T,
-  body: unknown,
+  body: VendorJson,
   flowLabel: string,
 ): Static<T> => {
   try {
-    return Value.Parse(schema, body) as Static<T>;
+    return Value.Parse(schema, body);
   } catch {
     throw new Error(`${flowLabel} returned an unexpected response body.`);
   }
@@ -113,6 +113,26 @@ const TokenResponseSchema = Type.Object(
   { additionalProperties: true },
 );
 
+const JwtStringSchema = Type.String();
+const JwtAuthClaimsSchema = Type.Object(
+  { chatgpt_account_id: Type.Optional(Type.Unknown()) },
+  { additionalProperties: true },
+);
+const JwtOrganizationSchema = Type.Object(
+  { id: Type.Optional(Type.Unknown()) },
+  { additionalProperties: true },
+);
+const JwtClaimsSchema = Type.Object(
+  {
+    chatgpt_account_id: Type.Optional(Type.Unknown()),
+    email: Type.Optional(Type.Unknown()),
+    sub: Type.Optional(Type.Unknown()),
+    "https://api.openai.com/auth": Type.Optional(Type.Unknown()),
+    organizations: Type.Optional(Type.Unknown()),
+  },
+  { additionalProperties: true },
+);
+
 // Claims are best-effort display/routing data; one malformed field must not
 // drop the whole token's claims (a strict schema would lose a valid
 // chatgpt_account_id next to, say, a null email). Narrow each field alone.
@@ -122,33 +142,32 @@ const bearerJwtClaims = (token: string) => {
   if (segments.length !== 3) return undefined;
   const payload = segments[1];
   if (!payload) return undefined;
-  let parsed: unknown;
+  let claims: Static<typeof JwtClaimsSchema>;
   try {
-    parsed = JSON.parse(Buffer.from(payload, "base64url").toString());
+    claims = Value.Parse(JwtClaimsSchema, JSON.parse(Buffer.from(payload, "base64url").toString()));
   } catch {
     return undefined;
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
-  const claims = parsed as Record<string, unknown>;
   const nestedAuth = claims["https://api.openai.com/auth"];
-  const nestedAccountId =
-    nestedAuth && typeof nestedAuth === "object" && !Array.isArray(nestedAuth)
-      ? (nestedAuth as Record<string, unknown>).chatgpt_account_id
-      : undefined;
-  const firstOrganization = Array.isArray(claims.organizations)
-    ? (claims.organizations[0] as unknown)
+  const nestedAccountId = Value.Check(JwtAuthClaimsSchema, nestedAuth)
+    ? nestedAuth.chatgpt_account_id
     : undefined;
-  const firstOrganizationId =
-    firstOrganization && typeof firstOrganization === "object"
-      ? (firstOrganization as Record<string, unknown>).id
-      : undefined;
+  const firstOrganization = Value.Check(Type.Array(JwtOrganizationSchema), claims.organizations)
+    ? claims.organizations[0]
+    : undefined;
+  const firstOrganizationId = firstOrganization?.id;
   return {
-    chatgptAccountId:
-      typeof claims.chatgpt_account_id === "string" ? claims.chatgpt_account_id : undefined,
-    nestedChatgptAccountId: typeof nestedAccountId === "string" ? nestedAccountId : undefined,
-    firstOrganizationId: typeof firstOrganizationId === "string" ? firstOrganizationId : undefined,
-    email: typeof claims.email === "string" ? claims.email : undefined,
-    subject: typeof claims.sub === "string" ? claims.sub : undefined,
+    chatgptAccountId: Value.Check(JwtStringSchema, claims.chatgpt_account_id)
+      ? claims.chatgpt_account_id
+      : undefined,
+    nestedChatgptAccountId: Value.Check(JwtStringSchema, nestedAccountId)
+      ? nestedAccountId
+      : undefined,
+    firstOrganizationId: Value.Check(JwtStringSchema, firstOrganizationId)
+      ? firstOrganizationId
+      : undefined,
+    email: Value.Check(JwtStringSchema, claims.email) ? claims.email : undefined,
+    subject: Value.Check(JwtStringSchema, claims.sub) ? claims.sub : undefined,
   };
 };
 
@@ -187,7 +206,7 @@ const openaiOauthFromTokens = (
   tokens: Static<typeof TokenResponseSchema>,
   previousRefreshToken: string,
   previousAccountId?: string,
-) => {
+): Omit<Extract<OpencodeOauthPollResult, { status: "completed" }>, "status"> => {
   const accountId = openaiAccountId(tokens) ?? previousAccountId;
   const auth: OpencodeOauthAuth = {
     type: "oauth",
@@ -198,10 +217,13 @@ const openaiOauthFromTokens = (
     // opencode's auth.json reader silently drops entries whose expires is not
     // an integer, so a fractional expires_in must never produce a float here.
     expires: Math.round(Date.now() + (tokens.expires_in ?? 3600) * 1000),
-    ...(accountId ? { accountId } : {}),
   };
+  if (accountId) auth.accountId = accountId;
   const accountLabel = tokens.id_token ? bearerJwtClaims(tokens.id_token)?.email : undefined;
-  return { auth, accountExternalId: accountId, accountLabel };
+  if (accountId && accountLabel) return { auth, accountExternalId: accountId, accountLabel };
+  if (accountId) return { auth, accountExternalId: accountId };
+  if (accountLabel) return { auth, accountLabel };
+  return { auth };
 };
 
 const startOpenaiDeviceFlow = async (
@@ -223,7 +245,15 @@ const startOpenaiDeviceFlow = async (
     await response.json(),
     `${descriptor.label} device authorization`,
   );
-  const intervalSeconds = clampedIntervalSeconds(device.interval, 5);
+  const interval = device.interval;
+  const intervalSeconds = clampedIntervalSeconds(
+    interval === undefined
+      ? undefined
+      : Value.Check(Type.Number(), interval)
+        ? interval
+        : Number.parseInt(interval, 10),
+    5,
+  );
   return {
     userCode: device.user_code,
     // The vendor never sends a verification URL for this flow shape.
@@ -386,7 +416,7 @@ const startGithubDeviceFlow = async (
   }
   const intervalSeconds = clampedIntervalSeconds(device.interval, 5);
   const vendorExpiryMs =
-    typeof device.expires_in === "number" && Number.isFinite(device.expires_in)
+    device.expires_in !== undefined && Number.isFinite(device.expires_in)
       ? device.expires_in * 1000
       : attemptMaxAgeMs;
   return {
@@ -451,14 +481,15 @@ const pollGithubDeviceFlow = async (
       signal: AbortSignal.timeout(vendorFetchTimeoutMs),
     });
     if (!identityResponse.ok) {
-      return {
+      const failure: OpencodeOauthPollResult = {
         status: "failed",
-        ...(identityResponse.status === 403 ? { reason: "insufficient-scope" as const } : {}),
         error:
           identityResponse.status === 403
             ? "GitHub rejected the account identity check because the OAuth token has insufficient scope."
             : "GitHub rejected the account identity check.",
       };
+      if (identityResponse.status === 403) failure.reason = "insufficient-scope";
+      return failure;
     }
     const scopes = (identityResponse.headers.get("x-oauth-scopes") ?? "")
       .split(",")
@@ -484,15 +515,16 @@ const pollGithubDeviceFlow = async (
       signal: AbortSignal.timeout(vendorFetchTimeoutMs),
     });
     if (!copilotResponse.ok) {
+      if (copilotResponse.status === 401 || copilotResponse.status === 403) {
+        return {
+          status: "failed",
+          reason: "insufficient-scope",
+          error: "GitHub did not grant this account access to the Copilot execution API.",
+        };
+      }
       return {
         status: "failed",
-        ...(copilotResponse.status === 401 || copilotResponse.status === 403
-          ? { reason: "insufficient-scope" as const }
-          : {}),
-        error:
-          copilotResponse.status === 401 || copilotResponse.status === 403
-            ? "GitHub did not grant this account access to the Copilot execution API."
-            : "GitHub rejected the Copilot execution capability check.",
+        error: "GitHub rejected the Copilot execution capability check.",
       };
     }
     parsedVendorBody(
@@ -618,9 +650,7 @@ const startRfc8628FormFlow = async (
   }
   const intervalSeconds = clampedIntervalSeconds(device.interval, 5);
   const vendorExpiryMs =
-    typeof device.expires_in === "number" &&
-    Number.isFinite(device.expires_in) &&
-    device.expires_in > 0
+    device.expires_in !== undefined && Number.isFinite(device.expires_in) && device.expires_in > 0
       ? device.expires_in * 1000
       : descriptor.defaultDeviceCodeTtlSeconds * 1000;
   return {

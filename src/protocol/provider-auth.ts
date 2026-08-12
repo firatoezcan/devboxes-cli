@@ -33,6 +33,15 @@ export type OpencodeProviderAuthJson = Record<
 // this boundary, so downstream code can rely on the api/oauth split.
 export type OpencodeProviderAuth = OpencodeApiAuth | OpencodeOauthAuth;
 
+export type OpencodeProviderAuthSourceValue =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | OpencodeProviderAuthSourceValue[]
+  | { [key: string]: OpencodeProviderAuthSourceValue };
+
 // The provider-auth endpoint has two complete server implementations — the
 // dashboard's internal route (claim-captured organization credentials) and the
 // runner machine's local credential broker (claim-captured local credentials).
@@ -94,7 +103,7 @@ export const normalizeOpencodeProviderId = (providerId: string) => {
 
 export const validateOpencodeProviderAuth = (
   providerId: string,
-  auth: unknown,
+  auth: OpencodeProviderAuthSourceValue,
 ): OpencodeProviderAuth => {
   let candidate: { type: string };
   try {
@@ -110,7 +119,7 @@ export const validateOpencodeProviderAuth = (
     } catch {
       throw new Error(`Opencode API credentials for provider ${providerId} are invalid.`);
     }
-    if (typeof apiAuth.key !== "string" || !apiAuth.key.trim()) {
+    if (!apiAuth.key?.trim()) {
       throw new Error(`Opencode API credentials for provider ${providerId} are invalid.`);
     }
     let metadata: Record<string, string> | undefined;
@@ -121,11 +130,12 @@ export const validateOpencodeProviderAuth = (
         throw new Error(`Opencode API credential metadata for provider ${providerId} is invalid.`);
       }
     }
-    return {
+    const validatedAuth: OpencodeApiAuth = {
       type: "api",
       key: apiAuth.key.trim(),
-      ...(metadata !== undefined ? { metadata } : {}),
     };
+    if (metadata !== undefined) validatedAuth.metadata = metadata;
+    return validatedAuth;
   }
 
   if (candidate.type === "oauth") {
@@ -135,14 +145,17 @@ export const validateOpencodeProviderAuth = (
     } catch {
       throw new Error(`Opencode OAuth credentials for provider ${providerId} are invalid.`);
     }
-    return {
+    const validatedAuth: OpencodeOauthAuth = {
       type: "oauth",
       refresh: oauthAuth.refresh,
       access: oauthAuth.access,
       expires: oauthAuth.expires,
-      ...(oauthAuth.accountId !== undefined ? { accountId: oauthAuth.accountId } : {}),
-      ...(oauthAuth.enterpriseUrl !== undefined ? { enterpriseUrl: oauthAuth.enterpriseUrl } : {}),
     };
+    if (oauthAuth.accountId !== undefined) validatedAuth.accountId = oauthAuth.accountId;
+    if (oauthAuth.enterpriseUrl !== undefined) {
+      validatedAuth.enterpriseUrl = oauthAuth.enterpriseUrl;
+    }
+    return validatedAuth;
   }
 
   throw new Error(
@@ -151,29 +164,24 @@ export const validateOpencodeProviderAuth = (
 };
 
 export const opencodeProviderAuthFingerprint = (providerId: string, auth: OpencodeProviderAuth) => {
-  const canonicalAuth =
-    auth.type === "api"
-      ? {
-          type: auth.type,
-          key: auth.key,
-          ...(auth.metadata
-            ? {
-                metadata: Object.fromEntries(
-                  Object.entries(auth.metadata).sort(([left], [right]) =>
-                    left.localeCompare(right),
-                  ),
-                ),
-              }
-            : {}),
-        }
-      : {
-          type: auth.type,
-          refresh: auth.refresh,
-          access: auth.access,
-          expires: auth.expires,
-          ...(auth.accountId !== undefined ? { accountId: auth.accountId } : {}),
-          ...(auth.enterpriseUrl !== undefined ? { enterpriseUrl: auth.enterpriseUrl } : {}),
-        };
+  let canonicalAuth: OpencodeProviderAuth;
+  if (auth.type === "api") {
+    canonicalAuth = { type: auth.type, key: auth.key };
+    if (auth.metadata) {
+      canonicalAuth.metadata = Object.fromEntries(
+        Object.entries(auth.metadata).sort(([left], [right]) => left.localeCompare(right)),
+      );
+    }
+  } else {
+    canonicalAuth = {
+      type: auth.type,
+      refresh: auth.refresh,
+      access: auth.access,
+      expires: auth.expires,
+    };
+    if (auth.accountId !== undefined) canonicalAuth.accountId = auth.accountId;
+    if (auth.enterpriseUrl !== undefined) canonicalAuth.enterpriseUrl = auth.enterpriseUrl;
+  }
   return createHash("sha256")
     .update(`${normalizeOpencodeProviderId(providerId)}\0${JSON.stringify(canonicalAuth)}`)
     .digest("hex");

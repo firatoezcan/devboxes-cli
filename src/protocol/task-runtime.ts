@@ -120,7 +120,7 @@ export const hostOpencodeConfigJsonBase64 = (opencodeConfigDir?: string) => {
     );
     return Buffer.from(readFileSync(opencodeConfigPath, "utf8")).toString("base64");
   } catch (error) {
-    if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") {
+    if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") {
       throw error;
     }
     return undefined;

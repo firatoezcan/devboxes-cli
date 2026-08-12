@@ -35,7 +35,7 @@ if (import.meta.main) {
     const write = stream.write.bind(stream);
     stream.write = ((chunk: string | Uint8Array, ...rest: unknown[]) =>
       write(
-        typeof chunk === "string" ? Bun.stripANSI(chunk) : chunk,
+        chunk instanceof Uint8Array ? chunk : Bun.stripANSI(chunk),
         ...(rest as []),
       )) as typeof stream.write;
   }

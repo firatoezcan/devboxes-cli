@@ -4,8 +4,10 @@ import Type from "typebox";
 import Value from "typebox/value";
 
 import {
+  OpencodeProviderAuthResponseSchema,
   validateOpencodeProviderAuth,
   type OpencodeProviderAuthJson,
+  type OpencodeProviderAuthSourceValue,
 } from "../protocol/provider-auth";
 import type { OpencodeConnectorDescriptor } from "../provider-connect/descriptor-schema";
 import { refreshOpencodeOauthAccess } from "../provider-connect/flows";
@@ -25,8 +27,6 @@ export type LocalOpencodeProviderCredentialReference = {
 export type LocalCredentialStoreAccess = { configPath: string; passphrase: string };
 
 type OAuth = Extract<OpencodeProviderAuthJson[string], { type: "oauth" }>;
-
-const OpencodeAuthFileSchema = Type.Record(Type.String({ minLength: 1 }), Type.Unknown());
 
 // ChatGPT-subscription codex logins carry a literal null API key next to their
 // OAuth tokens, so the field must tolerate null for the file to parse at all.
@@ -86,18 +86,18 @@ export class LocalRunnerOpencodeProviderAuthRuntime {
       throw new Error(ambiguousOpencodeCredentialMessage);
     }
 
-    let auth: unknown;
+    let auth: OpencodeProviderAuthSourceValue;
     try {
       const parsed = JSON.parse(await readFile(credential.authFile, "utf8"));
       if (credential.source === "codex-auth-file") {
         const authCache = Value.Parse(CodexAuthCacheSchema, parsed);
         const codexApiKey = authCache.OPENAI_API_KEY;
         auth =
-          input.providerId === "openai" && typeof codexApiKey === "string" && codexApiKey.trim()
+          input.providerId === "openai" && codexApiKey?.trim()
             ? { type: "api", key: codexApiKey }
             : undefined;
       } else {
-        auth = Value.Parse(OpencodeAuthFileSchema, parsed)[input.providerId];
+        auth = Value.Parse(OpencodeProviderAuthResponseSchema, parsed)[input.providerId];
       }
     } catch {
       throw new Error(
@@ -214,10 +214,10 @@ export class LocalRunnerOpencodeProviderAuthRuntime {
     // dashboard route's ciphertext guard).
     if (currentEntry?.auth.type === "oauth" && currentEntry.auth.refresh === auth.refresh) {
       const accountLabel = refreshed.accountLabel ?? currentEntry.accountLabel;
-      store.entries[providerId] = {
-        auth: refreshed.auth,
-        ...(accountLabel !== undefined ? { accountLabel } : {}),
-      };
+      store.entries[providerId] =
+        accountLabel === undefined
+          ? { auth: refreshed.auth }
+          : { auth: refreshed.auth, accountLabel };
       await writeCredentialStore({ ...storeAccess, store });
     }
     return refreshed.auth;

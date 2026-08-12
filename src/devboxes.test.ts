@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { eq } from "drizzle-orm";
+import Type from "typebox";
+import Value from "typebox/value";
 
 import { serializedJsonb } from "@/db/jsonb";
 import * as schema from "@/db/schema";
@@ -31,6 +33,24 @@ const ownerUserId = "devboxes-cli-owner";
 const ownerEmail = "devboxes-cli-owner@example.com";
 const ownerPassword = "devboxes-cli-owner-password";
 const imageBuilder = installWorkspaceImageBuilderStub({ origin: "https://image-builder.test" });
+const preservedConfigSchema = Type.Object(
+  {
+    organizationId: Type.String(),
+    machineId: Type.String(),
+    name: Type.String(),
+    apiKey: Type.String(),
+    opencodeProviderCredentials: Type.Array(
+      Type.Object({
+        providerId: Type.String(),
+        authFile: Type.String(),
+        source: Type.Literal("opencode-auth-file"),
+      }),
+    ),
+    futureConfigKey: Type.Object({ preserved: Type.Boolean() }),
+    sessionToken: Type.String(),
+  },
+  { additionalProperties: true },
+);
 
 afterAll(() => imageBuilder.restore());
 
@@ -188,7 +208,7 @@ describe("devboxes CLI", () => {
     let rejected = false;
     let rejection: unknown;
     const operation = start();
-    void operation.catch((error: unknown) => {
+    void operation.catch((error) => {
       rejected = true;
       rejection = error;
     });
@@ -227,19 +247,25 @@ describe("devboxes CLI", () => {
     const command = createDevboxesCommand();
     expect(command.name()).toBe("devboxes");
     // The command surface is a set contract; help-listing order is cosmetics.
-    expect(command.options.map((option) => option.long).sort()).toEqual(
-      ["--api", "--auth", "--config", "--organization", "--version"].sort(),
+    expect(command.options.map((option) => option.flags).sort()).toEqual(
+      [
+        "--api <url>",
+        "--auth <url>",
+        "--config <path>",
+        "--organization <id>",
+        "-V, --version",
+      ].sort(),
     );
     const dispatch = command.commands.find((child) => child.name() === "dispatch");
-    expect(dispatch?.options.map((option) => option.long).sort()).toEqual(
+    expect(dispatch?.options.map((option) => option.flags).sort()).toEqual(
       [
-        "--blueprint-version",
-        "--branch",
+        "--blueprint-version <id>",
+        "--branch <branch>",
         "--json",
-        "--model",
-        "--project",
-        "--repo",
-        "--title",
+        "--model <provider/model>",
+        "--project <id>",
+        "--repo <owner/name>",
+        "--title <title>",
       ].sort(),
     );
     expect(
@@ -461,7 +487,10 @@ describe("devboxes CLI", () => {
         .parseAsync(["--config", configPath, "login"], { from: "user" }),
     );
 
-    const afterLogin = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
+    const afterLogin = Value.Parse(
+      preservedConfigSchema,
+      JSON.parse(await readFile(configPath, "utf8")),
+    );
     expect(afterLogin).toMatchObject({
       organizationId,
       machineId: registration.machine.id,
@@ -476,7 +505,10 @@ describe("devboxes CLI", () => {
       .exitOverride()
       .parseAsync(["--config", configPath, "connect", "--name", machineName], { from: "user" });
 
-    const afterConnect = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
+    const afterConnect = Value.Parse(
+      preservedConfigSchema,
+      JSON.parse(await readFile(configPath, "utf8")),
+    );
     expect(afterConnect).toMatchObject({
       organizationId,
       machineId: registration.machine.id,

@@ -3,6 +3,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { z } from "zod";
+
 import { cliVersion } from "./devboxes";
 
 type CliResult = {
@@ -14,6 +16,34 @@ type CliResult = {
   timedOut: boolean;
 };
 
+type CliConfig = {
+  apiBaseUrl?: string;
+  authBaseUrl?: string;
+  apiKey?: string;
+  futureConfigKey?: {
+    prompt: string;
+    transcript: string;
+  };
+  telemetry?: {
+    dsn: string;
+    environment: string;
+  };
+};
+
+const telemetryEnvelopeEventSchema = z
+  .object({
+    environment: z.string(),
+    event_id: z.string(),
+    level: z.string(),
+    message: z.string(),
+    platform: z.string(),
+    release: z.string(),
+    tags: z.record(z.string(), z.string()),
+    timestamp: z.union([z.number(), z.string()]),
+  })
+  .strict();
+const telemetryEnvelopeItemHeaderSchema = z.object({ type: z.string().optional() });
+
 const packageRoot = join(import.meta.dir, "..");
 const compiledCliPath =
   process.platform === "win32"
@@ -21,7 +51,7 @@ const compiledCliPath =
     : join(packageRoot, "dist", "devboxes");
 const temporaryDirectories: string[] = [];
 
-const writeCliConfig = async (config: Record<string, unknown>) => {
+const writeCliConfig = async (config: CliConfig) => {
   const directory = await mkdtemp(join(tmpdir(), "devboxes-cli-telemetry-"));
   temporaryDirectories.push(directory);
   const configPath = join(directory, "config.json");
@@ -30,7 +60,7 @@ const writeCliConfig = async (config: Record<string, unknown>) => {
 };
 
 const cliEnvironment = (overrides: Record<string, string> = {}) => {
-  const inheritedEnvironment: Record<string, string | undefined> = { ...process.env };
+  const inheritedEnvironment = { ...process.env };
   delete inheritedEnvironment.DEVBOX_API_BASE_URL;
   delete inheritedEnvironment.DEVBOX_AUTH_BASE_URL;
   delete inheritedEnvironment.DEVBOX_CLI_SESSION_TOKEN;
@@ -330,13 +360,16 @@ describe("opt-in CLI error telemetry", () => {
       const envelopeLines = requests[0]!.trimEnd().split("\n");
       const eventHeaderIndex = envelopeLines.findIndex((line) => {
         try {
-          return (JSON.parse(line) as { type?: string }).type === "event";
+          const parsed = telemetryEnvelopeItemHeaderSchema.safeParse(JSON.parse(line));
+          return parsed.success && parsed.data.type === "event";
         } catch {
           return false;
         }
       });
       expect(eventHeaderIndex).toBeGreaterThan(0);
-      const event = JSON.parse(envelopeLines[eventHeaderIndex + 1]!) as Record<string, unknown>;
+      const event = telemetryEnvelopeEventSchema.parse(
+        JSON.parse(envelopeLines[eventHeaderIndex + 1]!),
+      );
       expect(event).toMatchObject({
         environment: "test",
         level: "error",

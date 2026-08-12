@@ -5,6 +5,9 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
+import Type from "typebox";
+import Value from "typebox/value";
+
 // The runtime is exercised against a real Docker Engine API server on a unix
 // socket — the same wire dockerode speaks to a live dockerd — so these tests
 // pin the actual HTTP contract (paths, queries, bodies) instead of a client
@@ -214,10 +217,37 @@ describe("opencode Docker task runtime against the engine API", () => {
           "devboxes.firops.io/opencode-session-id": "ses_1",
         },
       });
-      const createBody = create.body as {
-        Env: string[];
-        HostConfig: Record<string, unknown>;
-      };
+      const createBody = Value.Parse(
+        Type.Object(
+          {
+            Env: Type.Array(Type.String()),
+            HostConfig: Type.Object(
+              {
+                AutoRemove: Type.Boolean(),
+                CapDrop: Type.Array(Type.String()),
+                CapAdd: Type.Array(Type.String()),
+                SecurityOpt: Type.Array(Type.String()),
+                ExtraHosts: Type.Array(Type.String()),
+                Mounts: Type.Array(
+                  Type.Object(
+                    {
+                      Type: Type.String(),
+                      Source: Type.String(),
+                      Target: Type.String(),
+                      ReadOnly: Type.Boolean(),
+                    },
+                    { additionalProperties: true },
+                  ),
+                ),
+                Tmpfs: Type.Record(Type.String(), Type.String()),
+              },
+              { additionalProperties: true },
+            ),
+          },
+          { additionalProperties: true },
+        ),
+        create.body,
+      );
       expect(createBody.HostConfig).toEqual({
         AutoRemove: false,
         CapDrop: ["ALL"],
@@ -243,7 +273,7 @@ describe("opencode Docker task runtime against the engine API", () => {
         },
         ExtraHosts: ["host.docker.internal:host-gateway"],
       });
-      const tmpfs = createBody.HostConfig.Tmpfs as Record<string, string>;
+      const tmpfs = createBody.HostConfig.Tmpfs;
       const repositoryExecutableDirectory = join(
         dirname(launchSpec.env.DEVBOX_DAEMON_PRIVATE_DIR),
         "exec",

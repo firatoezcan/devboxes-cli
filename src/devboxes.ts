@@ -49,11 +49,19 @@ export type DevboxesConfig = {
   }>;
 };
 
+type ConfigJsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | ConfigJsonValue[]
+  | { [key: string]: ConfigJsonValue };
+
 export type DevboxesContext = {
   config: DevboxesConfig;
   configPath: string;
   // Unknown config.json keys from a newer binary, preserved on write.
-  configExtras?: Record<string, unknown>;
+  configExtras?: Record<string, ConfigJsonValue>;
 };
 
 const LocalCredentialReferenceSchema = Type.Object(
@@ -117,7 +125,7 @@ const defaultConfigPath = () => join(platformConfigHome(), "devboxes", "config.j
 
 // The config can carry the terminal session and runner API key, so every write
 // uses the same atomic fsync'd tmp+rename boundary and 0600 file mode.
-const writeConfigFile = async (configPath: string, config: object) => {
+const writeConfigFile = async (configPath: string, config: ConfigFile) => {
   await writeSecretFile({
     path: configPath,
     contents: `${JSON.stringify(config, null, 2)}\n`,
@@ -134,8 +142,7 @@ const readConfigFile = async (configPath: string, customConfigPath: boolean) => 
   try {
     rawConfigText = await readFile(configPath, "utf8");
   } catch (error) {
-    const missing =
-      error && typeof error === "object" && "code" in error && error.code === "ENOENT";
+    const missing = error instanceof Error && "code" in error && error.code === "ENOENT";
     if (!missing) throw error;
   }
   if (rawConfigText !== null) {
@@ -292,6 +299,15 @@ export class ApiRequestError extends Error {
   }
 }
 
+const ApiErrorStatusSchema = Type.Number();
+const ApiErrorValueSchema = Type.Object(
+  {
+    code: Type.Optional(Type.String()),
+    error: Type.Optional(Type.String()),
+  },
+  { additionalProperties: true },
+);
+
 // Translates an Eden treaty error into one readable line. The raw response
 // body is never serialized into the message — a validation error echoes the
 // request body back, and dispatch bodies carry task text that must stay out
@@ -301,14 +317,10 @@ export const apiRequestError = (
   error: { status: unknown; value: unknown },
   reauthenticateWith: "login" | "connect" = "login",
 ) => {
-  const value = error.value as { code?: unknown; error?: unknown } | null;
-  const code =
-    value && typeof value === "object" && typeof value.code === "string" ? value.code : null;
-  const detail =
-    value && typeof value === "object" && typeof value.error === "string"
-      ? value.error
-      : "The API answered without an error description.";
-  const status = typeof error.status === "number" ? error.status : 0;
+  const value = Value.Check(ApiErrorValueSchema, error.value) ? error.value : null;
+  const code = value?.code ?? null;
+  const detail = value?.error ?? "The API answered without an error description.";
+  const status = Value.Check(ApiErrorStatusSchema, error.status) ? error.status : 0;
   const hint =
     status === 401 ? ` Run \`${cliCommandName} ${reauthenticateWith}\` and try again.` : "";
   return new ApiRequestError(
@@ -473,12 +485,12 @@ export const parseGitHubIssueReference = (task: string) => {
 // scheme-default ports, ".git", and slashes stripped. Project inference compares
 // these keys with exact string equality only — never fuzzy — so a remote that
 // does not normalize to exactly one project repository selects nothing.
-const schemeDefaultPorts: Record<string, string> = {
-  "http:": "80",
-  "https:": "443",
-  "ssh:": "22",
-  "git:": "9418",
-};
+const schemeDefaultPorts = new Map([
+  ["http:", "80"],
+  ["https:", "443"],
+  ["ssh:", "22"],
+  ["git:", "9418"],
+]);
 
 export const normalizeGitRemoteUrl = (remote: string) => {
   const trimmed = remote.trim();
@@ -498,7 +510,8 @@ export const normalizeGitRemoteUrl = (remote: string) => {
     }
     // Local paths and file:// remotes have no host to match a hosted project.
     if (!url.hostname) return null;
-    const port = url.port && url.port !== schemeDefaultPorts[url.protocol] ? `:${url.port}` : "";
+    const port =
+      url.port && url.port !== schemeDefaultPorts.get(url.protocol) ? `:${url.port}` : "";
     host = `${url.hostname}${port}`;
     path = url.pathname;
   }
@@ -621,7 +634,9 @@ export const dispatchDevboxesTask = async (context: DevboxesContext, input: Disp
   // The dashboard's dispatch dialog defaults the base branch to main; keep
   // the CLI on the same product default.
   const branch = input.branch?.trim() || "main";
-  const model = input.model?.trim();
+  const model = input.model?.trim() || undefined;
+  const title = input.title?.trim() || undefined;
+  const blueprintVersionId = input.blueprintVersionId?.trim() || undefined;
   // A bare issue reference targets the default "Implement GitHub Issue"
   // blueprint, whose prompt parses ISSUE_URL and DESTINATION_BRANCH from the
   // final lines of the task input.
@@ -633,11 +648,9 @@ export const dispatchDevboxesTask = async (context: DevboxesContext, input: Disp
     projectId: project.id,
     task: taskPrompt,
     branch,
-    ...(model ? { model } : {}),
-    ...(input.title?.trim() ? { title: input.title.trim() } : {}),
-    ...(input.blueprintVersionId?.trim()
-      ? { blueprintVersionId: input.blueprintVersionId.trim() }
-      : {}),
+    model,
+    title,
+    blueprintVersionId,
   });
   if (dispatched.error) throw apiRequestError("Dispatch", dispatched.error);
   if (!dispatched.data) throw new Error("Dispatch returned no session.");
@@ -702,7 +715,7 @@ const readFinalAssistantMessage = async (context: DevboxesContext, agentSessionI
     .org({ organizationId })
     ["agent-sessions"]({ agentSessionId })
     .opencode.events.get({ fetch: { signal: readDeadline } })
-    .catch((error: unknown) => {
+    .catch((error) => {
       // AbortSignal.timeout surfaces as an opaque TimeoutError; name the deadline.
       if (readDeadline.aborted) {
         throw new Error(

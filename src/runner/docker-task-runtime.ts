@@ -5,6 +5,8 @@ import { join, resolve, sep } from "node:path";
 
 import { armor, Decrypter, Encrypter } from "age-encryption";
 import Docker from "dockerode";
+import Type, { type Static } from "typebox";
+import Value from "typebox/value";
 
 import { reconciliationLabels } from "../protocol/frozen";
 import {
@@ -36,6 +38,16 @@ type TaskSecretFiles = {
   secretDir: string;
   opencodeConfigJsonFile?: string;
 };
+
+const FileSystemErrorSchema = Type.Object({ code: Type.String() }, { additionalProperties: true });
+
+const ProviderAuthSnapshotSchema = Type.Object(
+  {
+    providerId: Type.String(),
+    auth: Type.Object({ type: Type.String({ minLength: 1 }) }, { additionalProperties: true }),
+  },
+  { additionalProperties: true },
+);
 
 // Control-plane calls (inspect, create, start, stop, remove, list) complete
 // in milliseconds; a wedged dockerd must surface as an error instead of
@@ -115,7 +127,13 @@ const directoryEntries = async (path: string) => {
   try {
     return await readdir(path, { withFileTypes: true });
   } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+    let fileSystemError: Static<typeof FileSystemErrorSchema>;
+    try {
+      fileSystemError = Value.Parse(FileSystemErrorSchema, error);
+    } catch {
+      throw error;
+    }
+    if (fileSystemError.code === "ENOENT") {
       return [];
     }
     throw error;
@@ -173,15 +191,8 @@ export class DockerOpencodeTaskRuntime {
       const decrypter = new Decrypter();
       decrypter.addPassphrase(input.passphrase);
       const plaintext = await decrypter.decrypt(armor.decode(armored), "text");
-      const snapshot: unknown = JSON.parse(plaintext);
-      if (
-        !snapshot ||
-        typeof snapshot !== "object" ||
-        Array.isArray(snapshot) ||
-        !("providerId" in snapshot) ||
-        snapshot.providerId !== input.providerId ||
-        !("auth" in snapshot)
-      ) {
+      const snapshot = Value.Parse(ProviderAuthSnapshotSchema, JSON.parse(plaintext));
+      if (snapshot.providerId !== input.providerId) {
         throw new Error("Provider auth snapshot identity does not match the task claim.");
       }
       return {
@@ -321,23 +332,27 @@ export class DockerOpencodeTaskRuntime {
         });
       }
 
+      // The server-authored spec carries every product decision; this
+      // runtime overlays only the client-owned env keys whose values live
+      // on this machine (broker URL, docker-reachable API base, whether a
+      // host opencode.json exists).
+      const environment = {
+        ...input.launchSpec.env,
+        DEVBOX_BACKEND_BASE_URL: this.options.daemonApiBaseUrl,
+        DEVBOX_OPENCODE_PROVIDER_AUTH_URL: validatedProviderAuthUrl(input.providerAuthUrl),
+        // First engine boot after a cold runtime start exceeded 30s twice in prod E2E.
+        OPENCODE_READY_MS: "120000",
+        DEVBOX_OPENCODE_CONFIG_JSON_FILE: secretFiles.opencodeConfigJsonFile
+          ? containerOpencodeConfigJsonFile
+          : undefined,
+      } satisfies Record<string, string | undefined>;
+
       const created = await docker.createContainer({
         name,
         Image: image,
-        // The server-authored spec carries every product decision; this
-        // runtime overlays only the client-owned env keys whose values live
-        // on this machine (broker URL, docker-reachable API base, whether a
-        // host opencode.json exists).
-        Env: Object.entries({
-          ...input.launchSpec.env,
-          DEVBOX_BACKEND_BASE_URL: this.options.daemonApiBaseUrl,
-          DEVBOX_OPENCODE_PROVIDER_AUTH_URL: validatedProviderAuthUrl(input.providerAuthUrl),
-          // First engine boot after a cold runtime start exceeded 30s twice in prod E2E.
-          OPENCODE_READY_MS: "120000",
-          ...(secretFiles.opencodeConfigJsonFile
-            ? { DEVBOX_OPENCODE_CONFIG_JSON_FILE: containerOpencodeConfigJsonFile }
-            : {}),
-        }).map(([name, value]) => `${name}=${value}`),
+        Env: Object.entries(environment).flatMap(([name, value]) =>
+          value === undefined ? [] : [`${name}=${value}`],
+        ),
         WorkingDir: input.launchSpec.workingDir,
         Entrypoint: [input.launchSpec.entrypoint],
         User: `${containerDaemonUid}:${containerSharedGid}`,

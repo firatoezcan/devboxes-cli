@@ -11,7 +11,7 @@ import {
   type DevboxesContext,
 } from "./devboxes";
 
-const jsonResult = (value: unknown) => ({
+const jsonResult = (value: z.infer<ReturnType<typeof z.json>>) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
 });
 

@@ -95,6 +95,10 @@ const OpencodeAuthFileSchema = Type.Record(
   Type.String({ minLength: 1 }),
   Type.Object({ type: Type.String({ minLength: 1 }) }, { additionalProperties: true }),
 );
+const OpencodeConnectorProviderSchema = Type.Object(
+  { providerId: Type.String({ minLength: 1 }) },
+  { additionalProperties: true },
+);
 
 // ChatGPT-subscription codex logins carry a literal null API key next to their
 // OAuth tokens, so the field must tolerate null for the file to parse at all.
@@ -144,8 +148,8 @@ const registerMachine = async (
 ) => {
   const backend = bearerBackend(context.config.apiBaseUrl, credential);
   const result = await backend.api.internal["runner-machines"].register.post({
-    ...(organizationId ? { organizationId } : {}),
-    ...(context.config.machineId ? { machineId: context.config.machineId } : {}),
+    organizationId,
+    machineId: context.config.machineId,
     name: context.config.name ?? `${runnerRuntime}-${runnerNativePlatform}`,
     runtime: runnerRuntime,
     nativePlatform: runnerNativePlatform,
@@ -286,7 +290,7 @@ const discoveredCredentialsFromFile = async (
   if (source === "codex-auth-file") {
     const parsed = Value.Parse(CodexAuthCacheSchema, JSON.parse(await readFile(authFile, "utf8")));
     const apiKey = parsed.OPENAI_API_KEY;
-    if (typeof apiKey !== "string" || !apiKey.trim() || seenProviderIds.has("openai")) return [];
+    if (!apiKey?.trim() || seenProviderIds.has("openai")) return [];
     seenProviderIds.add("openai");
     return [{ providerId: "openai", authFile, source, authType: "api" }];
   }
@@ -313,8 +317,7 @@ const discoverLocalOpencodeProviderCredentials = async (context: DevboxesContext
     try {
       discovered.push(...(await discoveredCredentialsFromFile(credentialFile, seenProviderIds)));
     } catch (error) {
-      const missing =
-        error && typeof error === "object" && "code" in error && error.code === "ENOENT";
+      const missing = error instanceof Error && "code" in error && error.code === "ENOENT";
       if (missing && !credentialFile.configured) continue;
       log.warn(
         `Skipped ${credentialFile.source} at ${credentialFile.authFile}: ${
@@ -341,12 +344,15 @@ const saveCredentialFileReferences = async (
           entry.providerId !== "opencode" ||
           entry.providerIdFormat === "exact"),
     ),
-    ...selected.map((entry) => ({
-      providerId: entry.providerId,
-      authFile: entry.authFile,
-      source: entry.source,
-      ...(entry.providerId === "opencode" ? { providerIdFormat: "exact" as const } : {}),
-    })),
+    ...selected.map((entry) => {
+      const reference: LocalOpencodeProviderCredentialReference = {
+        providerId: entry.providerId,
+        authFile: entry.authFile,
+        source: entry.source,
+      };
+      if (entry.providerId === "opencode") reference.providerIdFormat = "exact";
+      return reference;
+    }),
   ];
   await writeConfig(context);
   log.success(
@@ -383,7 +389,7 @@ const codexChatgptSubscriptionDetected = async () => {
       JSON.parse(await readFile(codexAuthFile, "utf8")),
     );
     const apiKey = parsed.OPENAI_API_KEY;
-    return (typeof apiKey !== "string" || !apiKey.trim()) && parsed.tokens !== undefined;
+    return !apiKey?.trim() && parsed.tokens !== undefined;
   } catch {
     return false;
   }
@@ -406,8 +412,8 @@ const fetchOpencodeConnectors = async (context: DevboxesContext) => {
   for (const entry of served) {
     if (Value.Check(OpencodeConnectorDescriptorSchema, entry)) {
       connectors.push(entry);
-    } else if (entry && typeof entry === "object" && "providerId" in entry) {
-      unknownProviderIds.push(String(entry.providerId));
+    } else if (Value.Check(OpencodeConnectorProviderSchema, entry)) {
+      unknownProviderIds.push(entry.providerId);
     }
   }
   if (unknownProviderIds.length > 0) {
@@ -480,7 +486,7 @@ export const connectOpencodeProviderSubscription = async (
       const store = await readCredentialStoreForRewrite(storeAccess);
       store.entries[connector.providerId] = {
         auth: result.auth,
-        ...(result.accountLabel ? { accountLabel: result.accountLabel } : {}),
+        accountLabel: result.accountLabel || undefined,
       };
       await writeCredentialStore({ ...storeAccess, store });
       approval?.stop(`${connector.label} approved.`);
@@ -722,11 +728,11 @@ const interactiveCredentialSetup = async (
   const choice = await select({
     message: "What would you like to do?",
     options: [
-      ...actions.map((action, index) => ({
-        value: index,
-        label: action.label,
-        ...(action.hint ? { hint: action.hint } : {}),
-      })),
+      ...actions.map((action, index) =>
+        action.hint
+          ? { value: index, label: action.label, hint: action.hint }
+          : { value: index, label: action.label },
+      ),
       { value: -1, label: "Nothing right now" },
     ],
   });
@@ -891,7 +897,7 @@ export const syncOpencodeProviderCredentials = async (
       syncable.push({
         providerId,
         auth: storeEntry.auth,
-        ...(storeEntry.accountLabel ? { accountLabel: storeEntry.accountLabel } : {}),
+        accountLabel: storeEntry.accountLabel,
       });
       continue;
     }
@@ -932,8 +938,8 @@ export const syncOpencodeProviderCredentials = async (
     const syncBody = {
       providerId,
       runnerMachineId: context.config.machineId,
-      ...(credentialId ? { credentialId } : {}),
-      ...(accountLabel ? { accountLabel } : {}),
+      credentialId,
+      accountLabel,
       auth,
     };
     const response = await backend.api
@@ -1588,7 +1594,7 @@ const listen = async (
             containerId: task.containerId,
             containerName: task.containerName,
             attemptCount: task.attemptCount,
-            ...(providerAuth ? { providerAuth } : {}),
+            providerAuth,
           });
           console.info(`Re-adopted running task ${task.taskId}.`);
           continue;
@@ -1766,7 +1772,7 @@ const listen = async (
             throw apiRequestError("Model resolution claim", resolutionClaim.error, "connect");
           }
           const resolution = resolutionClaim.data;
-          if (resolution && typeof resolution !== "string") {
+          if (resolution && resolution !== "No Content") {
             const providerAuth =
               resolution.action === "resolve" && resolution.source === "local-broker"
                 ? providerSnapshot.claimProviderAuth.get(resolution.providerId)
@@ -1791,7 +1797,7 @@ const listen = async (
                 organizationId: resolution.organizationId,
                 modelProviderId: resolution.providerId,
                 perTaskToken: resolution.perCapabilityToken,
-                ...(providerAuth ? { providerAuth } : {}),
+                providerAuth,
               });
             }
             modelResolutionWork = (async () => {
@@ -1944,7 +1950,7 @@ const listen = async (
           if (claimResult.error) throw apiRequestError("Claim", claimResult.error, "connect");
           // An empty queue answers 204, which Eden types as the "No Content" literal.
           const task = claimResult.data;
-          if (task && typeof task !== "string") {
+          if (task && task !== "No Content") {
             console.info(`Claimed task ${task.taskId}; launching on ${task.platform}...`);
             const providerAuth =
               task.launchSpec.providerAuthSource === "local-broker"
@@ -1979,7 +1985,7 @@ const listen = async (
               containerId: null,
               containerName: null,
               attemptCount: task.attemptCount,
-              ...(providerAuth ? { providerAuth } : {}),
+              providerAuth,
             };
             activeTasks.set(task.taskId, activeTask);
             const launchLeaseRefresh = setInterval(() => {

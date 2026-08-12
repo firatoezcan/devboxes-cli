@@ -8,6 +8,7 @@ import { join } from "node:path";
 import * as prompts from "@clack/prompts";
 import { treaty } from "@elysiajs/eden";
 import { armor, Encrypter } from "age-encryption";
+import { z } from "zod";
 
 import { opencodeProviderCredentials } from "@/db/schema";
 import { createApiIntegrationHarness } from "@/test/api-integration";
@@ -205,12 +206,16 @@ describe("runner Opencode credentials", () => {
     console.info = (...values: unknown[]) => {
       infoMessages.push(values.map(String).join(" "));
     };
-    process.stdout.write = ((chunk: string | Uint8Array) => {
-      infoMessages.push(
-        Bun.stripANSI(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk)),
-      );
-      return true;
-    }) as typeof process.stdout.write;
+    Object.defineProperty(process.stdout, "write", {
+      configurable: true,
+      writable: true,
+      value: (chunk: string | Uint8Array) => {
+        infoMessages.push(
+          Bun.stripANSI(chunk instanceof Uint8Array ? new TextDecoder().decode(chunk) : chunk),
+        );
+        return true;
+      },
+    });
   });
 
   afterEach(async () => {
@@ -354,8 +359,11 @@ describe("runner Opencode credentials", () => {
   it("persists the live machine id and sends it on the next idempotent login", async () => {
     const configPath = join(fixtureDir, "config.json");
     const machineId = "00000000-0000-7000-8000-000000000154";
-    const requests: Array<{ authorization: string | undefined; body: Record<string, unknown> }> =
-      [];
+    const connectRequestBodySchema = z.record(z.string(), z.unknown());
+    const requests: Array<{
+      authorization: string | undefined;
+      body: z.infer<typeof connectRequestBodySchema>;
+    }> = [];
     const apiServer = createServer((request, response) => {
       let body = "";
       request.setEncoding("utf8");
@@ -365,7 +373,7 @@ describe("runner Opencode credentials", () => {
       request.on("end", () => {
         requests.push({
           authorization: request.headers.authorization,
-          body: JSON.parse(body) as Record<string, unknown>,
+          body: connectRequestBodySchema.parse(JSON.parse(body)),
         });
         response.setHeader("Content-Type", "application/json");
         response.end(
@@ -806,34 +814,38 @@ describe("runner Opencode credentials", () => {
     const originalFetch = globalThis.fetch;
     const originalBrowser = process.env.BROWSER;
     const apiServer = await credentialSyncHarness.server();
-    const syncBodies: Record<string, unknown>[] = [];
+    const syncBodySchema = z.record(z.string(), z.unknown());
+    const syncBodies: Array<z.infer<typeof syncBodySchema>> = [];
     process.env.BROWSER = "none";
     Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
     Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
-    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
-      const request = new Request(input, init);
-      const url = new URL(request.url);
-      if (url.hostname === "runner-route.invalid") {
-        if (url.pathname.endsWith("/device/code")) {
-          return Response.json({
-            device_code: "runner-sync-device-code",
-            user_code: "SYNC-ROUTE",
-            verification_uri: "https://runner-route.invalid/device",
-            verification_uri_complete: "https://runner-route.invalid/device?code=SYNC-ROUTE",
-            expires_in: 300,
-            interval: 1,
-          });
+    globalThis.fetch = Object.assign(
+      async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+        const request = new Request(input, init);
+        const url = new URL(request.url);
+        if (url.hostname === "runner-route.invalid") {
+          if (url.pathname.endsWith("/device/code")) {
+            return Response.json({
+              device_code: "runner-sync-device-code",
+              user_code: "SYNC-ROUTE",
+              verification_uri: "https://runner-route.invalid/device",
+              verification_uri_complete: "https://runner-route.invalid/device?code=SYNC-ROUTE",
+              expires_in: 300,
+              interval: 1,
+            });
+          }
+          if (url.pathname.endsWith("/device/token")) {
+            return Response.json({ access_token: credentialSyncSessionToken });
+          }
+          if (url.pathname.endsWith("/opencode-provider-credentials/sync")) {
+            syncBodies.push(syncBodySchema.parse(await request.clone().json()));
+          }
+          return apiServer.handle(request);
         }
-        if (url.pathname.endsWith("/device/token")) {
-          return Response.json({ access_token: credentialSyncSessionToken });
-        }
-        if (url.pathname.endsWith("/opencode-provider-credentials/sync")) {
-          syncBodies.push((await request.clone().json()) as Record<string, unknown>);
-        }
-        return apiServer.handle(request);
-      }
-      return new Response(null, { status: 503 });
-    }) as typeof fetch;
+        return new Response(null, { status: 503 });
+      },
+      { preconnect: originalFetch.preconnect },
+    );
 
     try {
       await syncOpencodeProviderCredentials(
@@ -1244,20 +1256,23 @@ describe("runner Opencode credentials", () => {
     const apiPort = (apiServer.address() as { port: number }).port;
     const originalFetch = globalThis.fetch;
     let vendorCalls = 0;
-    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      if (url.includes("auth.openai.com")) {
-        vendorCalls += 1;
-        return vendorCalls === 1
-          ? Response.json({
-              access_token: "live-access-2",
-              refresh_token: "live-refresh-2",
-              expires_in: 3600,
-            })
-          : new Response("invalid_grant", { status: 401 });
-      }
-      return originalFetch(input as never, init);
-    }) as typeof fetch;
+    globalThis.fetch = Object.assign(
+      async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+        const request = new Request(input, init);
+        if (request.url.includes("auth.openai.com")) {
+          vendorCalls += 1;
+          return vendorCalls === 1
+            ? Response.json({
+                access_token: "live-access-2",
+                refresh_token: "live-refresh-2",
+                expires_in: 3600,
+              })
+            : new Response("invalid_grant", { status: 401 });
+        }
+        return originalFetch(request);
+      },
+      { preconnect: originalFetch.preconnect },
+    );
 
     const context = {
       configPath,
