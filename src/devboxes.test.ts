@@ -11,6 +11,7 @@ import { eq } from "drizzle-orm";
 import { serializedJsonb } from "@/db/jsonb";
 import * as schema from "@/db/schema";
 import { createApiIntegrationHarness } from "@/test/api-integration";
+import { installWorkspaceImageBuilderStub } from "@/test/workspace-image-builder";
 
 import { createDevboxesCommand } from "./cli";
 import {
@@ -29,6 +30,9 @@ import { createDevboxesMcpServer } from "./mcp";
 const ownerUserId = "devboxes-cli-owner";
 const ownerEmail = "devboxes-cli-owner@example.com";
 const ownerPassword = "devboxes-cli-owner-password";
+const imageBuilder = installWorkspaceImageBuilderStub({ origin: "https://image-builder.test" });
+
+afterAll(() => imageBuilder.restore());
 
 // Real repositories for cwd project inference: dispatch reads the origin
 // remote of an actual git checkout, exactly like a user's terminal would.
@@ -585,7 +589,7 @@ describe("devboxes CLI", () => {
   let dispatchedRunId: string;
   let dispatchedTaskId: string;
 
-  it.skip("dispatches free-form task text to the project matching --repo; delivery quarantine: https://github.com/firatoezcan/devboxes-dashboard/issues/609", async () => {
+  it("dispatches free-form task text to the project matching --repo", async () => {
     const dispatched = await dispatchDevboxesTask(context, {
       task: "Fix the flaky retry handling in the queue worker.",
       repo: fixture.repositoryFullName,
@@ -619,7 +623,7 @@ describe("devboxes CLI", () => {
     expect(run?.status).toBe("queued");
   });
 
-  it.skip("dispatches a bare issue URL with ISSUE_URL task composition and infers the project; delivery quarantine: https://github.com/firatoezcan/devboxes-dashboard/issues/609", async () => {
+  it("dispatches a bare issue URL with ISSUE_URL task composition and infers the project", async () => {
     const issueUrl = `https://github.com/${fixture.repositoryFullName}/issues/42`;
     const dispatched = await dispatchDevboxesTask(context, {
       task: issueUrl,
@@ -651,7 +655,7 @@ describe("devboxes CLI", () => {
     ).rejects.toThrow("No project matches repository");
   });
 
-  it.skip("infers the project from the cwd git origin remote and reports the inference; delivery quarantine: https://github.com/firatoezcan/devboxes-dashboard/issues/609", async () => {
+  it("infers the project from the cwd git origin remote and reports the inference", async () => {
     const repoDir = await gitRepoWithOrigin("git@github.com:acme/other-service.git");
     const dispatched = await dispatchDevboxesTask(context, {
       task: "Tighten the reconnect backoff.",
@@ -676,7 +680,7 @@ describe("devboxes CLI", () => {
     expect(task?.repositoryFullName).toBe("acme/other-service");
   });
 
-  it.skip("never echoes credentials from a token-embedded remote into the dispatch result; delivery quarantine: https://github.com/firatoezcan/devboxes-dashboard/issues/609", async () => {
+  it("never echoes credentials from a token-embedded remote into the dispatch result", async () => {
     // A user-scoped HTTPS remote with an embedded token still infers the
     // project, but the token must stay out of the result — --json output and
     // MCP results get persisted into transcripts.
@@ -695,7 +699,7 @@ describe("devboxes CLI", () => {
     expect(JSON.stringify(dispatched)).not.toContain("x-access-token");
   });
 
-  it.skip("lets explicit selection override the cwd git remote; delivery quarantine: https://github.com/firatoezcan/devboxes-dashboard/issues/609", async () => {
+  it("lets explicit selection override the cwd git remote", async () => {
     const repoDir = await gitRepoWithOrigin("https://github.com/acme/other-service.git");
     const dispatched = await dispatchDevboxesTask(context, {
       task: "Ship it on the dashboard project instead.",
@@ -728,7 +732,7 @@ describe("devboxes CLI", () => {
     );
   });
 
-  it.skip("falls back to the only project of a single-project organization and reports it; delivery quarantine: https://github.com/firatoezcan/devboxes-dashboard/issues/609", async () => {
+  it("falls back to the only project of a single-project organization and reports it", async () => {
     const soloOrganizationId = randomUUID();
     await harness.seedOrganizations({
       id: soloOrganizationId,
@@ -780,7 +784,7 @@ describe("devboxes CLI", () => {
     expect(dispatched.inferredFromGitRemote).toBeNull();
   });
 
-  it.skip("reads session and run status for a dispatched session; delivery quarantine: https://github.com/firatoezcan/devboxes-dashboard/issues/609", async () => {
+  it("reads session and run status for a dispatched session", async () => {
     const current = await readDevboxesSession(context, dispatchedSessionId);
     expect(current.session.id).toBe(dispatchedSessionId);
     expect(current.currentTask.status).toBe("queued");
@@ -801,7 +805,7 @@ describe("devboxes CLI", () => {
     ).rejects.toThrow("404");
   });
 
-  it.skip("fails status when its canonical Run is unavailable; delivery quarantine: https://github.com/firatoezcan/devboxes-dashboard/issues/609", async () => {
+  it("fails status when its canonical Run is unavailable", async () => {
     await dbClient.db
       .update(schema.runs)
       .set({ deletedAt: new Date() })
@@ -817,7 +821,7 @@ describe("devboxes CLI", () => {
     }
   });
 
-  it.skip("extends the session expiry when a connected command is used; delivery quarantine: https://github.com/firatoezcan/devboxes-dashboard/issues/609", async () => {
+  it("extends the session expiry when a connected command is used", async () => {
     const sessionToken = context.config.sessionToken;
     if (!sessionToken) throw new Error("Expected a connected session token.");
     // Age the connect session into Better Auth's updateAge window: still
@@ -838,7 +842,7 @@ describe("devboxes CLI", () => {
     expect(refreshed.expiresAt.getTime()).toBeGreaterThan(Date.now() + 6 * 24 * 60 * 60 * 1000);
   });
 
-  it.skip("reads the result with pull request link and final assistant output; delivery quarantine: https://github.com/firatoezcan/devboxes-dashboard/issues/609", async () => {
+  it("reads the result with pull request link and final assistant output", async () => {
     // The final output comes from the latest assistant turn in the generated
     // stable event history.
     await dbClient.db
@@ -944,7 +948,7 @@ describe("devboxes CLI", () => {
     );
   });
 
-  it.skip("serves the full result from a suffix-less --api base URL; delivery quarantine: https://github.com/firatoezcan/devboxes-dashboard/issues/609", async () => {
+  it("serves the full result from a suffix-less --api base URL", async () => {
     // Before base-URL normalization moved into loadContext, this exact shape
     // worked for every command except the final-output fetch (404).
     const suffixless = await loadContext({ config: context.configPath, api: origin });
@@ -955,7 +959,7 @@ describe("devboxes CLI", () => {
     );
   });
 
-  it.skip("serves dispatch/status/result as MCP tools over the stored credentials; delivery quarantine: https://github.com/firatoezcan/devboxes-dashboard/issues/609", async () => {
+  it("serves dispatch/status/result as MCP tools over the stored credentials", async () => {
     const server = createDevboxesMcpServer(context);
     const client = new Client({ name: "devboxes-cli-test", version: "0.0.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
