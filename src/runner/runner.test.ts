@@ -1896,7 +1896,7 @@ describe("runner Opencode credentials", () => {
     expect(await stderrText).not.toContain(rawFailureMarker);
   }, 15_000);
 
-  it.skip("serves the exact local credential material advertised by the successful claim; observed RED: the task-claim fixture omits the current launch-spec capability and provider-auth route, so the runner reports Parse; delivery quarantine: https://github.com/firatoezcan/devboxes-dashboard/issues/695", async () => {
+  it("serves the exact local credential material advertised by the successful claim", async () => {
     const dockerSocketPath = join(fixtureDir, "docker-claim-authority.sock");
     const launched = Promise.withResolvers<{ providerAuthUrl: string }>();
     const launchFailed = Promise.withResolvers<string>();
@@ -2024,7 +2024,9 @@ describe("runner Opencode credentials", () => {
                 OPENCODE_CONFIG: "/home/workspace/.config/opencode/opencode.json",
                 OPENCODE_EXPERIMENTAL_HTTPAPI: "true",
                 OPENCODE_EXPERIMENTAL_WORKSPACES: "true",
+                DEVBOX_WORKSPACE_CAPABILITY: "agent-task",
                 DEVBOX_WORKSPACE_CAPABILITY_ID: taskId,
+                DEVBOX_PROVIDER_AUTH_ROUTE: "opencode-tasks",
                 DEVBOX_RUN_ID: runId,
                 DEVBOX_BACKEND_TOKEN_FILE: "/run/devboxes/secrets/backend-token",
                 DEVBOX_DAEMON_VERSION: "0.8.1",
