@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -15,8 +15,9 @@ import { createApiIntegrationHarness } from "@/test/api-integration";
 import { createDevboxesCommand } from "../cli";
 import { cliVersion } from "../devboxes";
 import { credentialStoreFileName } from "../protocol/frozen";
+import { opencodeWorkspaceLaunchProtocol } from "../protocol/launch-spec";
 import { opencodeProviderAuthFingerprint } from "../protocol/provider-auth";
-import { taskContainerName } from "../protocol/task-runtime";
+import { daemonEntrypoint, taskContainerName } from "../protocol/task-runtime";
 import type {
   ActiveOpencodeCredentialTask,
   OpencodeCredentialBrokerApi,
@@ -32,6 +33,49 @@ import {
   syncOpencodeProviderCredentials,
   taskContainerApiBaseUrl,
 } from "./runner";
+
+const credentialSyncHarness = createApiIntegrationHarness(
+  "devboxes-runner-credential-sync",
+  {},
+  "postgres",
+  30_000,
+);
+const credentialSyncOrganizationId = "00000000-0000-7000-8000-000000000171";
+const credentialSyncUserId = "runner-credential-sync-user";
+const credentialSyncSessionToken = "runner-credential-sync-session";
+const credentialSyncRunnerMachineId = "00000000-0000-7000-8000-000000000172";
+
+beforeAll(async () => {
+  await credentialSyncHarness.seedUsers({
+    id: credentialSyncUserId,
+    name: "Runner Credential Sync User",
+    email: "runner-credential-sync@example.com",
+  });
+  await credentialSyncHarness.seedOrganizations({
+    id: credentialSyncOrganizationId,
+    name: "Runner Credential Sync",
+    slug: "runner-credential-sync",
+  });
+  await credentialSyncHarness.seedSessions({
+    id: "runner-credential-sync-session-row",
+    token: credentialSyncSessionToken,
+    userId: credentialSyncUserId,
+    activeOrganizationId: credentialSyncOrganizationId,
+  });
+  await credentialSyncHarness.seedMemberships({
+    id: "runner-credential-sync-membership",
+    organizationId: credentialSyncOrganizationId,
+    userId: credentialSyncUserId,
+    role: "owner",
+  });
+  await credentialSyncHarness.seedRunnerMachines({
+    id: credentialSyncRunnerMachineId,
+    organizationId: credentialSyncOrganizationId,
+    createdByUserId: credentialSyncUserId,
+    apiKeyId: null,
+    name: "Runner Credential Sync",
+  });
+});
 
 describe("runner CLI", () => {
   const testCommand = () => {
@@ -757,46 +801,7 @@ describe("runner Opencode credentials", () => {
     expect(output).toContain("Synced opencode-go");
   });
 
-  it.skip("syncs unavailable API-key validation as persisted account health; delivery quarantine: the package suite has no parent-owned PostgreSQL runner; https://github.com/firatoezcan/devboxes-dashboard/issues/713", async () => {
-    const credentialSyncHarness = createApiIntegrationHarness(
-      "devboxes-runner-credential-sync",
-      {},
-      "postgres",
-      30_000,
-    );
-    const credentialSyncOrganizationId = "00000000-0000-7000-8000-000000000171";
-    const credentialSyncUserId = "runner-credential-sync-user";
-    const credentialSyncSessionToken = "runner-credential-sync-session";
-    const credentialSyncRunnerMachineId = "00000000-0000-7000-8000-000000000172";
-    await credentialSyncHarness.seedUsers({
-      id: credentialSyncUserId,
-      name: "Runner Credential Sync User",
-      email: "runner-credential-sync@example.com",
-    });
-    await credentialSyncHarness.seedOrganizations({
-      id: credentialSyncOrganizationId,
-      name: "Runner Credential Sync",
-      slug: "runner-credential-sync",
-    });
-    await credentialSyncHarness.seedSessions({
-      id: "runner-credential-sync-session-row",
-      token: credentialSyncSessionToken,
-      userId: credentialSyncUserId,
-      activeOrganizationId: credentialSyncOrganizationId,
-    });
-    await credentialSyncHarness.seedMemberships({
-      id: "runner-credential-sync-membership",
-      organizationId: credentialSyncOrganizationId,
-      userId: credentialSyncUserId,
-      role: "owner",
-    });
-    await credentialSyncHarness.seedRunnerMachines({
-      id: credentialSyncRunnerMachineId,
-      organizationId: credentialSyncOrganizationId,
-      createdByUserId: credentialSyncUserId,
-      apiKeyId: null,
-      name: "Runner Credential Sync",
-    });
+  it("syncs unavailable API-key validation as persisted account health", async () => {
     await writeFile(authFile, '{"xai":{"type":"api","key":"xai-runner-key"}}');
     const originalFetch = globalThis.fetch;
     const originalBrowser = process.env.BROWSER;
@@ -1681,7 +1686,7 @@ describe("runner Opencode credentials", () => {
     }
   });
 
-  it.skip("renews Workspace resolution ownership through failed Docker cleanup; delivery quarantine: the CLI suite imports the API launch-spec without the API environment contract; https://github.com/firatoezcan/devboxes-dashboard/issues/713", async () => {
+  it("renews Workspace resolution ownership through failed Docker cleanup", async () => {
     const dockerSocketPath = join(fixtureDir, "docker-model-resolution.sock");
     const resolutionId = "00000000-0000-7000-8000-000000000493";
     const leaseId = "00000000-0000-7000-8000-000000000495";
@@ -1782,13 +1787,6 @@ describe("runner Opencode credentials", () => {
     const cleanupReceipt = Promise.withResolvers<void>();
     let claimed = false;
     let leaseCount = 0;
-    const { opencodeModelResolutionLaunchSpec } = await import("@/opencode/launch-spec");
-    const daemonArtifact = {
-      version: "0.9.29",
-      bootstrapProtocol: "devboxes-daemon-bootstrap-v1" as const,
-      platform: "linux/amd64" as const,
-      sha256: "a".repeat(64),
-    };
     const apiServer = Bun.serve({
       port: 0,
       fetch(request) {
@@ -1814,12 +1812,21 @@ describe("runner Opencode credentials", () => {
             imageRef:
               "registry-1.docker.io/firatoezcan/devboxes@sha256:0132f868cf2b6613f61148489b2cbde57f5a0e0f40cdac97b3c4f93c0971cf10",
             perCapabilityToken: "model-resolution-capability-token",
-            launchSpec: opencodeModelResolutionLaunchSpec({
-              resolutionId,
-              providerId: "openai",
-              daemonArtifact,
+            launchSpec: {
+              launchProtocol: opencodeWorkspaceLaunchProtocol,
+              workspaceCapability: "provider-model-resolution",
+              workingDir: "/workspace",
+              entrypoint: daemonEntrypoint,
+              env: {
+                DEVBOX_WORKSPACE_CAPABILITY: "provider-model-resolution",
+                DEVBOX_WORKSPACE_CAPABILITY_ID: resolutionId,
+                DEVBOX_MODEL_PROVIDER_ID: "openai",
+                DEVBOX_PROVIDER_AUTH_ROUTE: "model-resolutions",
+              },
+              memoryBackedPaths: [],
+              labels: {},
               providerAuthSource: "organization",
-            }),
+            },
           });
         }
         if (pathname.endsWith(`/model-resolutions/${resolutionId}/lease`)) {

@@ -54,13 +54,7 @@ const gitRepoWithOrigin = async (remote: string) => {
   return dir;
 };
 
-describe.skip("devboxes CLI; delivery quarantine: the package suite has no parent-owned PostgreSQL runner; https://github.com/firatoezcan/devboxes-dashboard/issues/713", () => {
-  if (
-    !process.env.DEVBOXES_API_TEST_POSTGRES_ADMIN_URL ||
-    !process.env.DEVBOXES_API_TEST_POSTGRES_TEMPLATE
-  ) {
-    return;
-  }
+describe("devboxes CLI", () => {
   const harness = createApiIntegrationHarness(
     "devboxes-cli",
     {
