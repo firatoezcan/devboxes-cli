@@ -81,6 +81,29 @@ const gitRepoWithOrigin = async (remote: string) => {
 describe("devboxes CLI", () => {
   const harness = createApiIntegrationHarness(
     "devboxes-cli",
+    async () => {
+      const [
+        { createApp },
+        { internalRunnerMachineRoutes },
+        { meRoutes },
+        { createOrganizationRoutes },
+        { orgAgentSessionRoutes },
+        { orgProjectRoutes },
+        { orgRunRoutes },
+      ] = await Promise.all([
+        import("@/app-shell"),
+        import("@/routes/internal/runner-machines"),
+        import("@/routes/me"),
+        import("@/routes/org.$organizationId"),
+        import("@/routes/org.$organizationId/agent-sessions"),
+        import("@/routes/org.$organizationId/projects"),
+        import("@/routes/org.$organizationId/runs"),
+      ]);
+      return createApp()
+        .use(internalRunnerMachineRoutes)
+        .use(meRoutes)
+        .use(createOrganizationRoutes(orgAgentSessionRoutes, orgProjectRoutes, orgRunRoutes));
+    },
     {
       DEVBOX_WORKSPACE_IMAGE_BUILDER_URL: "https://image-builder.test",
       DEVBOX_WORKSPACE_IMAGE_BUILDER_CALLBACK_TOKEN: "test-builder-token",

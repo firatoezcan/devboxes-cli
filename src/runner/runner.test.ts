@@ -37,6 +37,11 @@ import {
 
 const credentialSyncHarness = createApiIntegrationHarness(
   "devboxes-runner-credential-sync",
+  async () => {
+    const { createApp } = await import("@/app-shell");
+    const { internalRunnerMachineRoutes } = await import("@/routes/internal/runner-machines");
+    return createApp().use(internalRunnerMachineRoutes);
+  },
   {},
   "postgres",
   30_000,
