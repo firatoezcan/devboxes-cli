@@ -39,8 +39,9 @@ const credentialSyncHarness = createApiIntegrationHarness(
   "devboxes-runner-credential-sync",
   async () => {
     const { createApp } = await import("@/app-shell");
-    const { internalRunnerMachineRoutes } = await import("@/routes/internal/runner-machines");
-    return createApp().use(internalRunnerMachineRoutes);
+    const { createOrganizationRoutes } = await import("@/routes/org.$organizationId");
+    const { orgCredentialRoutes } = await import("@/routes/org.$organizationId/credentials");
+    return createApp().use(createOrganizationRoutes(orgCredentialRoutes));
   },
   {},
   "postgres",
