@@ -8,6 +8,7 @@ import {
 import {
   credentialStoreFileName,
   credentialStoreVersion,
+  githubTaskCredentialFailureCodes,
   listenerRegistrationDeviceClientId,
   listenerUpgradeRequiredCode,
   opencodeEnginePermissionPolicyErrorCode,
@@ -91,6 +92,15 @@ describe("frozen runner contracts", () => {
     expect(listenerUpgradeRequiredCode).toBe("listener_upgrade_required");
     expect(opencodeTaskCallbackTerminalCode).toBe("task_callback_terminal");
     expect(opencodeEnginePermissionPolicyErrorCode).toBe("engine_permission_policy_violation");
+    expect(githubTaskCredentialFailureCodes).toEqual({
+      envelopeInvalid: "github_app_task_credential_envelope_invalid",
+      installationRepositoryMismatch: "github_app_installation_repository_mismatch",
+      installationRevoked: "github_app_installation_revoked",
+      installationSuspended: "github_app_installation_suspended",
+      reconsentRequired: "github_app_reconsent_required",
+      repositoryAccessRevoked: "github_app_repository_access_revoked",
+      responseInvalid: "github_app_task_credential_response_invalid",
+    });
     expect(listenerRegistrationDeviceClientId).toBe("devboxes-listener-registration");
     expect(credentialStoreFileName).toBe("provider-credentials.json.age");
     expect(credentialStoreVersion).toBe(1);

@@ -29,8 +29,19 @@ are about to break shipped artifacts.
 | Upgrade stop code             | `listener_upgrade_required`                                                                                              | Shipped runners exit cleanly (containers left for re-adoption) when any runner-machine response carries it                                               |
 | Task-callback stop code       | `task_callback_terminal`                                                                                                 | Daemons in published Workspace Images stop on a per-task callback 401 carrying it; dropping it revives the unbounded poll loop                           |
 | Engine permission stop code   | `engine_permission_policy_violation`                                                                                     | Daemons stop on a per-task callback 409 carrying it; the API returns it only after atomically failing the Task, Run, and current step                    |
+| GitHub credential failures    | Seven exact codes below                                                                                                  | The API and Workspace daemon preserve the exact GitHub App authorization failure across initial claim, renewal, cancellation, and terminal Run status    |
 | Device registration client id | `devboxes-listener-registration`                                                                                         | Shipped runners send it on device-auth start; the server validates it                                                                                    |
 | Credential store format       | age-encrypted `provider-credentials.json.age`, version 1                                                                 | Every existing on-device store; a format change strands stored subscriptions                                                                             |
+
+The GitHub task credential failure codes are:
+
+- `github_app_task_credential_envelope_invalid`
+- `github_app_installation_repository_mismatch`
+- `github_app_installation_revoked`
+- `github_app_installation_suspended`
+- `github_app_reconsent_required`
+- `github_app_repository_access_revoked`
+- `github_app_task_credential_response_invalid`
 
 ## Current Workspace capability protocol
 
