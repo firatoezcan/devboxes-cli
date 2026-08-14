@@ -1,5 +1,11 @@
 # devboxes
 
+## 0.2.5
+
+### Patch Changes
+
+- Install Devboxes from one final npm and GitHub release with verified packages and binaries.
+
 ## 0.2.4
 
 ### Patch Changes
