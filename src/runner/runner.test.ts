@@ -2023,7 +2023,7 @@ describe("runner Opencode credentials", () => {
             modelProviderId: "openai",
             providerCredentialFingerprint: claimedCredentialFingerprint,
             daemonArtifact: {
-              version: "0.8.1",
+              version: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
               bootstrapProtocol: "devboxes-daemon-bootstrap-v1",
               platform: "linux/amd64",
               sha256: "a".repeat(64),
@@ -2050,7 +2050,8 @@ describe("runner Opencode credentials", () => {
                 DEVBOX_PROVIDER_AUTH_ROUTE: "opencode-tasks",
                 DEVBOX_RUN_ID: runId,
                 DEVBOX_BACKEND_TOKEN_FILE: "/run/devboxes/secrets/backend-token",
-                DEVBOX_DAEMON_VERSION: "0.8.1",
+                DEVBOX_DAEMON_VERSION:
+                  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 DEVBOX_DAEMON_PLATFORM: "linux/amd64",
                 DEVBOX_DAEMON_SHA256: "a".repeat(64),
                 DEVBOX_DAEMON_BOOTSTRAP_PROTOCOL: "devboxes-daemon-bootstrap-v1",

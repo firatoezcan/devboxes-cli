@@ -41,7 +41,7 @@ const launchSpec = {
     DEVBOX_RUN_ID: "run_1",
     DEVBOX_BACKEND_TOKEN_FILE: "/run/devboxes/secrets/backend-token",
     DEVBOX_DAEMON_PRIVATE_DIR: "/run/devboxes/daemon",
-    DEVBOX_DAEMON_VERSION: "0.8.1",
+    DEVBOX_DAEMON_VERSION: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     DEVBOX_DAEMON_PLATFORM: "linux/amd64",
     DEVBOX_DAEMON_SHA256: "a".repeat(64),
     DEVBOX_DAEMON_BOOTSTRAP_PROTOCOL: "devboxes-daemon-bootstrap-v1",
@@ -49,7 +49,8 @@ const launchSpec = {
   memoryBackedPaths: ["/home/workspace/.local/share"],
   labels: {
     "app.kubernetes.io/managed-by": "firops-control-plane",
-    "devboxes.firops.io/daemon-version": "0.8.1",
+    "devboxes.firops.io/daemon-version":
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "devboxes.firops.io/daemon-sha256": "a".repeat(64),
     "devboxes.firops.io/opencode-session-id": "ses_1",
   },
@@ -212,7 +213,8 @@ describe("opencode Docker task runtime against the engine API", () => {
           "devboxes.firops.io/workload": "opencode-dispatch-task",
           "devboxes.firops.io/organization-id": "org_1",
           "devboxes.firops.io/task-id": "task_1",
-          "devboxes.firops.io/daemon-version": "0.8.1",
+          "devboxes.firops.io/daemon-version":
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "devboxes.firops.io/daemon-sha256": "a".repeat(64),
           "devboxes.firops.io/opencode-session-id": "ses_1",
         },
@@ -295,7 +297,7 @@ describe("opencode Docker task runtime against the engine API", () => {
           "DEVBOX_BACKEND_BASE_URL=http://host.docker.internal:3001/api",
           "OPENCODE_READY_MS=120000",
           "DEVBOX_BACKEND_TOKEN_FILE=/run/devboxes/secrets/backend-token",
-          "DEVBOX_DAEMON_VERSION=0.8.1",
+          "DEVBOX_DAEMON_VERSION=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "DEVBOX_DAEMON_PLATFORM=linux/amd64",
           `DEVBOX_DAEMON_SHA256=${"a".repeat(64)}`,
           "DEVBOX_DAEMON_BOOTSTRAP_PROTOCOL=devboxes-daemon-bootstrap-v1",
@@ -465,7 +467,7 @@ describe("opencode Docker task runtime against the engine API", () => {
         expect.arrayContaining([
           "DEVBOX_RUN_ID=run_1",
           "DEVBOX_OPENCODE_PROVIDER_AUTH_URL=http://host.docker.internal:43111",
-          "DEVBOX_DAEMON_VERSION=0.8.1",
+          "DEVBOX_DAEMON_VERSION=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "DEVBOX_DAEMON_PLATFORM=linux/amd64",
           `DEVBOX_DAEMON_SHA256=${"a".repeat(64)}`,
         ]),
