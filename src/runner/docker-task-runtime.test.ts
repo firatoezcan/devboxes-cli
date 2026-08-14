@@ -253,7 +253,7 @@ describe("opencode Docker task runtime against the engine API", () => {
       expect(createBody.HostConfig).toEqual({
         AutoRemove: false,
         CapDrop: ["ALL"],
-        CapAdd: ["DAC_OVERRIDE", "SETGID", "SETUID"],
+        CapAdd: ["CHOWN", "DAC_OVERRIDE", "SETGID", "SETUID"],
         SecurityOpt: ["no-new-privileges"],
         Mounts: expect.arrayContaining([
           expect.objectContaining({

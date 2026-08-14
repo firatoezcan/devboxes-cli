@@ -368,7 +368,7 @@ export class DockerOpencodeTaskRuntime {
         HostConfig: {
           AutoRemove: false,
           CapDrop: ["ALL"],
-          CapAdd: ["DAC_OVERRIDE", "SETGID", "SETUID"],
+          CapAdd: ["CHOWN", "DAC_OVERRIDE", "SETGID", "SETUID"],
           SecurityOpt: ["no-new-privileges"],
           Mounts: [
             {

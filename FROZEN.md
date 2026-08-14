@@ -36,10 +36,11 @@ are about to break shipped artifacts.
 
 `devboxes-launch-v5` runs agent-controlled processes under uid 1001. The runtime
 starts the capability-limited daemon as uid 0 with shared gid 1000 and grants
-`SETGID` and `SETUID` so it can establish that boundary. Docker also grants
-`DAC_OVERRIDE` so the daemon can read the listener-owned mode-0600 secret bind
-mounts, and sets `no-new-privileges` before the agent boundary. The daemon alone
-can access its mode-0700 publication directory and root-readable backend token.
+`CHOWN`, `SETGID`, and `SETUID` so it can assign agent-owned auth files and
+establish that boundary. Docker also grants `DAC_OVERRIDE` so the daemon can
+read the listener-owned mode-0600 secret bind mounts, and sets
+`no-new-privileges` before the agent boundary. The daemon alone can access its
+mode-0700 publication directory and root-readable backend token.
 The same protocol carries either an `agent-task` or a
 `provider-model-resolution` capability. OpenCode is installed and executed only
 inside the Workspace Image. It resolves the authenticated Provider/plugin model
