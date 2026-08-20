@@ -16,9 +16,8 @@ import { createApiIntegrationHarness } from "@/test/api-integration";
 import { createDevboxesCommand } from "../cli";
 import { cliVersion } from "../devboxes";
 import { credentialStoreFileName } from "../protocol/frozen";
-import { opencodeWorkspaceLaunchProtocol } from "../protocol/launch-spec";
 import { opencodeProviderAuthFingerprint } from "../protocol/provider-auth";
-import { daemonEntrypoint, taskContainerName } from "../protocol/task-runtime";
+import { taskContainerName } from "../protocol/task-runtime";
 import type {
   ActiveOpencodeCredentialTask,
   OpencodeCredentialBrokerApi,
@@ -148,8 +147,6 @@ describe("runner CLI", () => {
     expect(doctor?.options.map((option) => option.long)).toContain("--json");
     const credentialsStatus = credentials?.commands.find((child) => child.name() === "status");
     expect(credentialsStatus?.options.map((option) => option.long)).toContain("--json");
-    const credentialsSync = credentials?.commands.find((child) => child.name() === "sync");
-    expect(credentialsSync?.options.map((option) => option.long)).toContain("--credential");
   });
 
   it("uses a container-reachable API URL for local runner targets", () => {
@@ -649,7 +646,7 @@ describe("runner Opencode credentials", () => {
     expect(output).not.toContain("openai-key");
   });
 
-  it("syncs API keys, carries an exact repair target, and skips local OAuth logins", async () => {
+  it("syncs only supported Organization API keys and skips local OAuth logins", async () => {
     await writeFile(
       authFile,
       JSON.stringify({
@@ -690,6 +687,26 @@ describe("runner Opencode credentials", () => {
                   verificationUrlHosts: ["vendor.invalid"],
                 },
               ],
+            }),
+          );
+          return;
+        }
+        if (
+          request.method === "GET" &&
+          request.url?.endsWith("/credentials/opencode-provider-credentials")
+        ) {
+          response.end(
+            JSON.stringify({
+              apiKeyProviders: [
+                { id: "opencode-go", label: "OpenCode Go" },
+                { id: "xai", label: "xAI" },
+              ],
+              oauthProviders: [
+                { id: "openai", label: "ChatGPT Pro/Plus" },
+                { id: "xai", label: "xAI Grok" },
+              ],
+              opencodeProviderCredentials: [],
+              importedOrganization: false,
             }),
           );
           return;
@@ -750,29 +767,6 @@ describe("runner Opencode credentials", () => {
         },
         {},
       );
-      await syncOpencodeProviderCredentials(
-        {
-          configPath: join(fixtureDir, "config.json"),
-          config: {
-            apiBaseUrl: `http://127.0.0.1:${port}/api`,
-            authBaseUrl: `http://127.0.0.1:${port}/api/auth`,
-            organizationId: "00000000-0000-7000-8000-000000000042",
-            machineId: "00000000-0000-7000-8000-000000000043",
-            apiKey: "runner-api-key",
-            opencodeProviderCredentials: [
-              {
-                providerId: "opencode-go",
-                authFile,
-                source: "opencode-auth-file",
-              },
-            ],
-          },
-        },
-        {
-          provider: "opencode-go",
-          credential: "00000000-0000-7000-8000-000000000044",
-        },
-      );
     } finally {
       server.close();
       if (originalBrowser === undefined) delete process.env.BROWSER;
@@ -780,29 +774,12 @@ describe("runner Opencode credentials", () => {
     }
 
     const syncRequests = requests.filter((entry) => entry.path.includes("/sync"));
-    expect(syncRequests).toHaveLength(4);
-    expect(syncRequests.map((request) => JSON.parse(request.body))).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          providerId: "openai",
-          runnerMachineId: "00000000-0000-7000-8000-000000000043",
-          auth: { type: "api", key: "openai-key" },
-        }),
-        expect.objectContaining({
-          providerId: "opencode",
-          auth: { type: "api", key: "zen-key" },
-        }),
-        expect.objectContaining({
-          providerId: "opencode-go",
-          auth: { type: "api", key: "go-key" },
-        }),
-        expect.objectContaining({
-          providerId: "opencode-go",
-          credentialId: "00000000-0000-7000-8000-000000000044",
-          auth: { type: "api", key: "go-key" },
-        }),
-      ]),
-    );
+    expect(syncRequests).toHaveLength(1);
+    expect(JSON.parse(syncRequests[0]!.body)).toMatchObject({
+      providerId: "opencode-go",
+      runnerMachineId: "00000000-0000-7000-8000-000000000043",
+      auth: { type: "api", key: "go-key" },
+    });
     // The local OAuth token never crosses the wire.
     expect(JSON.stringify(requests)).not.toContain("gho_local");
     const output = infoMessages.join("\n");
@@ -810,8 +787,12 @@ describe("runner Opencode credentials", () => {
       "Skipped github-copilot: only API-key credentials sync from CLI auth files.",
     );
     expect(output).toContain("credentials setup --connect github-copilot");
-    expect(output).toContain("Synced openai");
-    expect(output).toContain("Synced opencode");
+    expect(output).toContain(
+      "Skipped openai: this provider and auth type cannot be stored as an Organization Provider Account.",
+    );
+    expect(output).toContain(
+      "Skipped opencode: this provider and auth type cannot be stored as an Organization Provider Account.",
+    );
     expect(output).toContain("Synced opencode-go");
   });
 
@@ -1000,6 +981,26 @@ describe("runner Opencode credentials", () => {
         response.setHeader("Content-Type", "application/json");
         if (request.url?.endsWith("/credential-store-passphrase")) {
           response.end(JSON.stringify({ passphrase }));
+          return;
+        }
+        if (
+          request.method === "GET" &&
+          request.url?.endsWith("/credentials/opencode-provider-credentials")
+        ) {
+          response.end(
+            JSON.stringify({
+              apiKeyProviders: [
+                { id: "opencode-go", label: "OpenCode Go" },
+                { id: "xai", label: "xAI" },
+              ],
+              oauthProviders: [
+                { id: "openai", label: "ChatGPT Pro/Plus" },
+                { id: "xai", label: "xAI Grok" },
+              ],
+              opencodeProviderCredentials: [],
+              importedOrganization: false,
+            }),
+          );
           return;
         }
         if (request.url?.endsWith("/device/code")) {
@@ -1475,7 +1476,7 @@ describe("runner Opencode credentials", () => {
       });
       expect(outcome.claimBody).toEqual({
         leaseMs: 120_000,
-        launchProtocols: ["devboxes-launch-v5"],
+        launchProtocols: ["devboxes-launch-v6"],
       });
     } finally {
       if (!listening.killed) listening.kill("SIGTERM");
@@ -1678,7 +1679,7 @@ describe("runner Opencode credentials", () => {
           });
           expect(outcome.claimBody).toMatchObject({
             leaseMs: 120_000,
-            launchProtocols: ["devboxes-launch-v5"],
+            launchProtocols: ["devboxes-launch-v6"],
           });
         } finally {
           if (!listening.killed) listening.kill("SIGTERM");
@@ -1700,216 +1701,6 @@ describe("runner Opencode credentials", () => {
         dockerServer.close((error) => (error ? reject(error) : resolve()));
       });
     }
-  });
-
-  it("renews Workspace resolution ownership through failed Docker cleanup", async () => {
-    const dockerSocketPath = join(fixtureDir, "docker-model-resolution.sock");
-    const resolutionId = "00000000-0000-7000-8000-000000000493";
-    const leaseId = "00000000-0000-7000-8000-000000000495";
-    const rawFailureMarker = "credential-bearing-docker-cleanup-text";
-    let containerInspectCount = 0;
-    let containerCreateCount = 0;
-    let stopCount = 0;
-    let containerRemoved = false;
-    const dockerServer = createServer((request, response) => {
-      const url = new URL(request.url ?? "/", "http://docker.local");
-      response.setHeader("Content-Type", "application/json");
-      if (request.method === "GET" && url.pathname.endsWith("/containers/json")) {
-        response.end("[]");
-        return;
-      }
-      if (
-        request.method === "GET" &&
-        url.pathname.endsWith("/containers/container-model-resolution/json")
-      ) {
-        if (containerRemoved) {
-          response.statusCode = 404;
-          response.end(JSON.stringify({ message: "No such container" }));
-          return;
-        }
-        containerInspectCount += 1;
-        response.end(
-          JSON.stringify({
-            Id: "container-model-resolution",
-            State: {
-              Running: containerInspectCount < 3,
-              ExitCode: 0,
-              Error: "",
-              FinishedAt: "0001-01-01T00:00:00Z",
-            },
-          }),
-        );
-        return;
-      }
-      if (request.method === "GET" && url.pathname.endsWith("/json")) {
-        response.statusCode = 404;
-        response.end(JSON.stringify({ message: "No such container" }));
-        return;
-      }
-      if (request.method === "POST" && url.pathname.endsWith("/images/create")) {
-        response.end(`${JSON.stringify({ status: "Downloaded" })}\n`);
-        return;
-      }
-      if (request.method === "POST" && url.pathname.endsWith("/containers/create")) {
-        containerCreateCount += 1;
-        response.statusCode = 201;
-        response.end(JSON.stringify({ Id: "container-model-resolution" }));
-        return;
-      }
-      if (request.method === "POST" && url.pathname.endsWith("/start")) {
-        response.statusCode = 204;
-        response.end();
-        return;
-      }
-      if (request.method === "POST" && url.pathname.endsWith("/stop")) {
-        stopCount += 1;
-        if (stopCount === 1) {
-          response.statusCode = 500;
-          response.end(JSON.stringify({ message: rawFailureMarker }));
-        } else {
-          response.statusCode = 304;
-          response.end();
-        }
-        return;
-      }
-      if (
-        request.method === "DELETE" &&
-        url.pathname.endsWith("/containers/container-model-resolution")
-      ) {
-        containerRemoved = true;
-        response.statusCode = 204;
-        response.end();
-        return;
-      }
-      if (request.method === "DELETE" && url.pathname.includes("/images/")) {
-        response.statusCode = 404;
-        response.end(JSON.stringify({ message: "No such image" }));
-        return;
-      }
-      response.statusCode = 404;
-      response.end(
-        JSON.stringify({ message: `Unexpected Docker request ${request.method} ${url.pathname}` }),
-      );
-    });
-    await new Promise<void>((resolve, reject) => {
-      dockerServer.once("error", reject);
-      dockerServer.listen(dockerSocketPath, () => {
-        dockerServer.off("error", reject);
-        resolve();
-      });
-    });
-
-    const configPath = join(fixtureDir, "listen-model-resolution.json");
-    const cleanupReceipt = Promise.withResolvers<void>();
-    let claimed = false;
-    let leaseCount = 0;
-    const apiServer = Bun.serve({
-      port: 0,
-      fetch(request) {
-        const pathname = new URL(request.url).pathname;
-        if (pathname.endsWith("/heartbeat")) return Response.json({});
-        if (pathname.endsWith("/tasks")) return Response.json({ tasks: [] });
-        if (pathname.endsWith("/model-resolutions/claim")) {
-          if (claimed) return new Response(null, { status: 204 });
-          claimed = true;
-          return Response.json({
-            action: "resolve",
-            resolutionId,
-            leaseId,
-            resource: {
-              runtime: "docker",
-              containerName: taskContainerName(resolutionId),
-            },
-            leaseMs: 60,
-            organizationId: "00000000-0000-7000-8000-000000000494",
-            providerId: "openai",
-            credentialFingerprint: "a".repeat(64),
-            source: "organization",
-            imageRef:
-              "registry-1.docker.io/firatoezcan/devboxes@sha256:0132f868cf2b6613f61148489b2cbde57f5a0e0f40cdac97b3c4f93c0971cf10",
-            perCapabilityToken: "model-resolution-capability-token",
-            launchSpec: {
-              launchProtocol: opencodeWorkspaceLaunchProtocol,
-              workspaceCapability: "provider-model-resolution",
-              workingDir: "/workspace",
-              entrypoint: daemonEntrypoint,
-              env: {
-                DEVBOX_WORKSPACE_CAPABILITY: "provider-model-resolution",
-                DEVBOX_WORKSPACE_CAPABILITY_ID: resolutionId,
-                DEVBOX_MODEL_PROVIDER_ID: "openai",
-                DEVBOX_PROVIDER_AUTH_ROUTE: "model-resolutions",
-              },
-              memoryBackedPaths: [],
-              labels: {},
-              providerAuthSource: "organization",
-            },
-          });
-        }
-        if (pathname.endsWith(`/model-resolutions/${resolutionId}/lease`)) {
-          leaseCount += 1;
-          return Response.json({ renewed: true });
-        }
-        if (pathname.endsWith(`/model-resolutions/${resolutionId}/cleanup`)) {
-          if (!containerRemoved) {
-            return Response.json(
-              { error: "Cleanup was acknowledged before resource deletion." },
-              { status: 409 },
-            );
-          }
-          cleanupReceipt.resolve();
-          return Response.json({ released: true });
-        }
-        if (pathname.endsWith("/claim")) return new Response(null, { status: 204 });
-        return Response.json({ error: "Unexpected request." }, { status: 404 });
-      },
-    });
-    await writeFile(
-      configPath,
-      `${JSON.stringify({
-        apiBaseUrl: `http://127.0.0.1:${apiServer.port}/api`,
-        authBaseUrl: `http://127.0.0.1:${apiServer.port}/api/auth`,
-        organizationId: "00000000-0000-7000-8000-000000000494",
-        apiKey: "runner-api-key",
-      })}\n`,
-      { mode: 0o600 },
-    );
-
-    const listening = Bun.spawn(
-      [process.execPath, join(import.meta.dir, "../cli.ts"), "--config", configPath, "listen"],
-      {
-        cwd: join(import.meta.dir, "../.."),
-        env: {
-          ...process.env,
-          DEVBOX_OPENCODE_DOCKER_SOCKET_PATH: dockerSocketPath,
-          DEVBOX_OPENCODE_HOME_ROOT: join(fixtureDir, "model-resolution-runtime"),
-        },
-        stdout: "pipe",
-        stderr: "pipe",
-      },
-    );
-    const stdoutText = new Response(listening.stdout).text();
-    const stderrText = new Response(listening.stderr).text();
-    try {
-      const outcome = await Promise.race([
-        cleanupReceipt.promise.then(() => "cleaned" as const),
-        listening.exited.then(() => "exited" as const),
-        Bun.sleep(10_000).then(() => "timeout" as const),
-      ]);
-      expect(outcome).toBe("cleaned");
-      expect(containerCreateCount).toBe(1);
-      expect(stopCount).toBe(2);
-      expect(leaseCount).toBeGreaterThan(2);
-      expect(containerRemoved).toBe(true);
-    } finally {
-      if (!listening.killed) listening.kill("SIGTERM");
-      await listening.exited;
-      await apiServer.stop(true);
-      await new Promise<void>((resolve, reject) => {
-        dockerServer.close((error) => (error ? reject(error) : resolve()));
-      });
-    }
-    expect(await stdoutText).not.toContain(rawFailureMarker);
-    expect(await stderrText).not.toContain(rawFailureMarker);
   });
 
   it("serves the exact local credential material advertised by the successful claim", async () => {
@@ -2029,7 +1820,7 @@ describe("runner Opencode credentials", () => {
             leaseExpiresAt: new Date(Date.now() + 120_000).toISOString(),
             perTaskToken: "claim-authority-task-token",
             launchSpec: {
-              launchProtocol: "devboxes-launch-v5",
+              launchProtocol: "devboxes-launch-v6",
               workspaceCapability: "agent-task",
               entrypoint: "/entrypoint.sh",
               workingDir: "/workspace",
@@ -2042,7 +1833,6 @@ describe("runner Opencode credentials", () => {
                 OPENCODE_EXPERIMENTAL_WORKSPACES: "true",
                 DEVBOX_WORKSPACE_CAPABILITY: "agent-task",
                 DEVBOX_WORKSPACE_CAPABILITY_ID: taskId,
-                DEVBOX_PROVIDER_AUTH_ROUTE: "opencode-tasks",
                 DEVBOX_RUN_ID: runId,
                 DEVBOX_BACKEND_TOKEN_FILE: "/run/devboxes/secrets/backend-token",
                 DEVBOX_DAEMON_VERSION:

@@ -14,7 +14,7 @@ are about to break shipped artifacts.
 
 | Contract                      | Value                                                                                                                    | Reader that would break                                                                                                                                  |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Workspace launch protocol tag | `devboxes-launch-v5`                                                                                                     | The API, direct CLI, Kubernetes runner, and Workspace daemon agree on the exact capability shape before work is leased                                   |
+| Workspace launch protocol tag | `devboxes-launch-v6`                                                                                                     | The API, direct CLI, Kubernetes runner, and Workspace daemon agree on the exact capability shape before work is leased                                   |
 | Client-owned launch env keys  | `DEVBOX_BACKEND_BASE_URL`, `DEVBOX_OPENCODE_PROVIDER_AUTH_URL`, `DEVBOX_OPENCODE_CONFIG_JSON_FILE`                       | Shipped runtimes overlay exactly these keys over the served spec; serving them would be silently ignored, renaming them orphans the overlay              |
 | Daemon bootstrap protocol tag | `devboxes-daemon-bootstrap-v1`                                                                                           | `/entrypoint.sh` baked into every published Workspace Image exits `upgrade_required` on mismatch                                                         |
 | Container home                | `/home/workspace`                                                                                                        | Published Workspace Images (user, permissions), served spec env, daemon auth-file path                                                                   |
@@ -23,7 +23,7 @@ are about to break shipped artifacts.
 | Task container name           | `firops-opencode-task-<sha256(taskId)[0:12]>`                                                                            | Startup reconciliation matches leftover containers by re-deriving names                                                                                  |
 | State image                   | `firops/opencode-task-state:<sha256(taskId)[0:12]>`                                                                      | Stop must find and delete snapshots committed by any earlier runner build                                                                                |
 | Reconciliation labels         | `devboxes.firops.io/workload=opencode-dispatch-task`, `devboxes.firops.io/task-id`, `devboxes.firops.io/organization-id` | Shipped runner binaries and the Kubernetes driver list and re-adopt leftovers by these exact keys; they stay runtime-composed and win over served labels |
-| Provider-auth route shapes    | `/opencode-tasks/:taskId/provider-auth` and `/model-resolutions/:resolutionId/provider-auth` + per-capability bearer     | The Workspace daemon selects the route declared by the current launch capability                                                                         |
+| Provider-auth route shape     | `/opencode-tasks/:taskId/provider-auth` + per-capability bearer                                                          | The Workspace daemon uses the broker selected by the current launch capability                                                                           |
 | Daemon bootstrap route        | `/api/runner-versions/:version` + signed Task or provider-model-resolution bearer                                        | Every Workspace Image fetches its exact server-pinned daemon before either capability can start                                                          |
 | Runner machine API prefix     | `/api/internal/runner-machines/*`                                                                                        | Every shipped runner's Eden client; Eden coupling is compile-time, so route paths cannot move                                                            |
 | Upgrade stop code             | `listener_upgrade_required`                                                                                              | Shipped runners exit cleanly (containers left for re-adoption) when any runner-machine response carries it                                               |
@@ -45,7 +45,7 @@ The GitHub task credential failure codes are:
 
 ## Current Workspace capability protocol
 
-`devboxes-launch-v5` runs agent-controlled processes under uid 1001. The runtime
+`devboxes-launch-v6` runs agent-controlled processes under uid 1001. The runtime
 starts the capability-limited daemon as uid 0 with shared gid 1000 and grants
 `CHOWN`, `SETGID`, and `SETUID` so it can assign agent-owned auth files and
 establish that boundary. Docker also grants `DAC_OVERRIDE` so the daemon can
@@ -53,26 +53,19 @@ read the listener-owned mode-0600 secret bind mounts, and sets
 `no-new-privileges` before the agent boundary. The daemon alone can access its
 mode-0700 publication directory and root-readable backend token.
 The same protocol carries either an `agent-task` or a
-`provider-model-resolution` capability. OpenCode is installed and executed only
-inside the Workspace Image. It resolves the authenticated Provider/plugin model
-set and uses bounded TanStack AI sessions to prove each candidate against that
-account. Only exact successes enter the result. The API and direct CLI never
-package or spawn OpenCode; they validate, persist, union, repair-authorize, and
-lock only the Workspace result. The runner keeps matching local credential
-material behind its capability broker. For an Organization credential, the
-server keeps encrypted claim-time authority. A runner that does not advertise
-`devboxes-launch-v5` receives `listener_upgrade_required` before any work is
+`provider-model-resolution` capability. Agent Tasks execute OpenCode inside the
+Workspace Image. Runner-local credentials also resolve there because only that
+Runner can read their secret material. Organization Provider Accounts are
+different: the API validates OpenCode Go, xAI, and ChatGPT credentials directly
+against their maintained provider endpoints, intersects the returned model IDs
+with its pinned Models.dev snapshot, and persists that result. It keeps the
+encrypted credential and claim-time authority. A runner that does not advertise
+`devboxes-launch-v6` receives `listener_upgrade_required` before any work is
 leased.
 
 OAuth authority is `subscription`. API-key authority is `metered` only when
 the selected model has engine cost metadata; otherwise it is `unavailable`.
 Missing money is never inferred as zero.
-
-New runners write credential-store version 2, where every entry key is an exact
-provider id. They migrate unambiguous v1 entries in memory, but a v1 `opencode`
-entry must be reconnected because it could mean OpenCode Go or OpenCode Zen.
-Shipped v1 readers reject version 2 as newer instead of serving an exact Zen
-credential under their old Go mapping.
 
 The listener reports and omits a configured ambiguous reference. If the
 encrypted store cannot be decrypted, validated as a supported version, or read

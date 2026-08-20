@@ -57,20 +57,18 @@ export const workspaceModelResolutionFailureMessage = (
 ) => {
   switch (resolution.reason) {
     case "provider_not_connected":
-      return "OpenCode did not resolve this authenticated Provider Account.";
+      return "OpenCode did not resolve this authenticated Runner provider credential.";
     case "credential_rejected":
-      return "OpenCode rejected this Provider Account credential.";
+      return "OpenCode rejected this Runner provider credential.";
     case "resolution_pending":
-      return "Workspace model resolution is pending for this Provider Account.";
+      return "Workspace model resolution is pending for this Runner provider credential.";
     case "reachability_model_unavailable":
-      return "OpenCode did not resolve an account-authorized reachability model for this Provider Account.";
+      return "OpenCode did not resolve a reachability model for this Runner provider credential.";
     case "reachability_failed":
-      return "OpenCode could not complete this Provider Account reachability request.";
+      return "OpenCode could not complete this Runner provider credential reachability request.";
     case "account_rate_limited":
-      return "The Provider rate-limited OpenCode's account reachability request.";
+      return "The Provider rate-limited this Runner provider credential reachability request.";
   }
 };
 
 export const workspaceModelResolutionPath = "/api/internal/model-resolutions/:resolutionId/result";
-export const workspaceModelResolutionProviderAuthPath =
-  "/api/internal/model-resolutions/:resolutionId/provider-auth";

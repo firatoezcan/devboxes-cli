@@ -2,7 +2,7 @@ import Type, { type Static } from "typebox";
 
 // The server-authored launch spec: everything about a Workspace container that
 // is a PRODUCT decision — env composition, working directory, entrypoint,
-// metadata labels, memory-backed paths, provider-auth routing — arrives from
+// metadata labels, and memory-backed paths — arrives from
 // the claim response as data, so the launch contract can evolve server-side
 // without re-shipping runner binaries. Runtimes (the CLI's Docker
 // driver and the dashboard's Kubernetes driver) stay thin executors that add
@@ -15,7 +15,7 @@ import Type, { type Static } from "typebox";
 // one protocol tag the spec is additive-only (`additionalProperties: true`
 // keeps unknown future fields from failing older binaries); anything a binary
 // would interpret differently is a new tag.
-export const opencodeWorkspaceLaunchProtocol = "devboxes-launch-v5";
+export const opencodeWorkspaceLaunchProtocol = "devboxes-launch-v6";
 
 // The daemon has two shipped modes. Keep their environment discriminants here
 // so the server-authored launch spec, both thin runtimes, and the downloaded
@@ -24,17 +24,12 @@ export const OpencodeAgentTaskEnvSchema = Type.Object({
   DEVBOX_WORKSPACE_CAPABILITY: Type.Literal("agent-task"),
   DEVBOX_WORKSPACE_CAPABILITY_ID: Type.String({ minLength: 1 }),
   DEVBOX_MODEL_PROVIDER_ID: Type.Optional(Type.Never()),
-  DEVBOX_PROVIDER_AUTH_ROUTE: Type.Literal("opencode-tasks"),
 });
 
 export const OpencodeProviderModelResolutionEnvSchema = Type.Object({
   DEVBOX_WORKSPACE_CAPABILITY: Type.Literal("provider-model-resolution"),
   DEVBOX_WORKSPACE_CAPABILITY_ID: Type.String({ minLength: 1 }),
   DEVBOX_MODEL_PROVIDER_ID: Type.String({ minLength: 1 }),
-  DEVBOX_PROVIDER_AUTH_ROUTE: Type.Union([
-    Type.Literal("opencode-tasks"),
-    Type.Literal("model-resolutions"),
-  ]),
 });
 
 export type OpencodeAgentTaskEnv = Static<typeof OpencodeAgentTaskEnvSchema>;

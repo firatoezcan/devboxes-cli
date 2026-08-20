@@ -39,7 +39,7 @@ import {
 // suite exists to catch.
 describe("frozen runner contracts", () => {
   it("pins the protocol tags shipped binaries negotiate with", () => {
-    expect(opencodeWorkspaceLaunchProtocol).toBe("devboxes-launch-v5");
+    expect(opencodeWorkspaceLaunchProtocol).toBe("devboxes-launch-v6");
     expect(opencodeDaemonBootstrapProtocol).toBe("devboxes-daemon-bootstrap-v1");
   });
 

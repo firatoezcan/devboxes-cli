@@ -21,7 +21,7 @@ const daemonApiBaseUrl = "http://host.docker.internal:3001/api";
 // A server-authored launch spec as the claim response serves it; this runtime
 // executes it and overlays only the machine-local env keys.
 const launchSpec = {
-  launchProtocol: "devboxes-launch-v5" as const,
+  launchProtocol: "devboxes-launch-v6" as const,
   workspaceCapability: "agent-task" as const,
   workingDir: "/workspace",
   entrypoint: "/entrypoint.sh",
@@ -37,7 +37,6 @@ const launchSpec = {
     GIT_CONFIG_VALUE_0: "/workspace",
     DEVBOX_WORKSPACE_CAPABILITY: "agent-task" as const,
     DEVBOX_WORKSPACE_CAPABILITY_ID: "task_1",
-    DEVBOX_PROVIDER_AUTH_ROUTE: "opencode-tasks" as const,
     DEVBOX_RUN_ID: "run_1",
     DEVBOX_BACKEND_TOKEN_FILE: "/run/devboxes/secrets/backend-token",
     DEVBOX_DAEMON_PRIVATE_DIR: "/run/devboxes/daemon",

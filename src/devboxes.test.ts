@@ -150,7 +150,10 @@ describe("devboxes CLI", () => {
     await harness.seedOpencodeProviderCredential({
       organizationId,
       createdByUserId: ownerUserId,
-      providerId: "opencode",
+      providerId: "xai",
+      validatedModelIds: ["grok-4.6"],
+      validatedModelLabels: { "grok-4.6": "Grok 4.6" },
+      validatedProviderLabel: "xAI",
     });
     fixture = await harness.seedGithubProject({
       organizationId,
@@ -648,7 +651,7 @@ describe("devboxes CLI", () => {
     const dispatched = await dispatchDevboxesTask(context, {
       task: "Fix the flaky retry handling in the queue worker.",
       repo: fixture.repositoryFullName,
-      model: "opencode/big-pickle",
+      model: "xai/grok-4.6",
       blueprintVersionId: fixture.blueprintVersionId,
     });
     dispatchedSessionId = dispatched.agentSessionId;
@@ -670,8 +673,8 @@ describe("devboxes CLI", () => {
     expect(task.id).not.toBe(dispatched.agentSessionId);
     expect(task?.status).toBe("queued");
     expect(task?.taskPrompt).toContain("Fix the flaky retry handling in the queue worker.");
-    expect(task?.modelProviderId).toBe("opencode");
-    expect(task?.modelId).toBe("big-pickle");
+    expect(task?.modelProviderId).toBe("xai");
+    expect(task?.modelId).toBe("grok-4.6");
     const run = await dbClient.db.query.runs.findFirst({
       where: { id: dispatched.runId, organizationId },
     });
@@ -696,8 +699,8 @@ describe("devboxes CLI", () => {
     expect(task?.taskPrompt).toContain(`ISSUE_URL=${issueUrl}`);
     expect(task?.taskPrompt).toContain("DESTINATION_BRANCH=main");
     expect(task?.baseBranch).toBe("main");
-    expect(task?.modelProviderId).toBe("opencode");
-    expect(task?.modelId).toBe("big-pickle");
+    expect(task?.modelProviderId).toBe("xai");
+    expect(task?.modelId).toBe("grok-4.6");
   });
 
   it("refuses an ambiguous dispatch instead of guessing a project", async () => {
@@ -803,7 +806,10 @@ describe("devboxes CLI", () => {
     await harness.seedOpencodeProviderCredential({
       organizationId: soloOrganizationId,
       createdByUserId: ownerUserId,
-      providerId: "opencode",
+      providerId: "xai",
+      validatedModelIds: ["grok-4.6"],
+      validatedModelLabels: { "grok-4.6": "Grok 4.6" },
+      validatedProviderLabel: "xAI",
     });
     const soloFixture = await harness.seedGithubProject({
       organizationId: soloOrganizationId,

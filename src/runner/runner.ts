@@ -65,7 +65,6 @@ import {
 
 type RunnerCliOptions = DevboxesCliOptions & {
   provider?: string;
-  credential?: string;
   connect?: string;
   apiKey?: string;
   all: boolean;
@@ -819,7 +818,7 @@ export const setupOpencodeProviderCredentials = async (
 
 export const syncOpencodeProviderCredentials = async (
   context: DevboxesContext,
-  options: Pick<RunnerCliOptions, "provider" | "credential">,
+  options: Pick<RunnerCliOptions, "provider">,
 ) => {
   if (!context.config.organizationId) {
     throw new Error("Credential sync requires a registered runner organization.");
@@ -854,19 +853,11 @@ export const syncOpencodeProviderCredentials = async (
           .filter(Boolean),
       )
     : null;
-  const credentialId = options.credential?.trim();
-  if (credentialId && requestedProviders?.size !== 1) {
-    throw new Error("--credential requires exactly one provider through --provider.");
-  }
   if (requestedProviders) {
     providerIds = providerIds.filter((providerId) => requestedProviders.has(providerId));
     if (providerIds.length === 0) {
       throw new Error("No configured local Opencode provider credentials match --provider.");
     }
-  }
-
-  if (credentialId && providerIds.length !== 1) {
-    throw new Error("--credential must resolve to exactly one configured provider.");
   }
 
   // Resolve every credential before the browser approval: a run that would
@@ -935,12 +926,36 @@ export const syncOpencodeProviderCredentials = async (
   // terminal session is deliberately not reused for exporting local secrets.
   const sessionToken = await runnerDeviceSessionToken(context, "credential sync");
   const backend = bearerBackend(context.config.apiBaseUrl, sessionToken);
+  const catalogResponse = await backend.api
+    .org({ organizationId: context.config.organizationId })
+    .credentials["opencode-provider-credentials"].get();
+  if (catalogResponse.error) {
+    throw apiRequestError("List Organization Provider Accounts", catalogResponse.error, "connect");
+  }
+  const apiKeyProviderIds = new Set<string>(
+    catalogResponse.data?.apiKeyProviders.map((provider) => provider.id) ?? [],
+  );
+  const oauthProviderIds = new Set<string>(
+    catalogResponse.data?.oauthProviders.map((provider) => provider.id) ?? [],
+  );
+  const supportedSyncable = syncable.filter(({ providerId, auth }) => {
+    const supported =
+      auth.type === "api" ? apiKeyProviderIds.has(providerId) : oauthProviderIds.has(providerId);
+    if (!supported) {
+      log.warn(
+        `Skipped ${providerId}: this provider and auth type cannot be stored as an Organization Provider Account.`,
+      );
+    }
+    return supported;
+  });
+  if (supportedSyncable.length === 0) {
+    throw new Error("No local credentials match the supported Organization provider auth types.");
+  }
 
-  for (const { providerId, auth, accountLabel } of syncable) {
+  for (const { providerId, auth, accountLabel } of supportedSyncable) {
     const syncBody = {
       providerId,
       runnerMachineId: context.config.machineId,
-      credentialId,
       accountLabel,
       auth,
     };
@@ -2258,12 +2273,10 @@ export const addRunnerCommands = (program: Command) => {
   syncCommand
     .description("upload local credentials to encrypted organization storage")
     .option("--provider <providers>", "comma-separated provider ids")
-    .option("--credential <id>", "repair this exact Provider Account during sync")
     .action(async () => {
       const options = runnerOptions(syncCommand);
       await syncOpencodeProviderCredentials(await loadContext(options), {
         provider: options.provider,
-        credential: options.credential,
       });
     });
 

@@ -77,3 +77,26 @@ export const opencodeProviderConnectors: readonly OpencodeConnectorDescriptor[] 
     },
   },
 ];
+
+// Organization Provider Accounts are validated directly by the API. Keep
+// this surface bounded to providers with a maintained direct HTTP boundary;
+// Runner-local discovery continues to use the complete lists above.
+export const organizationOpencodeApiKeyProviders = opencodeApiKeyProviders.filter(
+  (provider) => provider.id === "opencode-go" || provider.id === "xai",
+);
+
+export const organizationOpencodeProviderConnectors = opencodeProviderConnectors.filter(
+  (connector) => connector.providerId === "openai" || connector.providerId === "xai",
+);
+
+export const organizationOpencodeProviderAuthSupported = (providerId: string, authType: string) => {
+  if (authType === "api") {
+    return organizationOpencodeApiKeyProviders.some((provider) => provider.id === providerId);
+  }
+  if (authType === "oauth") {
+    return organizationOpencodeProviderConnectors.some(
+      (connector) => connector.providerId === providerId,
+    );
+  }
+  return false;
+};

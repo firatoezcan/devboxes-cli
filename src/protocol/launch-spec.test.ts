@@ -6,7 +6,6 @@ import { opencodeWorkspaceLaunchProtocol, OpencodeLaunchSpecSchema } from "./lau
 
 describe("current launch protocol", () => {
   it("accepts the current Workspace capability protocol", () => {
-    expect(opencodeWorkspaceLaunchProtocol).toBe("devboxes-launch-v5");
     const shared = {
       launchProtocol: opencodeWorkspaceLaunchProtocol,
       workingDir: "/workspace",
@@ -22,10 +21,20 @@ describe("current launch protocol", () => {
         env: {
           DEVBOX_WORKSPACE_CAPABILITY: "agent-task",
           DEVBOX_WORKSPACE_CAPABILITY_ID: "task_test",
-          DEVBOX_PROVIDER_AUTH_ROUTE: "opencode-tasks",
         },
       }),
     ).toBe(true);
+    expect(
+      Value.Check(OpencodeLaunchSpecSchema, {
+        ...shared,
+        launchProtocol: "devboxes-launch-v5",
+        workspaceCapability: "agent-task",
+        env: {
+          DEVBOX_WORKSPACE_CAPABILITY: "agent-task",
+          DEVBOX_WORKSPACE_CAPABILITY_ID: "task_test",
+        },
+      }),
+    ).toBe(false);
     expect(
       Value.Check(OpencodeLaunchSpecSchema, {
         ...shared,
@@ -34,7 +43,6 @@ describe("current launch protocol", () => {
           DEVBOX_WORKSPACE_CAPABILITY: "provider-model-resolution",
           DEVBOX_WORKSPACE_CAPABILITY_ID: "resolution_test",
           DEVBOX_MODEL_PROVIDER_ID: "github-copilot",
-          DEVBOX_PROVIDER_AUTH_ROUTE: "model-resolutions",
         },
       }),
     ).toBe(true);
@@ -46,7 +54,6 @@ describe("current launch protocol", () => {
           DEVBOX_WORKSPACE_CAPABILITY: "provider-model-resolution",
           DEVBOX_WORKSPACE_CAPABILITY_ID: "resolution_test",
           DEVBOX_MODEL_PROVIDER_ID: "github-copilot",
-          DEVBOX_PROVIDER_AUTH_ROUTE: "model-resolutions",
         },
       }),
     ).toBe(false);
