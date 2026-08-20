@@ -43,6 +43,5 @@
 
 - 3ed71eb: Initial public release of the Devboxes CLI: `connect` signs a terminal in via
   browser approval (device authorization), `dispatch` starts a run from task
-  text or a GitHub issue, `status`/`result` follow it to the final output and
-  pull request, and `devboxes mcp` serves the same actions as MCP tools over
-  stdio.
+  text or a GitHub issue, `status`/`result` follow it to its structured Run
+  outcome, and `devboxes mcp` serves the same actions as MCP tools over stdio.

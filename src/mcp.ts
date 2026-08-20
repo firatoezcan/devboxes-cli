@@ -68,7 +68,7 @@ export const createDevboxesMcpServer = (context: DevboxesContext) => {
         runStatus: current.run.status,
         currentStep: current.run.currentStep,
         terminal: sessionReachedTerminalState(current),
-        pullRequestUrl: current.run.pullRequestUrl,
+        outcome: current.run.outcome,
         errorMessage: current.run.errorMessage ?? current.currentTask.errorMessage ?? null,
         usage: current.run.usage,
       });
@@ -79,7 +79,7 @@ export const createDevboxesMcpServer = (context: DevboxesContext) => {
     "get_session_result",
     {
       description:
-        "Read the outcome of a Devboxes session: final assistant output, pull request URL, and error message. Meaningful once get_session_status reports terminal: true.",
+        "Read the structured outcome of a Devboxes Session. Meaningful once get_session_status reports terminal: true.",
       inputSchema: {
         agentSessionId: z.string().describe("Agent session id returned by dispatch_task"),
       },
@@ -91,11 +91,9 @@ export const createDevboxesMcpServer = (context: DevboxesContext) => {
         sessionStatus: result.currentTask.status,
         runStatus: result.run.status,
         terminal: result.terminal,
-        pullRequestUrl: result.run.pullRequestUrl,
+        outcome: result.run.outcome,
         errorMessage: result.run.errorMessage ?? result.currentTask.errorMessage ?? null,
         usage: result.run.usage,
-        finalOutput: result.finalOutput,
-        finalOutputError: result.finalOutputError,
       });
     },
   );

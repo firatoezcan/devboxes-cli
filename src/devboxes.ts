@@ -683,7 +683,7 @@ export const readDevboxesSession = async (context: DevboxesContext, agentSession
     throw new Error("Session lookup returned a task for a different Run.");
   }
 
-  // The Run is the product truth for status, outcome, PR link, and usage. A
+  // The Run is the product truth for status, outcome, and usage. A
   // session without its canonical Run is an invalid read, not another public
   // status shape.
   const runResponse = await backend.api
@@ -702,73 +702,16 @@ const terminalRunStatuses = new Set(["succeeded", "failed", "cancelled"]);
 export const sessionReachedTerminalState = (input: { run: { status: string } }) =>
   terminalRunStatuses.has(input.run.status);
 
-// A stalled read must not hang `result` forever; the read leg gets the same
-// ceiling as the login flow's browser-approval poll.
-const finalOutputReadTimeoutMs = 5 * 60_000;
-
-// Reads generated stable events and extracts the latest assistant turn. A
-// Session that never reached OpenCode has no output yet.
-const readFinalAssistantMessage = async (context: DevboxesContext, agentSessionId: string) => {
-  const { backend, organizationId } = connectedBackend(context);
-  const readDeadline = AbortSignal.timeout(finalOutputReadTimeoutMs);
-  const response = await backend.api
-    .org({ organizationId })
-    ["agent-sessions"]({ agentSessionId })
-    .opencode.events.get({ fetch: { signal: readDeadline } })
-    .catch((error) => {
-      // AbortSignal.timeout surfaces as an opaque TimeoutError; name the deadline.
-      if (readDeadline.aborted) {
-        throw new Error(
-          `OpenCode event read timed out after ${finalOutputReadTimeoutMs / 60_000} minutes without a response.`,
-        );
-      }
-      throw error;
-    });
-  if (response.error) throw apiRequestError("OpenCode stable event read", response.error);
-
-  const events = response.data ?? [];
-  let assistantMessageId: string | undefined;
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
-    if (event?.type === "session.next.step.started") {
-      assistantMessageId = event.data.assistantMessageID;
-      break;
-    }
-  }
-  if (!assistantMessageId) return null;
-  const texts: string[] = [];
-  for (const event of events) {
-    if (
-      event.type === "session.next.text.ended" &&
-      event.data.assistantMessageID === assistantMessageId
-    ) {
-      texts.push(event.data.text);
-    }
-  }
-  return texts.join("\n\n").trim() || null;
-};
-
 export const readDevboxesSessionResult = async (
   context: DevboxesContext,
   agentSessionId: string,
 ) => {
   const { session, currentTask, run } = await readDevboxesSession(context, agentSessionId);
-  let finalOutput: string | null = null;
-  let finalOutputError: string | null = null;
-  try {
-    finalOutput = await readFinalAssistantMessage(context, agentSessionId);
-  } catch (error) {
-    // The outcome and PR link stay useful even when event storage is
-    // unreachable; surface the gap instead of failing the whole result.
-    finalOutputError = error instanceof Error ? error.message : String(error);
-  }
   return {
     session,
     currentTask,
     run,
     terminal: sessionReachedTerminalState({ run }),
-    finalOutput,
-    finalOutputError,
   };
 };
 
@@ -782,7 +725,7 @@ const sessionStatusJson = (input: Awaited<ReturnType<typeof readDevboxesSession>
   repository: input.currentTask.repositoryFullName,
   branch: input.run.branch ?? input.currentTask.baseBranch,
   model: `${input.currentTask.modelProviderId}/${input.currentTask.modelId}`,
-  pullRequestUrl: input.run.pullRequestUrl,
+  outcome: input.run.outcome,
   errorMessage: input.run.errorMessage ?? input.currentTask.errorMessage ?? null,
   queuedAt: input.run.queuedAt,
   startedAt: input.run.startedAt,
@@ -799,7 +742,13 @@ const printSessionStatus = (input: Awaited<ReturnType<typeof readDevboxesSession
       ...(status.currentStep ? [`Step: ${status.currentStep}`] : []),
       `Repository: ${status.repository} → ${status.branch}`,
       `Model: ${status.model}`,
-      ...(status.pullRequestUrl ? [`Pull request: ${status.pullRequestUrl}`] : []),
+      ...(status.outcome?.summary ? [`Outcome: ${status.outcome.summary.text}`] : []),
+      ...(status.outcome?.externalResults.flatMap((result) =>
+        result.canonicalUrl ? [`${result.type}: ${result.canonicalUrl}`] : [],
+      ) ?? []),
+      ...(status.outcome?.publicationFailures.map(
+        (failure) => `${failure.type} publication failed: ${failure.error}`,
+      ) ?? []),
       ...(status.errorMessage ? [`Error: ${status.errorMessage}`] : []),
     ].join("\n"),
     "Devboxes session",
@@ -897,7 +846,7 @@ export const addAccountCommands = (program: Command) => {
 
   const resultCommand = program.command("result");
   resultCommand
-    .description("show the final output and pull request of a finished session")
+    .description("show the outcome of a finished session")
     .argument("<agentSessionId>", "agent session id returned by dispatch")
     .option("--json", "print the machine-readable result on stdout", false)
     .action(async (agentSessionId: string) => {
@@ -906,22 +855,9 @@ export const addAccountCommands = (program: Command) => {
       const result = await readDevboxesSessionResult(context, agentSessionId);
       const status = sessionStatusJson(result);
       if (options.json) {
-        process.stdout.write(
-          `${JSON.stringify(
-            {
-              ...status,
-              finalOutput: result.finalOutput,
-              finalOutputError: result.finalOutputError,
-            },
-            null,
-            2,
-          )}\n`,
-        );
+        process.stdout.write(`${JSON.stringify(status, null, 2)}\n`);
       } else {
         printSessionStatus(result);
-        if (result.finalOutput) note(result.finalOutput, "Final output");
-        if (result.finalOutputError)
-          log.warn(`Final output unavailable: ${result.finalOutputError}`);
         if (!result.terminal) {
           log.warn(
             `The Run is still ${status.runStatus}; poll \`${cliCommandName} status ${agentSessionId}\` until it finishes.`,

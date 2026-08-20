@@ -897,9 +897,7 @@ describe("devboxes CLI", () => {
     expect(refreshed.expiresAt.getTime()).toBeGreaterThan(Date.now() + 6 * 24 * 60 * 60 * 1000);
   });
 
-  it("reads the result with pull request link and final assistant output", async () => {
-    // The final output comes from the latest assistant turn in the generated
-    // stable event history.
+  it("reads the structured Run outcome without reconstructing Session events", async () => {
     await dbClient.db
       .update(schema.opencodeDispatchTasks)
       .set({
@@ -909,86 +907,36 @@ describe("devboxes CLI", () => {
         completedAt: new Date(),
       })
       .where(eq(schema.opencodeDispatchTasks.id, dispatchedTaskId));
-    const { appendOpencodeEventsToClickHouse } = await import("@/clickhouse/opencode-events");
-    await appendOpencodeEventsToClickHouse({
-      organizationId,
-      agentSessionId: dispatchedTaskId,
-      events: [
-        {
-          id: "evt_input",
-          type: "session.next.prompt.admitted",
-          durable: { aggregateID: "ses_cli", seq: 1, version: 1 },
-          data: {
-            timestamp: 1,
-            sessionID: "ses_cli",
-            messageID: "msg_user",
-            prompt: { text: "Fix the flaky retry handling in the queue worker." },
-            delivery: "queue",
-          },
-        },
-        {
-          id: "evt_step_started",
-          type: "session.next.step.started",
-          durable: { aggregateID: "ses_cli", seq: 2, version: 1 },
-          data: {
-            timestamp: 2,
-            sessionID: "ses_cli",
-            assistantMessageID: "msg_assistant",
-            agent: "build",
-            model: { id: "big-pickle", providerID: "opencode", variant: "default" },
-          },
-        },
-        {
-          id: "evt_text_started",
-          type: "session.next.text.started",
-          durable: { aggregateID: "ses_cli", seq: 3, version: 1 },
-          data: {
-            timestamp: 3,
-            sessionID: "ses_cli",
-            assistantMessageID: "msg_assistant",
-            textID: "text-0",
-          },
-        },
-        {
-          id: "evt_text_ended",
-          type: "session.next.text.ended",
-          durable: { aggregateID: "ses_cli", seq: 4, version: 1 },
-          data: {
-            timestamp: 4,
-            sessionID: "ses_cli",
-            assistantMessageID: "msg_assistant",
-            textID: "text-0",
-            text: "Retry handling now backs off exponentially; opened a pull request.",
-          },
-        },
-        {
-          id: "evt_step_ended",
-          type: "session.next.step.ended",
-          durable: { aggregateID: "ses_cli", seq: 5, version: 1 },
-          data: {
-            timestamp: 5,
-            sessionID: "ses_cli",
-            assistantMessageID: "msg_assistant",
-            finish: "stop",
-            cost: 0,
-            tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-          },
-        },
-      ],
-    });
     await dbClient.db
       .update(schema.runs)
       .set({
         status: "succeeded",
-        pullRequestUrl: "https://github.com/firatoezcan/devboxes-dashboard/pull/77",
+        outcome: serializedJsonb({
+          summary: {
+            text: "Retry handling now backs off exponentially; opened a pull request.",
+            producingRunStepId: null,
+          },
+          privateArtifacts: [],
+          externalResults: [
+            {
+              type: "pull_request",
+              provider: "github",
+              externalId: "firatoezcan/devboxes-dashboard#77",
+              canonicalUrl: "https://github.com/firatoezcan/devboxes-dashboard/pull/77",
+              publicationState: "published",
+              producingRunStepId: null,
+            },
+          ],
+          publicationFailures: [],
+        }),
         completedAt: new Date(),
       })
       .where(eq(schema.runs.id, dispatchedRunId));
 
     const result = await readDevboxesSessionResult(context, dispatchedSessionId);
     expect(result.terminal).toBe(true);
-    expect(result.run.pullRequestUrl).toBe(
-      "https://github.com/firatoezcan/devboxes-dashboard/pull/77",
+    expect(result.run.outcome?.summary?.text).toBe(
+      "Retry handling now backs off exponentially; opened a pull request.",
     );
     expect(result.run.usage).toEqual({
       tokensInput: 0,
@@ -997,19 +945,16 @@ describe("devboxes CLI", () => {
       tokensCacheWrite: 0,
       monetaryBasis: "unavailable",
     });
-    expect(result.finalOutputError).toBeNull();
-    expect(result.finalOutput).toBe(
-      "Retry handling now backs off exponentially; opened a pull request.",
+    expect(result.run.outcome?.externalResults[0]?.canonicalUrl).toBe(
+      "https://github.com/firatoezcan/devboxes-dashboard/pull/77",
     );
   });
 
   it("serves the full result from a suffix-less --api base URL", async () => {
-    // Before base-URL normalization moved into loadContext, this exact shape
-    // worked for every command except the final-output fetch (404).
+    // The result route works with the same normalized base as every command.
     const suffixless = await loadContext({ config: context.configPath, api: origin });
     const result = await readDevboxesSessionResult(suffixless, dispatchedSessionId);
-    expect(result.finalOutputError).toBeNull();
-    expect(result.finalOutput).toBe(
+    expect(result.run.outcome?.summary?.text).toBe(
       "Retry handling now backs off exponentially; opened a pull request.",
     );
   });
@@ -1063,13 +1008,13 @@ describe("devboxes CLI", () => {
       const status = JSON.parse(statusContent[0]!.text) as {
         runStatus: string;
         terminal: boolean;
-        pullRequestUrl: string;
+        outcome: { summary: { text: string } };
         usage: { monetaryBasis: string };
       };
       expect(status.runStatus).toBe("succeeded");
       expect(status.terminal).toBe(true);
-      expect(status.pullRequestUrl).toBe(
-        "https://github.com/firatoezcan/devboxes-dashboard/pull/77",
+      expect(status.outcome.summary.text).toBe(
+        "Retry handling now backs off exponentially; opened a pull request.",
       );
       expect(status.usage.monetaryBasis).toBe("unavailable");
 
@@ -1079,10 +1024,10 @@ describe("devboxes CLI", () => {
       });
       const resultContent = resultCall.content as Array<{ type: string; text: string }>;
       const sessionResult = JSON.parse(resultContent[0]!.text) as {
-        finalOutput: string;
+        outcome: { summary: { text: string } };
         usage: { monetaryBasis: string };
       };
-      expect(sessionResult.finalOutput).toBe(
+      expect(sessionResult.outcome.summary.text).toBe(
         "Retry handling now backs off exponentially; opened a pull request.",
       );
       expect(sessionResult.usage.monetaryBasis).toBe("unavailable");
