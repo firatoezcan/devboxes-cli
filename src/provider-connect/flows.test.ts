@@ -17,6 +17,8 @@ assert(openaiConnector?.kind === "openai-device");
 assert(copilotConnector?.kind === "github-device");
 assert(xaiConnector?.kind === "rfc8628-form");
 
+const pollSignal = new AbortController().signal;
+
 const originalFetch = globalThis.fetch;
 
 afterEach(() => {
@@ -83,13 +85,17 @@ describe("ChatGPT device flow", () => {
   test("unapproved codes answer pending on 403 and 404", async () => {
     for (const status of [403, 404]) {
       stubFetch(() => new Response("denied", { status }));
-      const result = await pollOpencodeOauthDeviceFlow(openaiConnector, {
-        kind: "openai-device",
-        providerId: "openai",
-        deviceAuthId: "device-auth-1",
-        userCode: "ABCD-1234",
-        intervalSeconds: 5,
-      });
+      const result = await pollOpencodeOauthDeviceFlow(
+        openaiConnector,
+        {
+          kind: "openai-device",
+          providerId: "openai",
+          deviceAuthId: "device-auth-1",
+          userCode: "ABCD-1234",
+          intervalSeconds: 5,
+        },
+        pollSignal,
+      );
       expect(result).toEqual({ status: "pending", intervalSeconds: 5 });
     }
   });
@@ -111,13 +117,17 @@ describe("ChatGPT device flow", () => {
       });
     });
 
-    const result = await pollOpencodeOauthDeviceFlow(openaiConnector, {
-      kind: "openai-device",
-      providerId: "openai",
-      deviceAuthId: "device-auth-1",
-      userCode: "ABCD-1234",
-      intervalSeconds: 5,
-    });
+    const result = await pollOpencodeOauthDeviceFlow(
+      openaiConnector,
+      {
+        kind: "openai-device",
+        providerId: "openai",
+        deviceAuthId: "device-auth-1",
+        userCode: "ABCD-1234",
+        intervalSeconds: 5,
+      },
+      pollSignal,
+    );
 
     const exchange = requests[1];
     expect(exchange?.url).toBe("https://auth.openai.com/oauth/token");
@@ -143,13 +153,17 @@ describe("ChatGPT device flow", () => {
         : new Response("nope", { status: 400 }),
     );
 
-    const result = await pollOpencodeOauthDeviceFlow(openaiConnector, {
-      kind: "openai-device",
-      providerId: "openai",
-      deviceAuthId: "device-auth-1",
-      userCode: "ABCD-1234",
-      intervalSeconds: 5,
-    });
+    const result = await pollOpencodeOauthDeviceFlow(
+      openaiConnector,
+      {
+        kind: "openai-device",
+        providerId: "openai",
+        deviceAuthId: "device-auth-1",
+        userCode: "ABCD-1234",
+        intervalSeconds: 5,
+      },
+      pollSignal,
+    );
     expect(result.status).toBe("failed");
   });
 
@@ -194,13 +208,17 @@ describe("ChatGPT device flow", () => {
         : Response.json({ access_token: "access-1", expires_in: 3600 }),
     );
 
-    const result = await pollOpencodeOauthDeviceFlow(openaiConnector, {
-      kind: "openai-device",
-      providerId: "openai",
-      deviceAuthId: "device-auth-1",
-      userCode: "ABCD-1234",
-      intervalSeconds: 5,
-    });
+    const result = await pollOpencodeOauthDeviceFlow(
+      openaiConnector,
+      {
+        kind: "openai-device",
+        providerId: "openai",
+        deviceAuthId: "device-auth-1",
+        userCode: "ABCD-1234",
+        intervalSeconds: 5,
+      },
+      pollSignal,
+    );
     expect(result).toEqual({
       status: "failed",
       error: "ChatGPT Pro/Plus did not return a refresh token.",
@@ -235,22 +253,30 @@ describe("ChatGPT device flow", () => {
   test("vendor 5xx during a poll is transient, not a failed attempt", async () => {
     stubFetch(() => new Response("bad gateway", { status: 502 }));
     await assert.rejects(
-      pollOpencodeOauthDeviceFlow(openaiConnector, {
-        kind: "openai-device",
-        providerId: "openai",
-        deviceAuthId: "device-auth-1",
-        userCode: "ABCD-1234",
-        intervalSeconds: 5,
-      }),
+      pollOpencodeOauthDeviceFlow(
+        openaiConnector,
+        {
+          kind: "openai-device",
+          providerId: "openai",
+          deviceAuthId: "device-auth-1",
+          userCode: "ABCD-1234",
+          intervalSeconds: 5,
+        },
+        pollSignal,
+      ),
       /502/,
     );
     await assert.rejects(
-      pollOpencodeOauthDeviceFlow(copilotConnector, {
-        kind: "github-device",
-        providerId: "github-copilot",
-        deviceCode: "device-code-1",
-        intervalSeconds: 5,
-      }),
+      pollOpencodeOauthDeviceFlow(
+        copilotConnector,
+        {
+          kind: "github-device",
+          providerId: "github-copilot",
+          deviceCode: "device-code-1",
+          intervalSeconds: 5,
+        },
+        pollSignal,
+      ),
       /502/,
     );
   });
@@ -289,32 +315,44 @@ describe("GitHub Copilot device flow", () => {
   test("pending and slow_down answers stay pending with adjusted intervals", async () => {
     stubFetch(() => Response.json({ error: "authorization_pending" }));
     expect(
-      await pollOpencodeOauthDeviceFlow(copilotConnector, {
-        kind: "github-device",
-        providerId: "github-copilot",
-        deviceCode: "device-code-1",
-        intervalSeconds: 5,
-      }),
+      await pollOpencodeOauthDeviceFlow(
+        copilotConnector,
+        {
+          kind: "github-device",
+          providerId: "github-copilot",
+          deviceCode: "device-code-1",
+          intervalSeconds: 5,
+        },
+        pollSignal,
+      ),
     ).toEqual({ status: "pending", intervalSeconds: 5 });
 
     stubFetch(() => Response.json({ error: "slow_down", interval: 12 }));
     expect(
-      await pollOpencodeOauthDeviceFlow(copilotConnector, {
-        kind: "github-device",
-        providerId: "github-copilot",
-        deviceCode: "device-code-1",
-        intervalSeconds: 5,
-      }),
+      await pollOpencodeOauthDeviceFlow(
+        copilotConnector,
+        {
+          kind: "github-device",
+          providerId: "github-copilot",
+          deviceCode: "device-code-1",
+          intervalSeconds: 5,
+        },
+        pollSignal,
+      ),
     ).toEqual({ status: "pending", intervalSeconds: 12 });
 
     stubFetch(() => Response.json({ error: "slow_down" }));
     expect(
-      await pollOpencodeOauthDeviceFlow(copilotConnector, {
-        kind: "github-device",
-        providerId: "github-copilot",
-        deviceCode: "device-code-1",
-        intervalSeconds: 5,
-      }),
+      await pollOpencodeOauthDeviceFlow(
+        copilotConnector,
+        {
+          kind: "github-device",
+          providerId: "github-copilot",
+          deviceCode: "device-code-1",
+          intervalSeconds: 5,
+        },
+        pollSignal,
+      ),
     ).toEqual({ status: "pending", intervalSeconds: 10 });
   });
 
@@ -330,12 +368,16 @@ describe("GitHub Copilot device flow", () => {
             ),
     );
 
-    const result = await pollOpencodeOauthDeviceFlow(copilotConnector, {
-      kind: "github-device",
-      providerId: "github-copilot",
-      deviceCode: "device-code-1",
-      intervalSeconds: 5,
-    });
+    const result = await pollOpencodeOauthDeviceFlow(
+      copilotConnector,
+      {
+        kind: "github-device",
+        providerId: "github-copilot",
+        deviceCode: "device-code-1",
+        intervalSeconds: 5,
+      },
+      pollSignal,
+    );
 
     if (result.status !== "completed") throw new Error(`Expected completion, got ${result.status}`);
     expect(result.auth).toEqual({
@@ -364,12 +406,16 @@ describe("GitHub Copilot device flow", () => {
             ),
     );
 
-    const result = await pollOpencodeOauthDeviceFlow(copilotConnector, {
-      kind: "github-device",
-      providerId: "github-copilot",
-      deviceCode: "device-code-1",
-      intervalSeconds: 5,
-    });
+    const result = await pollOpencodeOauthDeviceFlow(
+      copilotConnector,
+      {
+        kind: "github-device",
+        providerId: "github-copilot",
+        deviceCode: "device-code-1",
+        intervalSeconds: 5,
+      },
+      pollSignal,
+    );
 
     expect(result).toEqual({
       status: "failed",
@@ -383,12 +429,16 @@ describe("GitHub Copilot device flow", () => {
       Response.json({ error: "access_denied", error_description: "The user denied access." }),
     );
 
-    const result = await pollOpencodeOauthDeviceFlow(copilotConnector, {
-      kind: "github-device",
-      providerId: "github-copilot",
-      deviceCode: "device-code-1",
-      intervalSeconds: 5,
-    });
+    const result = await pollOpencodeOauthDeviceFlow(
+      copilotConnector,
+      {
+        kind: "github-device",
+        providerId: "github-copilot",
+        deviceCode: "device-code-1",
+        intervalSeconds: 5,
+      },
+      pollSignal,
+    );
     expect(result).toEqual({ status: "failed", error: "The user denied access." });
   });
 
@@ -452,12 +502,16 @@ describe("GitHub Copilot device flow", () => {
     stubFetch(() => Response.json({}));
 
     expect(
-      await pollOpencodeOauthDeviceFlow(copilotConnector, {
-        kind: "github-device",
-        providerId: "github-copilot",
-        deviceCode: "device-code-1",
-        intervalSeconds: 5,
-      }),
+      await pollOpencodeOauthDeviceFlow(
+        copilotConnector,
+        {
+          kind: "github-device",
+          providerId: "github-copilot",
+          deviceCode: "device-code-1",
+          intervalSeconds: 5,
+        },
+        pollSignal,
+      ),
     ).toEqual({ status: "pending", intervalSeconds: 5 });
   });
 });
@@ -512,42 +566,58 @@ describe("xAI Grok device flow", () => {
   test("RFC 8628 error answers map to pending, slow_down, denied, and expired", async () => {
     stubFetch(() => Response.json({ error: "authorization_pending" }, { status: 400 }));
     expect(
-      await pollOpencodeOauthDeviceFlow(xaiConnector, {
-        kind: "rfc8628-form",
-        providerId: "xai",
-        deviceCode: "xai-device-code",
-        intervalSeconds: 5,
-      }),
+      await pollOpencodeOauthDeviceFlow(
+        xaiConnector,
+        {
+          kind: "rfc8628-form",
+          providerId: "xai",
+          deviceCode: "xai-device-code",
+          intervalSeconds: 5,
+        },
+        pollSignal,
+      ),
     ).toEqual({ status: "pending", intervalSeconds: 5 });
 
     stubFetch(() => Response.json({ error: "slow_down" }, { status: 400 }));
     expect(
-      await pollOpencodeOauthDeviceFlow(xaiConnector, {
-        kind: "rfc8628-form",
-        providerId: "xai",
-        deviceCode: "xai-device-code",
-        intervalSeconds: 5,
-      }),
+      await pollOpencodeOauthDeviceFlow(
+        xaiConnector,
+        {
+          kind: "rfc8628-form",
+          providerId: "xai",
+          deviceCode: "xai-device-code",
+          intervalSeconds: 5,
+        },
+        pollSignal,
+      ),
     ).toEqual({ status: "pending", intervalSeconds: 10 });
 
     stubFetch(() => Response.json({ error: "access_denied" }, { status: 400 }));
     expect(
-      await pollOpencodeOauthDeviceFlow(xaiConnector, {
-        kind: "rfc8628-form",
-        providerId: "xai",
-        deviceCode: "xai-device-code",
-        intervalSeconds: 5,
-      }),
+      await pollOpencodeOauthDeviceFlow(
+        xaiConnector,
+        {
+          kind: "rfc8628-form",
+          providerId: "xai",
+          deviceCode: "xai-device-code",
+          intervalSeconds: 5,
+        },
+        pollSignal,
+      ),
     ).toEqual({ status: "failed", error: "xAI Grok device authorization was denied." });
 
     stubFetch(() => Response.json({ error: "expired_token" }, { status: 400 }));
     expect(
-      await pollOpencodeOauthDeviceFlow(xaiConnector, {
-        kind: "rfc8628-form",
-        providerId: "xai",
-        deviceCode: "xai-device-code",
-        intervalSeconds: 5,
-      }),
+      await pollOpencodeOauthDeviceFlow(
+        xaiConnector,
+        {
+          kind: "rfc8628-form",
+          providerId: "xai",
+          deviceCode: "xai-device-code",
+          intervalSeconds: 5,
+        },
+        pollSignal,
+      ),
     ).toEqual({
       status: "failed",
       error: "The xAI Grok device code expired before it was approved.",
@@ -565,12 +635,16 @@ describe("xAI Grok device flow", () => {
       }),
     );
 
-    const result = await pollOpencodeOauthDeviceFlow(xaiConnector, {
-      kind: "rfc8628-form",
-      providerId: "xai",
-      deviceCode: "xai-device-code",
-      intervalSeconds: 5,
-    });
+    const result = await pollOpencodeOauthDeviceFlow(
+      xaiConnector,
+      {
+        kind: "rfc8628-form",
+        providerId: "xai",
+        deviceCode: "xai-device-code",
+        intervalSeconds: 5,
+      },
+      pollSignal,
+    );
 
     expect(requests[0]?.url).toBe("https://auth.x.ai/oauth2/token");
     const pollBody = new URLSearchParams(requests[0]?.body);
@@ -589,12 +663,16 @@ describe("xAI Grok device flow", () => {
   test("an approval without a refresh token fails instead of storing a dead credential", async () => {
     stubFetch(() => Response.json({ access_token: "xai-access-1" }));
 
-    const result = await pollOpencodeOauthDeviceFlow(xaiConnector, {
-      kind: "rfc8628-form",
-      providerId: "xai",
-      deviceCode: "xai-device-code",
-      intervalSeconds: 5,
-    });
+    const result = await pollOpencodeOauthDeviceFlow(
+      xaiConnector,
+      {
+        kind: "rfc8628-form",
+        providerId: "xai",
+        deviceCode: "xai-device-code",
+        intervalSeconds: 5,
+      },
+      pollSignal,
+    );
     expect(result).toEqual({ status: "failed", error: "xAI Grok did not return a refresh token." });
   });
 
@@ -628,12 +706,16 @@ describe("xAI Grok device flow", () => {
 
     stubFetch(() => new Response("bad gateway", { status: 502 }));
     await assert.rejects(
-      pollOpencodeOauthDeviceFlow(xaiConnector, {
-        kind: "rfc8628-form",
-        providerId: "xai",
-        deviceCode: "xai-device-code",
-        intervalSeconds: 5,
-      }),
+      pollOpencodeOauthDeviceFlow(
+        xaiConnector,
+        {
+          kind: "rfc8628-form",
+          providerId: "xai",
+          deviceCode: "xai-device-code",
+          intervalSeconds: 5,
+        },
+        pollSignal,
+      ),
       /502/,
     );
   });
@@ -650,13 +732,17 @@ describe("descriptor contract", () => {
 
   test("a payload started under a different kind cannot reach the wrong vendor", async () => {
     await assert.rejects(
-      pollOpencodeOauthDeviceFlow(xaiConnector, {
-        kind: "openai-device",
-        providerId: "xai",
-        deviceAuthId: "device-auth-1",
-        userCode: "ABCD-1234",
-        intervalSeconds: 5,
-      }),
+      pollOpencodeOauthDeviceFlow(
+        xaiConnector,
+        {
+          kind: "openai-device",
+          providerId: "xai",
+          deviceAuthId: "device-auth-1",
+          userCode: "ABCD-1234",
+          intervalSeconds: 5,
+        },
+        pollSignal,
+      ),
       /start a new connect attempt/,
     );
   });

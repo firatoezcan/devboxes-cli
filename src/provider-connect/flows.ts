@@ -26,11 +26,6 @@ const userAgent = "devboxes-dashboard";
 // when the vendor response carries no explicit expiry.
 const attemptMaxAgeMs = 15 * 60 * 1000;
 
-// Vendor calls sit on interactive connection and credential-maintenance paths;
-// a hung connection must become a thrown — transient — error instead of a
-// stuck handler.
-const vendorFetchTimeoutMs = 10_000;
-
 // Zero and negatives mean "no usable interval" (opencode's parseInt||5 does
 // the same); the ceiling only guards against absurd values — a vendor asking
 // for a slower cadence must be honored, never polled faster than requested.
@@ -233,7 +228,6 @@ const startOpenaiDeviceFlow = async (
     method: "POST",
     headers: { "Content-Type": "application/json", "User-Agent": userAgent },
     body: JSON.stringify({ client_id: descriptor.clientId }),
-    signal: AbortSignal.timeout(vendorFetchTimeoutMs),
   });
   if (!response.ok) {
     throw new Error(
@@ -273,12 +267,13 @@ const startOpenaiDeviceFlow = async (
 const pollOpenaiDeviceFlow = async (
   descriptor: OpenaiDeviceDescriptor,
   payload: Extract<OpencodeOauthAttemptPayload, { kind: "openai-device" }>,
+  signal: AbortSignal,
 ): Promise<OpencodeOauthPollResult> => {
   const response = await fetch(descriptor.pollUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json", "User-Agent": userAgent },
     body: JSON.stringify({ device_auth_id: payload.deviceAuthId, user_code: payload.userCode }),
-    signal: AbortSignal.timeout(vendorFetchTimeoutMs),
+    signal,
   });
   // This flow shape signals "not approved yet" with 403/404 rather than
   // RFC 8628 error codes.
@@ -314,7 +309,7 @@ const pollOpenaiDeviceFlow = async (
       client_id: descriptor.clientId,
       code_verifier: grant.code_verifier,
     }).toString(),
-    signal: AbortSignal.timeout(vendorFetchTimeoutMs),
+    signal,
   });
   if (tokenResponse.status >= 500) {
     throw new Error(
@@ -390,7 +385,6 @@ const startGithubDeviceFlow = async (
       "User-Agent": userAgent,
     },
     body: JSON.stringify({ client_id: descriptor.clientId, scope: descriptor.scope }),
-    signal: AbortSignal.timeout(vendorFetchTimeoutMs),
   });
   if (!response.ok) {
     throw new Error(
@@ -436,6 +430,7 @@ const startGithubDeviceFlow = async (
 const pollGithubDeviceFlow = async (
   descriptor: GithubDeviceDescriptor,
   payload: Extract<OpencodeOauthAttemptPayload, { kind: "github-device" }>,
+  signal: AbortSignal,
 ): Promise<OpencodeOauthPollResult> => {
   const response = await fetch(descriptor.accessTokenUrl, {
     method: "POST",
@@ -449,7 +444,7 @@ const pollGithubDeviceFlow = async (
       device_code: payload.deviceCode,
       grant_type: "urn:ietf:params:oauth:grant-type:device_code",
     }),
-    signal: AbortSignal.timeout(vendorFetchTimeoutMs),
+    signal,
   });
   // Thrown means transient: the attempt stays pending and the next poll
   // retries. Only definitive vendor answers fail the attempt.
@@ -478,7 +473,7 @@ const pollGithubDeviceFlow = async (
         "User-Agent": userAgent,
         "X-GitHub-Api-Version": "2022-11-28",
       },
-      signal: AbortSignal.timeout(vendorFetchTimeoutMs),
+      signal,
     });
     if (!identityResponse.ok) {
       const failure: OpencodeOauthPollResult = {
@@ -512,7 +507,7 @@ const pollGithubDeviceFlow = async (
         Authorization: `Bearer ${data.access_token}`,
         "User-Agent": userAgent,
       },
-      signal: AbortSignal.timeout(vendorFetchTimeoutMs),
+      signal,
     });
     if (!copilotResponse.ok) {
       if (copilotResponse.status === 401 || copilotResponse.status === 403) {
@@ -619,7 +614,6 @@ const startRfc8628FormFlow = async (
       client_id: descriptor.clientId,
       scope: descriptor.scope,
     }).toString(),
-    signal: AbortSignal.timeout(vendorFetchTimeoutMs),
   });
   if (!response.ok) {
     throw new Error(
@@ -670,6 +664,7 @@ const startRfc8628FormFlow = async (
 const pollRfc8628FormFlow = async (
   descriptor: Rfc8628FormDescriptor,
   payload: Extract<OpencodeOauthAttemptPayload, { kind: "rfc8628-form" }>,
+  signal: AbortSignal,
 ): Promise<OpencodeOauthPollResult> => {
   const response = await fetch(descriptor.tokenUrl, {
     method: "POST",
@@ -683,7 +678,7 @@ const pollRfc8628FormFlow = async (
       client_id: descriptor.clientId,
       device_code: payload.deviceCode,
     }).toString(),
-    signal: AbortSignal.timeout(vendorFetchTimeoutMs),
+    signal,
   });
   if (response.ok) {
     const tokens = parsedVendorBody(
@@ -753,18 +748,19 @@ export const startOpencodeOauthDeviceFlow = async (
 export const pollOpencodeOauthDeviceFlow = async (
   descriptor: OpencodeConnectorDescriptor,
   payload: OpencodeOauthAttemptPayload,
+  signal: AbortSignal,
 ): Promise<OpencodeOauthPollResult> => {
   // The payload records the flow kind it was started with; a descriptor whose
   // kind moved underneath a pending attempt must fail instead of reaching the
   // wrong vendor endpoint with the wrong grant.
   if (descriptor.kind === "openai-device" && payload.kind === "openai-device") {
-    return pollOpenaiDeviceFlow(descriptor, payload);
+    return pollOpenaiDeviceFlow(descriptor, payload, signal);
   }
   if (descriptor.kind === "github-device" && payload.kind === "github-device") {
-    return pollGithubDeviceFlow(descriptor, payload);
+    return pollGithubDeviceFlow(descriptor, payload, signal);
   }
   if (descriptor.kind === "rfc8628-form" && payload.kind === "rfc8628-form") {
-    return pollRfc8628FormFlow(descriptor, payload);
+    return pollRfc8628FormFlow(descriptor, payload, signal);
   }
   throw new Error(
     `Opencode provider ${descriptor.providerId} attempt was started as ${payload.kind} but the connector is now ${descriptor.kind}; start a new connect attempt.`,
@@ -795,7 +791,7 @@ export const refreshOpencodeOauthAccess = async (
       refresh_token: input.auth.refresh,
       client_id: descriptor.refresh.clientId,
     }).toString(),
-    signal: AbortSignal.timeout(vendorFetchTimeoutMs),
+    signal: AbortSignal.timeout(10_000),
   });
   if (response.status >= 500) {
     throw new Error(`${descriptor.label} token refresh failed upstream (${response.status}).`);

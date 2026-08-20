@@ -466,14 +466,16 @@ export const connectOpencodeProviderSubscription = async (
     // past the vendor deadline, matching the dashboard connect flow's
     // tolerance.
     const deadlineMs = started.expiresAtMs + 60 * 1000;
+    const attemptSignal = AbortSignal.timeout(Math.max(1, deadlineMs - Date.now()));
     for (;;) {
-      if (Date.now() > deadlineMs) {
+      const remainingMs = deadlineMs - Date.now();
+      if (remainingMs <= 0) {
         throw new Error(`${connector.label} device authorization expired before it was approved.`);
       }
-      await sleep(intervalSeconds * 1000);
+      await sleep(Math.min(intervalSeconds * 1000, remainingMs));
       let result: Awaited<ReturnType<typeof pollOpencodeOauthDeviceFlow>>;
       try {
-        result = await pollOpencodeOauthDeviceFlow(connector, started.payload);
+        result = await pollOpencodeOauthDeviceFlow(connector, started.payload, attemptSignal);
       } catch {
         continue;
       }
