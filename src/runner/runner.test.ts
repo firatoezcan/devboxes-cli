@@ -896,12 +896,7 @@ describe("runner Opencode credentials", () => {
           credential.providerId === "xai",
       ),
     ).toMatchObject({ validationStatus: "unavailable" });
-    // This is the only test that calls credentialSyncHarness.server(), so it
-    // pays the whole cold import of the API module graph itself, then waits
-    // out the device flow's poll interval and drives the sync twice over more
-    // than a dozen round trips. None of that is bounded by anything this test
-    // controls, so the budget is generous rather than tuned to an idle machine.
-  }, 60_000);
+  });
 
   it("fails a sync that would upload nothing before any browser approval", async () => {
     // Only credential: a foreign CLI's OAuth login, which never syncs. The
@@ -1915,7 +1910,7 @@ describe("runner Opencode credentials", () => {
     }
     expect(await stdoutText).not.toContain(rawFailureMarker);
     expect(await stderrText).not.toContain(rawFailureMarker);
-  }, 15_000);
+  });
 
   it("serves the exact local credential material advertised by the successful claim", async () => {
     const dockerSocketPath = join(fixtureDir, "docker-claim-authority.sock");
@@ -2410,7 +2405,7 @@ describe("runner Opencode credentials", () => {
         dockerServer.close((error) => (error ? reject(error) : resolve()));
       });
     }
-  }, 20_000);
+  });
 
   it("serves provider auth only for the active task with the matching bearer token", async () => {
     const activeCredentials = new Map<string, ActiveOpencodeCredentialTask>([

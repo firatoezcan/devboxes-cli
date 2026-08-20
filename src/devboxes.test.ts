@@ -445,7 +445,7 @@ describe("devboxes CLI", () => {
     // A fresh context loads the persisted credentials the way every later
     // command invocation would.
     context = await loadContext({ config: context.configPath });
-  }, 60_000);
+  });
 
   it("login and connect preserve runner identity in config.json", async () => {
     const machineName = `preserved-${randomUUID().slice(0, 8)}`;
@@ -577,7 +577,7 @@ describe("devboxes CLI", () => {
       );
     }
     expect(heartbeatAuthorizations).toContain(`Bearer ${String(afterConnect.apiKey)}`);
-  }, 60_000);
+  });
 
   it("connect reuses the login session without a runner device flow", async () => {
     const configPath = join(configDir, `reuse-login-session-${randomUUID()}.json`);
@@ -638,7 +638,7 @@ describe("devboxes CLI", () => {
         where: { id: saved.machineId, organizationId, name: machineName },
       }),
     ).toBeDefined();
-  }, 60_000);
+  });
 
   let dispatchedSessionId: string;
   let dispatchedRunId: string;
