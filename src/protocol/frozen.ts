@@ -89,6 +89,20 @@ export const GitHubTaskCredentialReceiptSchema = Type.Object(
 );
 export type GitHubTaskCredentialReceipt = Static<typeof GitHubTaskCredentialReceiptSchema>;
 
+export const GitHubTaskCredentialRevocationReceiptSchema = Type.Object(
+  {
+    runId: Type.String({ format: "uuid" }),
+    credentialExpiresAt: Type.String({ format: "date-time" }),
+    operation: Type.Union([Type.Literal("superseded"), Type.Literal("teardown")]),
+    outcome: Type.Union([Type.Literal("revoked"), Type.Literal("already_invalid")]),
+    observedAt: Type.String({ format: "date-time" }),
+  },
+  { additionalProperties: false },
+);
+export type GitHubTaskCredentialRevocationReceipt = Static<
+  typeof GitHubTaskCredentialRevocationReceiptSchema
+>;
+
 export const revokeGitHubTaskCredential = async (
   token: string,
   signal: AbortSignal = AbortSignal.timeout(10_000),
