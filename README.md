@@ -51,6 +51,7 @@ Dispatch and follow work:
 ```sh
 devboxes dispatch "Fix the retry backoff" --repo owner/name
 devboxes status <agentSessionId>
+devboxes continue <agentSessionId> "Address the review feedback"
 devboxes result <agentSessionId>
 devboxes mcp
 ```

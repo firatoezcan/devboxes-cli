@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { chmod, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -7,7 +8,7 @@ import { log, note, spinner } from "@clack/prompts";
 import { treaty } from "@elysiajs/eden";
 import { createAuthClient } from "better-auth/client";
 import { deviceAuthorizationClient } from "better-auth/client/plugins";
-import { Command } from "commander";
+import { Command, InvalidArgumentError } from "commander";
 import open from "open";
 import Type, { type Static } from "typebox";
 import Value from "typebox/value";
@@ -93,6 +94,7 @@ const ConfigFileSchema = Type.Object({
   apiKey: Type.Optional(Type.String({ minLength: 1 })),
   opencodeProviderCredentials: Type.Optional(Type.Array(LocalCredentialReferenceSchema)),
 });
+const AgentSessionIdSchema = Type.String({ format: "uuid" });
 
 type ConfigFile = Static<typeof ConfigFileSchema>;
 
@@ -146,8 +148,10 @@ const readConfigFile = async (configPath: string, customConfigPath: boolean) => 
     if (!missing) throw error;
   }
   if (rawConfigText !== null) {
-    if (!customConfigPath) await chmod(dirname(configPath), 0o700);
-    await chmod(configPath, 0o600);
+    if (!customConfigPath) {
+      await chmod(dirname(configPath), 0o700);
+      await chmod(configPath, 0o600);
+    }
     try {
       fileConfig = Value.Parse(ConfigFileSchema, JSON.parse(rawConfigText));
     } catch (error) {
@@ -667,6 +671,33 @@ export const dispatchDevboxesTask = async (context: DevboxesContext, input: Disp
   };
 };
 
+export type ContinueInput = {
+  agentSessionId: string;
+  task: string;
+};
+
+export const continueDevboxesSession = async (context: DevboxesContext, input: ContinueInput) => {
+  const { backend, organizationId } = connectedBackend(context);
+  if (!input.task.trim()) throw new Error("Continuation requires task text.");
+
+  const continuation = await backend.api
+    .org({ organizationId })
+    ["agent-sessions"]({ agentSessionId: input.agentSessionId })
+    .continuations.post({ task: input.task, clientMessageId: randomUUID() });
+  if (continuation.error) throw apiRequestError("Session continuation", continuation.error);
+  const session = continuation.data;
+  if (!session) throw new Error("Session continuation returned no Session.");
+  if (session.id !== input.agentSessionId) {
+    throw new Error("Session continuation returned a different Session.");
+  }
+
+  return {
+    agentSessionId: session.id,
+    runId: session.continuationRunId,
+    status: session.currentTask.status,
+  };
+};
+
 export const readDevboxesSession = async (context: DevboxesContext, agentSessionId: string) => {
   const { backend, organizationId } = connectedBackend(context);
   const sessionResponse = await backend.api
@@ -758,6 +789,12 @@ const printSessionStatus = (input: Awaited<ReturnType<typeof readDevboxesSession
 export const addAccountCommands = (program: Command) => {
   const cliOptions = (command: Command): DevboxesCliOptions =>
     command.optsWithGlobals<DevboxesCliOptions>();
+  const agentSessionIdArgument = (value: string) => {
+    if (!Value.Check(AgentSessionIdSchema, value)) {
+      throw new InvalidArgumentError("must be a UUID");
+    }
+    return value;
+  };
 
   const loginCommand = program.command("login");
   loginCommand
@@ -828,6 +865,31 @@ export const addAccountCommands = (program: Command) => {
       );
     });
 
+  const continueCommand = program.command("continue");
+  continueCommand
+    .description("continue an existing Devboxes Session with a fresh Run")
+    .argument("<agentSessionId>", "Session ID returned by dispatch", agentSessionIdArgument)
+    .argument("<task...>", "free-form task for the fresh Run")
+    .option("--json", "print the continuation result as JSON on stdout", false)
+    .action(async (agentSessionId: string, taskWords: string[]) => {
+      const options = continueCommand.opts<{ json: boolean }>();
+      const context = await loadContext(cliOptions(continueCommand));
+      const continuation = await continueDevboxesSession(context, {
+        agentSessionId,
+        task: taskWords.join(" "),
+      });
+      if (options.json) {
+        process.stdout.write(`${JSON.stringify(continuation, null, 2)}\n`);
+        return;
+      }
+      log.success(
+        `Continued Session ${continuation.agentSessionId} with Run ${continuation.runId} (${continuation.status}).`,
+      );
+      log.info(
+        `Follow it with \`${cliCommandName} status ${continuation.agentSessionId}\` and fetch the outcome with \`${cliCommandName} result ${continuation.agentSessionId}\`.`,
+      );
+    });
+
   const statusCommand = program.command("status");
   statusCommand
     .description("show the current status of a dispatched session")
@@ -870,10 +932,10 @@ export const addAccountCommands = (program: Command) => {
 
   const mcpCommand = program.command("mcp");
   mcpCommand
-    .description("serve dispatch/status/result as MCP tools over stdio")
+    .description("serve dispatch/continue/status/result as MCP tools over stdio")
     .action(async () => {
       const context = await loadContext(cliOptions(mcpCommand));
-      // Deferred so dispatch/status/result never pay the MCP SDK import, and
+      // Deferred so account commands never pay the MCP SDK import, and
       // so devboxes.ts and mcp.ts avoid a static import cycle.
       const { runDevboxesMcpServer } = await import("./mcp");
       await runDevboxesMcpServer(context);

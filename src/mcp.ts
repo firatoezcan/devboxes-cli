@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import {
   cliVersion,
+  continueDevboxesSession,
   dispatchDevboxesTask,
   readDevboxesSession,
   readDevboxesSessionResult,
@@ -48,6 +49,22 @@ export const createDevboxesMcpServer = (context: DevboxesContext) => {
       },
     },
     async (input) => jsonResult(await dispatchDevboxesTask(context, input)),
+  );
+
+  server.registerTool(
+    "continue_session",
+    {
+      description:
+        "Continue an existing durable Devboxes Session with a fresh Run. Preserves the Session identity and returns the fresh Run ID and current Session status.",
+      inputSchema: {
+        agentSessionId: z.uuid().describe("Session ID returned by dispatch_task"),
+        task: z
+          .string()
+          .refine((value) => value.trim().length > 0, "Task text is required")
+          .describe("Free-form task for the fresh Run"),
+      },
+    },
+    async (input) => jsonResult(await continueDevboxesSession(context, input)),
   );
 
   server.registerTool(

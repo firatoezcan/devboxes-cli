@@ -1,6 +1,6 @@
 import { beforeAll, afterAll, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,7 +17,6 @@ import { installWorkspaceImageBuilderStub } from "@/test/workspace-image-builder
 
 import { createDevboxesCommand } from "./cli";
 import {
-  bearerBackend,
   dispatchDevboxesTask,
   loginDevboxes,
   loadContext,
@@ -400,6 +399,19 @@ describe("devboxes CLI", () => {
     await expect(
       loadContext({ config: unusedConfigPath, api: "http://devboxes.internal/api" }),
     ).rejects.toThrow("must use HTTPS");
+  });
+
+  it("loads an explicit existing config without changing the file", async () => {
+    const configPath = join(configDir, `read-only-${randomUUID()}.json`);
+    const contents = `${JSON.stringify({ apiBaseUrl: `${origin}/api` }, null, 2)}\n`;
+    await writeFile(configPath, contents);
+    await chmod(configPath, 0o444);
+
+    const loaded = await loadContext({ config: configPath });
+
+    expect(loaded.config.apiBaseUrl).toBe(`${origin}/api`);
+    expect(await readFile(configPath, "utf8")).toBe(contents);
+    expect((await stat(configPath)).mode & 0o777).toBe(0o444);
   });
 
   it("logs in through the real device authorization flow", async () => {
@@ -965,7 +977,7 @@ describe("devboxes CLI", () => {
     );
   });
 
-  it("serves dispatch/status/result as MCP tools over the stored credentials", async () => {
+  it("serves dispatch/continue/status/result as MCP tools over the stored credentials", async () => {
     const server = createDevboxesMcpServer(context);
     const client = new Client({ name: "devboxes-cli-test", version: "0.0.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -974,6 +986,7 @@ describe("devboxes CLI", () => {
     try {
       const tools = await client.listTools();
       expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
+        "continue_session",
         "dispatch_task",
         "get_session_result",
         "get_session_status",
@@ -997,6 +1010,7 @@ describe("devboxes CLI", () => {
       expect(mcpDispatch.isError).toBeFalsy();
       const mcpDispatchContent = mcpDispatch.content as Array<{ type: string; text: string }>;
       const mcpDispatched = JSON.parse(mcpDispatchContent[0]!.text) as {
+        agentSessionId: string;
         runId: string;
         projectId: string;
       };
@@ -1005,6 +1019,25 @@ describe("devboxes CLI", () => {
         where: { id: mcpDispatched.runId, organizationId },
       });
       expect(mcpRun?.blueprintVersionId).toBe(secondFixture.blueprintVersionId);
+
+      const activeContinuationTask = "Do not add this task to the active Run.";
+      const activeContinuation = await client.callTool({
+        name: "continue_session",
+        arguments: {
+          agentSessionId: mcpDispatched.agentSessionId,
+          task: activeContinuationTask,
+        },
+      });
+      expect(activeContinuation.isError).toBe(true);
+      expect(
+        await dbClient.db.query.sessionInputs.findFirst({
+          where: {
+            content: activeContinuationTask,
+            organizationId,
+            sessionId: mcpDispatched.agentSessionId,
+          },
+        }),
+      ).toBeUndefined();
 
       const statusResult = await client.callTool({
         name: "get_session_status",
@@ -1038,28 +1071,47 @@ describe("devboxes CLI", () => {
       );
       expect(sessionResult.usage.monetaryBasis).toBe("unavailable");
 
-      const sessionToken = context.config.sessionToken;
-      if (!sessionToken) throw new Error("Expected connected CLI credentials.");
-      const continuation = await bearerBackend(context.config.apiBaseUrl, sessionToken)
-        .api.org({ organizationId })
-        ["agent-sessions"]({ agentSessionId: dispatchedSessionId })
-        .continuations.post({});
-      expect(continuation.status).toBe(200);
-      const continuedSession = continuation.data;
-      if (!continuedSession) throw new Error("Expected the continued Session.");
-      const runB = continuedSession.runs.at(-1);
-      if (!runB) throw new Error("Expected continuation Run B.");
+      const continuationTask =
+        "  Continue the durable Session with this exact task.\nKeep the spacing intact.  ";
+      const continuationCall = await client.callTool({
+        name: "continue_session",
+        arguments: { agentSessionId: dispatchedSessionId, task: continuationTask },
+      });
+      expect(continuationCall.isError).toBeFalsy();
+      const continuationContent = continuationCall.content as Array<{
+        type: string;
+        text: string;
+      }>;
+      const continuation = JSON.parse(continuationContent[0]!.text) as {
+        agentSessionId: string;
+        runId: string;
+        status: string;
+      };
+      expect(continuation).toMatchObject({
+        agentSessionId: dispatchedSessionId,
+        status: "queued",
+      });
+
+      const runB = await dbClient.db.query.runs.findFirst({
+        where: { id: continuation.runId, organizationId },
+      });
       expect(runB).toMatchObject({
+        sessionId: dispatchedSessionId,
         sessionSequence: 2,
         previousRunId: dispatchedRunId,
         status: "queued",
       });
-      expect(continuedSession.currentTask.id).not.toBe(dispatchedTaskId);
-
-      const current = await readDevboxesSession(context, dispatchedSessionId);
-      expect(current.currentTask.runId).toBe(runB.id);
-      expect(current.currentTask.id).toBe(continuedSession.currentTask.id);
-      expect(current.run.id).toBe(runB.id);
+      const admittedInput = await dbClient.db.query.sessionInputs.findFirst({
+        where: {
+          content: continuationTask,
+          organizationId,
+          sessionId: dispatchedSessionId,
+        },
+      });
+      expect(admittedInput).toMatchObject({
+        content: continuationTask,
+        pendingRunId: continuation.runId,
+      });
 
       const continuedStatusResult = await client.callTool({
         name: "get_session_status",
@@ -1076,7 +1128,7 @@ describe("devboxes CLI", () => {
         terminal: boolean;
       };
       expect(continuedStatus).toMatchObject({
-        runId: runB.id,
+        runId: continuation.runId,
         runStatus: "queued",
         sessionStatus: "queued",
         terminal: false,
