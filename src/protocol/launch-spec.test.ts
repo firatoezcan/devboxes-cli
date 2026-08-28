@@ -21,6 +21,7 @@ describe("current launch protocol", () => {
         env: {
           DEVBOX_WORKSPACE_CAPABILITY: "agent-task",
           DEVBOX_WORKSPACE_CAPABILITY_ID: "task_test",
+          OPENCODE_WORKSPACE_ID: "wrk_task_test",
         },
       }),
     ).toBe(true);
@@ -32,6 +33,7 @@ describe("current launch protocol", () => {
         env: {
           DEVBOX_WORKSPACE_CAPABILITY: "agent-task",
           DEVBOX_WORKSPACE_CAPABILITY_ID: "task_test",
+          OPENCODE_WORKSPACE_ID: "wrk_task_test",
         },
       }),
     ).toBe(false);

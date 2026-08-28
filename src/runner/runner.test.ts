@@ -1829,10 +1829,10 @@ describe("runner Opencode credentials", () => {
                 XDG_CONFIG_HOME: "/home/workspace/.config",
                 XDG_DATA_HOME: "/home/workspace/.local/share",
                 OPENCODE_CONFIG: "/home/workspace/.config/opencode/opencode.json",
-                OPENCODE_EXPERIMENTAL_HTTPAPI: "true",
                 OPENCODE_EXPERIMENTAL_WORKSPACES: "true",
                 DEVBOX_WORKSPACE_CAPABILITY: "agent-task",
                 DEVBOX_WORKSPACE_CAPABILITY_ID: taskId,
+                OPENCODE_WORKSPACE_ID: `wrk_${taskId.replaceAll("-", "")}`,
                 DEVBOX_RUN_ID: runId,
                 DEVBOX_BACKEND_TOKEN_FILE: "/run/devboxes/secrets/backend-token",
                 DEVBOX_DAEMON_VERSION:

@@ -23,6 +23,7 @@ export const opencodeWorkspaceLaunchProtocol = "devboxes-launch-v6";
 export const OpencodeAgentTaskEnvSchema = Type.Object({
   DEVBOX_WORKSPACE_CAPABILITY: Type.Literal("agent-task"),
   DEVBOX_WORKSPACE_CAPABILITY_ID: Type.String({ minLength: 1 }),
+  OPENCODE_WORKSPACE_ID: Type.String({ minLength: 1 }),
   DEVBOX_MODEL_PROVIDER_ID: Type.Optional(Type.Never()),
 });
 
