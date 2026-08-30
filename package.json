@@ -13,7 +13,8 @@
   "type": "module",
   "exports": {
     "./protocol/*": "./src/protocol/*.ts",
-    "./provider-connect/*": "./src/provider-connect/*.ts"
+    "./provider-connect/*": "./src/provider-connect/*.ts",
+    "./sentry-redaction": "./src/sentry-redaction.ts"
   },
   "scripts": {
     "build": "bun scripts/build-cli-binaries.ts",
@@ -26,6 +27,8 @@
     "@clack/prompts": "^1.7.0",
     "@elysiajs/eden": "^1.4.9",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@sentry/bun": "catalog:",
+    "@sentry/core": "catalog:",
     "age-encryption": "0.3.0",
     "better-auth": "^1.6.9",
     "commander": "^14.0.3",

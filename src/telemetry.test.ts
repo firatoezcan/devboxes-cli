@@ -32,16 +32,35 @@ type CliConfig = {
 
 const telemetryEnvelopeEventSchema = z
   .object({
+    contexts: z.record(z.string(), z.unknown()),
     environment: z.string(),
     event_id: z.string(),
+    exception: z.object({
+      values: z
+        .array(
+          z.object({
+            stacktrace: z.object({
+              frames: z.array(
+                z.object({
+                  colno: z.number().optional(),
+                  filename: z.string().optional(),
+                  lineno: z.number().optional(),
+                }),
+              ),
+            }),
+            type: z.string(),
+            value: z.string(),
+          }),
+        )
+        .nonempty(),
+    }),
     level: z.string(),
-    message: z.string(),
     platform: z.string(),
     release: z.string(),
     tags: z.record(z.string(), z.string()),
     timestamp: z.union([z.number(), z.string()]),
   })
-  .strict();
+  .passthrough();
 const telemetryEnvelopeItemHeaderSchema = z.object({ type: z.string().optional() });
 
 const packageRoot = join(import.meta.dir, "..");
@@ -125,13 +144,13 @@ const runCliUntilSignal = async (
   });
   const stdout = new Response(child.stdout).text();
   const stderr = new Response(child.stderr).text();
-  await Bun.sleep(250);
+  await Bun.sleep(1_000);
   child.kill("SIGTERM");
   let timedOut = false;
   const timeout = setTimeout(() => {
     timedOut = true;
     child.kill("SIGKILL");
-  }, 1_000);
+  }, 2_000);
   const exitCode = await child.exited;
   clearTimeout(timeout);
 
@@ -188,6 +207,9 @@ beforeAll(async () => {
   if (exitCode !== 0) {
     throw new Error(`Compiled CLI build failed.\n${await stdout}\n${await stderr}`);
   }
+  const sourceMapPath = join(packageRoot, "dist", "cli.js.map");
+  expect(await Bun.file(sourceMapPath).exists()).toBe(true);
+  await rm(sourceMapPath);
 });
 
 afterAll(async () => {
@@ -353,8 +375,9 @@ describe("opt-in CLI error telemetry", () => {
       const requestUrl = new URL(requestUrls[0]!);
       expect(requestUrl.pathname).toBe("/api/1/envelope/");
       expect(Object.fromEntries(requestUrl.searchParams)).toEqual({
-        sentry_version: "7",
+        sentry_client: expect.stringContaining("sentry.javascript.bun"),
         sentry_key: "public",
+        sentry_version: "7",
       });
 
       const envelopeLines = requests[0]!.trimEnd().split("\n");
@@ -373,26 +396,27 @@ describe("opt-in CLI error telemetry", () => {
       expect(event).toMatchObject({
         environment: "test",
         level: "error",
-        message: "Devboxes CLI command failed.",
-        platform: "javascript",
-        release: cliVersion,
+        platform: "node",
+        release: `devboxes-cli@${cliVersion}`,
         tags: {
+          command: "status",
           runtime: "cli",
-          "devboxes.version": cliVersion,
+          version: cliVersion,
         },
       });
-      expect(Object.keys(event).sort()).toEqual(
-        [
-          "environment",
-          "event_id",
-          "level",
-          "message",
-          "platform",
-          "release",
-          "tags",
-          "timestamp",
-        ].sort(),
-      );
+      const exception = event.exception.values[0];
+      if (!exception) throw new Error("The telemetry event did not contain an exception.");
+      expect(exception).toMatchObject({ value: "[Filtered]" });
+      expect(
+        exception.stacktrace.frames.some(
+          (frame) =>
+            frame.filename?.startsWith("src/") &&
+            Number.isFinite(frame.lineno) &&
+            Number.isFinite(frame.colno),
+        ),
+      ).toBe(true);
+      expect(event).not.toHaveProperty("modules");
+      expect(event).not.toHaveProperty("server_name");
       for (const secret of [
         "environment-value-secret",
         "environment-baggage-secret",
@@ -411,7 +435,7 @@ describe("opt-in CLI error telemetry", () => {
     }
   });
 
-  it("keeps telemetry outside compiled listen and mcp process boundaries", async () => {
+  it("covers compiled listen failures while normal mcp shutdown stays error-silent", async () => {
     const requests: string[] = [];
     const receiver = Bun.serve({
       port: 0,
@@ -439,13 +463,13 @@ describe("opt-in CLI error telemetry", () => {
       const defaultListen = await runCli(defaultConfigPath, ["listen"], hostileEnvironment);
       const optedInListen = await runCli(optedInConfigPath, ["listen"], hostileEnvironment);
       expect(processBehavior(optedInListen)).toEqual(processBehavior(defaultListen));
-      expect(requests).toHaveLength(0);
+      expect(requests).toHaveLength(1);
 
       const defaultMcp = await runCliUntilSignal(defaultConfigPath, ["mcp"], hostileEnvironment);
       const optedInMcp = await runCliUntilSignal(optedInConfigPath, ["mcp"], hostileEnvironment);
       expect(processBehavior(optedInMcp)).toEqual(processBehavior(defaultMcp));
       expect(defaultMcp).toMatchObject({ signalCode: "SIGTERM", timedOut: false });
-      expect(requests).toHaveLength(0);
+      expect(requests).toHaveLength(1);
     } finally {
       await receiver.stop(true);
     }
@@ -474,10 +498,14 @@ describe("opt-in CLI error telemetry", () => {
     expect(diagnostic).not.toContain("prompt-secret");
   });
 
-  it("keeps command behavior intact when telemetry transport fails", async () => {
+  it("keeps command behavior intact when the native telemetry transport is rejected", async () => {
+    let requests = 0;
     const receiver = Bun.serve({
       port: 0,
-      fetch: () => new Response(null, { status: 503 }),
+      fetch: () => {
+        requests += 1;
+        return new Response(null, { status: 503 });
+      },
     });
     const defaultConfigPath = await writeCliConfig(baseConfig);
     const brokenConfigPath = await writeCliConfig({
@@ -496,6 +524,7 @@ describe("opt-in CLI error telemetry", () => {
       ]);
 
       expect(processBehavior(failureWithBrokenTransport)).toEqual(processBehavior(defaultFailure));
+      expect(requests).toBe(1);
       const diagnostic = await readFile(`${brokenConfigPath}.telemetry.log`, "utf8");
       expect(diagnostic).toContain('"failure":"transport_failed"');
       expect(diagnostic).not.toContain("prompt-secret");

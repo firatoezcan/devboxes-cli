@@ -43,7 +43,7 @@ if (import.meta.main) {
   try {
     await createDevboxesCommand().parseAsync(Bun.argv, { from: "node" });
   } catch (error) {
-    await captureCliTelemetryError();
+    await captureCliTelemetryError(error);
     // User-facing failures end as one readable line, not a stack trace.
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(process.exitCode && process.exitCode !== 0 ? Number(process.exitCode) : 1);

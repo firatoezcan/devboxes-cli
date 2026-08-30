@@ -1,9 +1,14 @@
-import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 
 import { log } from "@clack/prompts";
+import * as Sentry from "@sentry/bun";
 import { type Command } from "commander";
+import {
+  scrubSentryBreadcrumb,
+  scrubSentryEvent,
+  scrubSentrySpan,
+} from "devboxes/sentry-redaction";
 
 import {
   cliVersion,
@@ -16,13 +21,7 @@ import {
 const telemetryDeliveryDeadlineMs = 1_000;
 const telemetryTransportTimeoutMs = 750;
 
-let activeTelemetry:
-  | {
-      configPath: string;
-      endpoint: string;
-      environment: string;
-    }
-  | undefined;
+let activeTelemetry: { configPath: string; deliveryFailed: boolean } | undefined;
 
 const appendTelemetryDiagnostic = async (
   configPath: string,
@@ -44,7 +43,10 @@ const appendTelemetryDiagnostic = async (
           constants.O_NOFOLLOW,
         0o600,
       );
-      if (!(await file.stat()).isFile()) return;
+      if (!(await file.stat()).isFile()) {
+        console.error("CLI telemetry diagnostic write failed.");
+        return;
+      }
       await file.chmod(0o600);
       await file.appendFile(
         `${JSON.stringify({
@@ -55,9 +57,11 @@ const appendTelemetryDiagnostic = async (
         })}\n`,
       );
     } catch {
-      return;
+      console.error("CLI telemetry diagnostic write failed.");
     } finally {
-      await file?.close().catch(() => undefined);
+      await file?.close().catch(() => {
+        console.error("CLI telemetry diagnostic close failed.");
+      });
     }
   })();
   let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -102,15 +106,7 @@ const validatedTelemetryDsn = (input: string) => {
       "The telemetry DSN must use HTTPS (or loopback HTTP), contain a valid public key and numeric project id, and contain no password, query, or fragment.",
     );
   }
-  const sentryAuth = new URLSearchParams({
-    sentry_version: "7",
-    sentry_key: parsed.username,
-  });
-  const basePath = pathSegments.length > 0 ? `${pathSegments.join("/")}/` : "";
-  return {
-    endpoint: `${parsed.origin}/${basePath}api/${projectId}/envelope/?${sentryAuth}`,
-    value: dsn,
-  };
+  return dsn;
 };
 
 const validatedTelemetryEnvironment = (input: string) => {
@@ -123,58 +119,71 @@ const validatedTelemetryEnvironment = (input: string) => {
   return environment;
 };
 
-const initializeCliTelemetry = async (context: DevboxesContext) => {
+const initializeCliTelemetry = async (context: DevboxesContext, command: string) => {
   const telemetry = context.config.telemetry;
   if (!telemetry) return;
 
+  const ambientVercel = process.env.VERCEL;
+  const ambientSentryUseEnvironment = process.env.SENTRY_USE_ENVIRONMENT;
   try {
-    const dsn = validatedTelemetryDsn(telemetry.dsn);
-    const environment = validatedTelemetryEnvironment(telemetry.environment);
-    activeTelemetry = {
-      configPath: context.configPath,
-      endpoint: dsn.endpoint,
-      environment,
-    };
+    try {
+      delete process.env.VERCEL;
+      process.env.SENTRY_USE_ENVIRONMENT = "false";
+      Sentry.init({
+        debug: false,
+        dsn: validatedTelemetryDsn(telemetry.dsn),
+        enabled: true,
+        environment: validatedTelemetryEnvironment(telemetry.environment),
+        initialScope: {
+          tags: {
+            command,
+            runtime: "cli",
+            version: cliVersion,
+          },
+        },
+        integrations: (integrations) =>
+          integrations.filter(({ name }) => name !== "ProcessSession"),
+        release: `devboxes-cli@${cliVersion}`,
+        sendDefaultPii: false,
+        serverName: "devboxes-cli",
+        spotlight: false,
+        tracesSampleRate: 0,
+        beforeSend: scrubSentryEvent,
+        beforeSendTransaction: scrubSentryEvent,
+        beforeSendSpan: scrubSentrySpan,
+        beforeBreadcrumb: scrubSentryBreadcrumb,
+      });
+    } finally {
+      if (ambientVercel === undefined) delete process.env.VERCEL;
+      else process.env.VERCEL = ambientVercel;
+      if (ambientSentryUseEnvironment === undefined) delete process.env.SENTRY_USE_ENVIRONMENT;
+      else process.env.SENTRY_USE_ENVIRONMENT = ambientSentryUseEnvironment;
+    }
+    if (!Sentry.isEnabled()) throw new Error("Sentry SDK stayed disabled.");
+    const telemetryState = { configPath: context.configPath, deliveryFailed: false };
+    const client = Sentry.getClient();
+    if (!client) throw new Error("Sentry SDK did not create a client.");
+    client.on("afterSendEvent", (_event, response) => {
+      telemetryState.deliveryFailed =
+        response.statusCode === undefined ||
+        response.statusCode < 200 ||
+        response.statusCode >= 300;
+    });
+    activeTelemetry = telemetryState;
   } catch {
     await appendTelemetryDiagnostic(context.configPath, "initialization_failed");
   }
 };
 
-export const captureCliTelemetryError = async () => {
+export const captureCliTelemetryError = async (cause: unknown) => {
   const telemetry = activeTelemetry;
   if (!telemetry) return;
 
   const deadline = performance.now() + telemetryDeliveryDeadlineMs;
   try {
-    const eventId = randomUUID().replaceAll("-", "");
-    const event = {
-      event_id: eventId,
-      timestamp: Date.now() / 1_000,
-      platform: "javascript",
-      level: "error",
-      message: "Devboxes CLI command failed.",
-      environment: telemetry.environment,
-      release: cliVersion,
-      tags: {
-        runtime: "cli",
-        "devboxes.version": cliVersion,
-      },
-    };
-    const envelope = [
-      JSON.stringify({ event_id: eventId, sent_at: new Date().toISOString() }),
-      JSON.stringify({ type: "event" }),
-      JSON.stringify(event),
-    ].join("\n");
-    const remainingMs = Math.max(
-      1,
-      Math.min(telemetryTransportTimeoutMs, Math.ceil(deadline - performance.now())),
-    );
-    const response = await fetch(telemetry.endpoint, {
-      body: envelope,
-      method: "POST",
-      signal: AbortSignal.timeout(remainingMs),
-    });
-    if (!response.ok) {
+    telemetry.deliveryFailed = false;
+    Sentry.captureException(cause);
+    if (!(await Sentry.flush(telemetryTransportTimeoutMs)) || telemetry.deliveryFailed) {
       await appendTelemetryDiagnostic(telemetry.configPath, "transport_failed", deadline);
     }
   } catch {
@@ -198,7 +207,7 @@ export const addTelemetryCommands = (program: Command) => {
       const configPath = await persistTelemetrySetting(
         enableCommand.optsWithGlobals<DevboxesCliOptions>(),
         {
-          dsn: dsn.value,
+          dsn,
           environment: validatedTelemetryEnvironment(options.environment),
         },
       );
@@ -217,13 +226,11 @@ export const addTelemetryCommands = (program: Command) => {
     if (
       actionCommand === program ||
       actionCommand === telemetryCommand ||
-      actionCommand.parent === telemetryCommand ||
-      actionCommand.name() === "listen" ||
-      actionCommand.name() === "mcp"
+      actionCommand.parent === telemetryCommand
     ) {
       return;
     }
     const context = await loadContext(actionCommand.optsWithGlobals<DevboxesCliOptions>());
-    await initializeCliTelemetry(context);
+    await initializeCliTelemetry(context, actionCommand.name());
   });
 };

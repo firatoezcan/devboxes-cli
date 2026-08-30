@@ -76,7 +76,7 @@ for (const platform of platforms) {
     // cpu-features is ssh2's OPTIONAL native accelerator (dockerode → docker-modem
     // → ssh2); its loader is try/caught upstream, and the runner rejects ssh://
     // docker hosts anyway, so the binary ships without it.
-    await shell`bun build --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target=${target} --external cpu-features --outfile ${outfile} src/cli.ts`;
+    await shell`bun build --compile --sourcemap=external --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target=${target} --external cpu-features --outfile ${outfile} src/cli.ts`;
     if (!smoke && !platform.startsWith("windows/")) await chmod(outfile, 0o755);
   } catch (error) {
     throw new Error(`Failed to build the ${platform} Devboxes CLI.`, { cause: error });
