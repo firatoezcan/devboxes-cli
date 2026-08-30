@@ -1328,6 +1328,7 @@ export const startCredentialBroker = (
       app = createOpencodeCredentialBroker({ activeCredentials }).listen({
         hostname: "0.0.0.0",
         port: candidatePort,
+        reusePort: false,
       });
     } catch (error) {
       const code = error instanceof Error && "code" in error ? error.code : undefined;

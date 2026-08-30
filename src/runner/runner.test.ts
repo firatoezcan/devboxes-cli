@@ -2197,7 +2197,7 @@ describe("runner Opencode credentials", () => {
     }
   });
 
-  it.skip("serves provider auth only for the active task with the matching bearer token; delivery quarantine: https://github.com/firatoezcan/devboxes-dashboard/issues/1034", async () => {
+  it("serves provider auth only for the active task with the matching bearer token", async () => {
     const activeCredentials = new Map<string, ActiveOpencodeCredentialTask>([
       [
         "task_1",
