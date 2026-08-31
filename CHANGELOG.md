@@ -1,10 +1,13 @@
 # devboxes
 
-## 0.2.5
+## 0.3.0
 
-### Patch Changes
+### Minor Changes
 
-- Install Devboxes from one final npm and GitHub release with verified packages and binaries.
+- 30295c4: Add opt-in CLI error telemetry with `devboxes telemetry enable` and `devboxes telemetry disable`.
+- 3134a97: Replace the removed `dispatch --blueprint` option with `dispatch --blueprint-version` so each dispatch selects an exact Blueprint Version.
+- a665094: Continue an existing Session with a fresh Run from the CLI or MCP, and load explicitly selected read-only config files without modifying them.
+- 1b98bc0: Return the stored structured Run outcome from `status` and `result` instead of reconstructing final output and pull-request details from Session events.
 
 ## 0.2.4
 
@@ -43,5 +46,6 @@
 
 - 3ed71eb: Initial public release of the Devboxes CLI: `connect` signs a terminal in via
   browser approval (device authorization), `dispatch` starts a run from task
-  text or a GitHub issue, `status`/`result` follow it to its structured Run
-  outcome, and `devboxes mcp` serves the same actions as MCP tools over stdio.
+  text or a GitHub issue, `status`/`result` follow it to the final output and
+  pull request, and `devboxes mcp` serves the same actions as MCP tools over
+  stdio.
