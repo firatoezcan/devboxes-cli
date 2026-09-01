@@ -20,7 +20,7 @@
     "build": "bun scripts/build-cli-binaries.ts",
     "build:smoke": "bun scripts/build-cli-binaries.ts --smoke",
     "devboxes:local": "NODE_EXTRA_CA_CERTS=${DEVBOXES_LOCAL_CA_DIR:-$HOME/.local/share/devboxes/ca}/root.crt bun src/cli.ts",
-    "test": "node --experimental-strip-types ../../scripts/run-devboxes-cli-tests.ts --task=test --changed=origin/dev",
+    "test": "node --experimental-strip-types ../../scripts/run-devboxes-cli-tests.ts --task=test --changed=${DEVBOXES_CHANGED_BASE:-origin/dev}",
     "test:full": "node --experimental-strip-types ../../scripts/run-devboxes-cli-tests.ts --task=test:full"
   },
   "dependencies": {
