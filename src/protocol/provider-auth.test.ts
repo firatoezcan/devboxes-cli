@@ -68,13 +68,14 @@ describe("validateOpencodeProviderAuth", () => {
     ).toThrow("Opencode API credential metadata for provider openai is invalid.");
   });
 
-  it("returns a normalized oauth auth with extra fields stripped", () => {
+  it("returns normalized oauth auth with native metadata and extra fields stripped", () => {
     const auth = validateOpencodeProviderAuth("openai", {
       type: "oauth",
       refresh: "refresh-token",
       access: "access-token",
       expires: 1750000000000,
       accountId: "account-77",
+      metadata: { audience: "xai" },
       stray: "field",
     });
     expect(auth).toEqual({
@@ -83,6 +84,7 @@ describe("validateOpencodeProviderAuth", () => {
       access: "access-token",
       expires: 1750000000000,
       accountId: "account-77",
+      metadata: { audience: "xai" },
     });
   });
 

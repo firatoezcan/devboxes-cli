@@ -9,11 +9,20 @@ type OpencodeApiAuth = {
   metadata?: Record<string, string>;
 };
 
+export type OpencodeProviderAuthMetadataValue =
+  | string
+  | number
+  | boolean
+  | null
+  | OpencodeProviderAuthMetadataValue[]
+  | { [key: string]: OpencodeProviderAuthMetadataValue };
+
 export type OpencodeOauthAuth = {
   type: "oauth";
   refresh: string;
   access: string;
   expires: number;
+  metadata?: Record<string, OpencodeProviderAuthMetadataValue>;
   accountId?: string;
   enterpriseUrl?: string;
 };
@@ -71,6 +80,24 @@ const ApiProviderAuthSchema = Type.Object(
 
 const ApiProviderAuthMetadataSchema = Type.Record(Type.String(), Type.String());
 
+const OauthProviderAuthMetadataValueSchema = Type.Cyclic(
+  {
+    OauthProviderAuthMetadataValue: Type.Union([
+      Type.String(),
+      Type.Number(),
+      Type.Boolean(),
+      Type.Null(),
+      Type.Array(Type.Ref("OauthProviderAuthMetadataValue")),
+      Type.Record(Type.String(), Type.Ref("OauthProviderAuthMetadataValue")),
+    ]),
+  },
+  "OauthProviderAuthMetadataValue",
+);
+const OauthProviderAuthMetadataSchema = Type.Record(
+  Type.String(),
+  OauthProviderAuthMetadataValueSchema,
+);
+
 // Mirrors the generated SDK OAuth shape: what opencode reads from its auth
 // file. `expires` is epoch milliseconds; 0 marks tokens that never expire
 // (GitHub Copilot stores the GitHub token that way). Integer, not number:
@@ -82,6 +109,7 @@ const OauthProviderAuthSchema = Type.Object(
     refresh: Type.String({ minLength: 1 }),
     access: Type.String({ minLength: 1 }),
     expires: Type.Integer({ minimum: 0 }),
+    metadata: Type.Optional(OauthProviderAuthMetadataSchema),
     accountId: Type.Optional(Type.String()),
     enterpriseUrl: Type.Optional(Type.String()),
   },
@@ -151,6 +179,7 @@ export const validateOpencodeProviderAuth = (
       access: oauthAuth.access,
       expires: oauthAuth.expires,
     };
+    if (oauthAuth.metadata !== undefined) validatedAuth.metadata = oauthAuth.metadata;
     if (oauthAuth.accountId !== undefined) validatedAuth.accountId = oauthAuth.accountId;
     if (oauthAuth.enterpriseUrl !== undefined) {
       validatedAuth.enterpriseUrl = oauthAuth.enterpriseUrl;
@@ -181,6 +210,11 @@ export const opencodeProviderAuthFingerprint = (providerId: string, auth: Openco
     };
     if (auth.accountId !== undefined) canonicalAuth.accountId = auth.accountId;
     if (auth.enterpriseUrl !== undefined) canonicalAuth.enterpriseUrl = auth.enterpriseUrl;
+    if (auth.metadata !== undefined) {
+      canonicalAuth.metadata = Object.fromEntries(
+        Object.entries(auth.metadata).sort(([left], [right]) => left.localeCompare(right)),
+      );
+    }
   }
   return createHash("sha256")
     .update(`${normalizeOpencodeProviderId(providerId)}\0${JSON.stringify(canonicalAuth)}`)
