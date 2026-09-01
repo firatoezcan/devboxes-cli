@@ -1476,7 +1476,7 @@ describe("runner Opencode credentials", () => {
       });
       expect(outcome.claimBody).toEqual({
         leaseMs: 120_000,
-        launchProtocols: ["devboxes-launch-v6"],
+        launchProtocols: ["devboxes-launch-v7"],
       });
     } finally {
       if (!listening.killed) listening.kill("SIGTERM");
@@ -1679,7 +1679,7 @@ describe("runner Opencode credentials", () => {
           });
           expect(outcome.claimBody).toMatchObject({
             leaseMs: 120_000,
-            launchProtocols: ["devboxes-launch-v6"],
+            launchProtocols: ["devboxes-launch-v7"],
           });
         } finally {
           if (!listening.killed) listening.kill("SIGTERM");
@@ -1820,7 +1820,7 @@ describe("runner Opencode credentials", () => {
             leaseExpiresAt: new Date(Date.now() + 120_000).toISOString(),
             perTaskToken: "claim-authority-task-token",
             launchSpec: {
-              launchProtocol: "devboxes-launch-v6",
+              launchProtocol: "devboxes-launch-v7",
               workspaceCapability: "agent-task",
               entrypoint: "/entrypoint.sh",
               workingDir: "/workspace",

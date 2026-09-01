@@ -21,7 +21,11 @@ import { clientOwnedLaunchEnvKeys, opencodeWorkspaceLaunchProtocol } from "./lau
 import { opencodeProviderAuthPath } from "./provider-auth";
 import {
   containerBackendTokenFile,
+  containerDaemonDataDir,
+  containerDaemonExecutableDir,
+  containerDaemonNodeModulesDir,
   containerHome,
+  containerOpencodeDatabasePath,
   containerOpencodeConfigJsonFile,
   containerSecretsDir,
   daemonEntrypoint,
@@ -39,7 +43,7 @@ import {
 // suite exists to catch.
 describe("frozen runner contracts", () => {
   it("pins the protocol tags shipped binaries negotiate with", () => {
-    expect(opencodeWorkspaceLaunchProtocol).toBe("devboxes-launch-v6");
+    expect(opencodeWorkspaceLaunchProtocol).toBe("devboxes-launch-v7");
     expect(opencodeDaemonBootstrapProtocol).toBe("devboxes-daemon-bootstrap-v1");
   });
 
@@ -56,6 +60,10 @@ describe("frozen runner contracts", () => {
     expect(containerSecretsDir).toBe("/run/devboxes/secrets");
     expect(containerBackendTokenFile).toBe("/run/devboxes/secrets/backend-token");
     expect(containerOpencodeConfigJsonFile).toBe("/run/devboxes/secrets/opencode-config.json");
+    expect(containerDaemonDataDir).toBe("/var/lib/devboxes");
+    expect(containerDaemonExecutableDir).toBe("/run/devboxes/exec");
+    expect(containerDaemonNodeModulesDir).toBe("/run/devboxes/exec/node_modules");
+    expect(containerOpencodeDatabasePath).toBe("/var/lib/devboxes/opencode.sqlite");
     expect(daemonEntrypoint).toBe("/entrypoint.sh");
   });
 

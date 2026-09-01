@@ -15,7 +15,7 @@ import Type, { type Static } from "typebox";
 // one protocol tag the spec is additive-only (`additionalProperties: true`
 // keeps unknown future fields from failing older binaries); anything a binary
 // would interpret differently is a new tag.
-export const opencodeWorkspaceLaunchProtocol = "devboxes-launch-v6";
+export const opencodeWorkspaceLaunchProtocol = "devboxes-launch-v7";
 
 // The daemon has two shipped modes. Keep their environment discriminants here
 // so the server-authored launch spec, both thin runtimes, and the downloaded

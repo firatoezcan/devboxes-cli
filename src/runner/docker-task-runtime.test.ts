@@ -21,7 +21,7 @@ const daemonApiBaseUrl = "http://host.docker.internal:3001/api";
 // A server-authored launch spec as the claim response serves it; this runtime
 // executes it and overlays only the machine-local env keys.
 const launchSpec = {
-  launchProtocol: "devboxes-launch-v6" as const,
+  launchProtocol: "devboxes-launch-v7" as const,
   workspaceCapability: "agent-task" as const,
   workingDir: "/workspace",
   entrypoint: "/entrypoint.sh",
@@ -30,6 +30,7 @@ const launchSpec = {
     XDG_CONFIG_HOME: "/home/workspace/.config",
     XDG_DATA_HOME: "/home/workspace/.local/share",
     OPENCODE_CONFIG: "/home/workspace/.config/opencode/opencode.json",
+    OPENCODE_DATABASE_PATH: "/var/lib/devboxes/opencode.sqlite",
     OPENCODE_EXPERIMENTAL_WORKSPACES: "true",
     GIT_CONFIG_COUNT: "1",
     GIT_CONFIG_KEY_0: "safe.directory",
@@ -252,7 +253,7 @@ describe("opencode Docker task runtime against the engine API", () => {
       expect(createBody.HostConfig).toEqual({
         AutoRemove: false,
         CapDrop: ["ALL"],
-        CapAdd: ["CHOWN", "DAC_OVERRIDE", "SETGID", "SETUID"],
+        CapAdd: ["DAC_OVERRIDE", "SETGID", "SETUID"],
         SecurityOpt: ["no-new-privileges"],
         Mounts: expect.arrayContaining([
           expect.objectContaining({
@@ -269,7 +270,8 @@ describe("opencode Docker task runtime against the engine API", () => {
           }),
         ]),
         Tmpfs: {
-          "/run/devboxes/daemon": "rw,noexec,nosuid,size=512m,mode=0700,uid=0,gid=1000",
+          "/run/devboxes/daemon": "rw,noexec,nosuid,size=512m,mode=0700,uid=1001,gid=1000",
+          "/run/devboxes/exec": "rw,nosuid,size=64m,mode=0700,uid=1001,gid=1000",
           "/home/workspace/.local/share": "rw,noexec,nosuid,size=512m,mode=0770,uid=1001,gid=1000",
         },
         ExtraHosts: ["host.docker.internal:host-gateway"],
@@ -294,13 +296,14 @@ describe("opencode Docker task runtime against the engine API", () => {
           "DEVBOX_OPENCODE_PROVIDER_AUTH_URL=http://host.docker.internal:43111",
           "DEVBOX_OPENCODE_CONFIG_JSON_FILE=/run/devboxes/secrets/opencode-config.json",
           "DEVBOX_BACKEND_BASE_URL=http://host.docker.internal:3001/api",
-          "OPENCODE_READY_MS=120000",
+          "OPENCODE_STARTUP_TIMEOUT_MS=120000",
           "DEVBOX_BACKEND_TOKEN_FILE=/run/devboxes/secrets/backend-token",
           "DEVBOX_DAEMON_VERSION=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "DEVBOX_DAEMON_PLATFORM=linux/amd64",
           `DEVBOX_DAEMON_SHA256=${"a".repeat(64)}`,
           "DEVBOX_DAEMON_BOOTSTRAP_PROTOCOL=devboxes-daemon-bootstrap-v1",
           "OPENCODE_CONFIG=/home/workspace/.config/opencode/opencode.json",
+          "OPENCODE_DATABASE_PATH=/var/lib/devboxes/opencode.sqlite",
           "OPENCODE_EXPERIMENTAL_WORKSPACES=true",
           "GIT_CONFIG_COUNT=1",
           "GIT_CONFIG_KEY_0=safe.directory",

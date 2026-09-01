@@ -14,11 +14,12 @@ are about to break shipped artifacts.
 
 | Contract                      | Value                                                                                                                    | Reader that would break                                                                                                                                  |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Workspace launch protocol tag | `devboxes-launch-v6`                                                                                                     | The API, direct CLI, Kubernetes runner, and Workspace daemon agree on the exact capability shape before work is leased                                   |
+| Workspace launch protocol tag | `devboxes-launch-v7`                                                                                                     | The API, direct CLI, Kubernetes runner, and Workspace daemon agree on the exact capability shape before work is leased                                   |
 | Client-owned launch env keys  | `DEVBOX_BACKEND_BASE_URL`, `DEVBOX_OPENCODE_PROVIDER_AUTH_URL`, `DEVBOX_OPENCODE_CONFIG_JSON_FILE`                       | Shipped runtimes overlay exactly these keys over the served spec; serving them would be silently ignored, renaming them orphans the overlay              |
 | Daemon bootstrap protocol tag | `devboxes-daemon-bootstrap-v1`                                                                                           | `/entrypoint.sh` baked into every published Workspace Image exits `upgrade_required` on mismatch                                                         |
 | Container home                | `/home/workspace`                                                                                                        | Published Workspace Images (user, permissions), served spec env, daemon auth-file path                                                                   |
 | Secrets dir + files           | `/run/devboxes/secrets/{backend-token,opencode-config.json}`                                                             | Shipped runner binaries bind-mount to these targets; the in-container daemon reads them                                                                  |
+| Daemon data                   | `/var/lib/devboxes/opencode.sqlite`                                                                                      | The embedded OpenCode host retains its native Session and event log across task container restart                                                        |
 | Daemon entrypoint             | `/entrypoint.sh`                                                                                                         | Baked into every published Workspace Image                                                                                                               |
 | Task container name           | `firops-opencode-task-<sha256(taskId)[0:12]>`                                                                            | Startup reconciliation matches leftover containers by re-deriving names                                                                                  |
 | State image                   | `firops/opencode-task-state:<sha256(taskId)[0:12]>`                                                                      | Stop must find and delete snapshots committed by any earlier runner build                                                                                |
@@ -45,22 +46,23 @@ The GitHub task credential failure codes are:
 
 ## Current Workspace capability protocol
 
-`devboxes-launch-v6` runs agent-controlled processes under uid 1001. The runtime
-starts the capability-limited daemon as uid 0 with shared gid 1000 and grants
-`CHOWN`, `SETGID`, and `SETUID` so it can assign agent-owned auth files and
-establish that boundary. Docker also grants `DAC_OVERRIDE` so the daemon can
-read the listener-owned mode-0600 secret bind mounts, and sets
-`no-new-privileges` before the agent boundary. The daemon alone can access its
-mode-0700 publication directory and root-readable backend token.
+`devboxes-launch-v7` starts the daemon bootstrap as uid 0 with shared gid 1000
+and grants `SETGID` and `SETUID`. Docker also grants `DAC_OVERRIDE` so that the
+bootstrap can read owner-only bind-mounted Task inputs. The bootstrap copies the
+native config, sanitizes its environment, and permanently
+drops to uid 1001 before importing the embedded OpenCode SDK. The OpenCode host
+and every tool process run under that identity with no effective capabilities.
+Docker sets `no-new-privileges`; Kubernetes applies the same capability set.
+Native Session state lives at `/var/lib/devboxes/opencode.sqlite`.
 The same protocol carries either an `agent-task` or a
-`provider-model-resolution` capability. Agent Tasks execute OpenCode inside the
-Workspace Image. Runner-local credentials also resolve there because only that
+`provider-model-resolution` capability. Agent Tasks execute the embedded
+OpenCode SDK inside the daemon. Runner-local credentials also resolve there because only that
 Runner can read their secret material. Organization Provider Accounts are
 different: the API validates OpenCode Go, xAI, and ChatGPT credentials directly
 against their maintained provider endpoints, intersects the returned model IDs
 with its pinned Models.dev snapshot, and persists that result. It keeps the
 encrypted credential and claim-time authority. A runner that does not advertise
-`devboxes-launch-v6` receives `listener_upgrade_required` before any work is
+`devboxes-launch-v7` receives `listener_upgrade_required` before any work is
 leased.
 
 OAuth authority is `subscription`. API-key authority is `metered` only when

@@ -16,6 +16,7 @@ import {
 import {
   containerAgentUid,
   containerBackendTokenFile,
+  containerDaemonExecutableDir,
   containerDaemonPrivateDir,
   containerDaemonUid,
   containerOpencodeConfigJsonFile,
@@ -340,8 +341,7 @@ export class DockerOpencodeTaskRuntime {
         ...input.launchSpec.env,
         DEVBOX_BACKEND_BASE_URL: this.options.daemonApiBaseUrl,
         DEVBOX_OPENCODE_PROVIDER_AUTH_URL: validatedProviderAuthUrl(input.providerAuthUrl),
-        // First engine boot after a cold runtime start exceeded 30s twice in prod E2E.
-        OPENCODE_READY_MS: "120000",
+        OPENCODE_STARTUP_TIMEOUT_MS: "120000",
         DEVBOX_OPENCODE_CONFIG_JSON_FILE: secretFiles.opencodeConfigJsonFile
           ? containerOpencodeConfigJsonFile
           : undefined,
@@ -368,7 +368,7 @@ export class DockerOpencodeTaskRuntime {
         HostConfig: {
           AutoRemove: false,
           CapDrop: ["ALL"],
-          CapAdd: ["CHOWN", "DAC_OVERRIDE", "SETGID", "SETUID"],
+          CapAdd: ["DAC_OVERRIDE", "SETGID", "SETUID"],
           SecurityOpt: ["no-new-privileges"],
           Mounts: [
             {
@@ -395,14 +395,14 @@ export class DockerOpencodeTaskRuntime {
           Tmpfs: Object.fromEntries([
             [
               containerDaemonPrivateDir,
-              `rw,noexec,nosuid,size=512m,mode=0700,uid=${containerDaemonUid},gid=${containerSharedGid}`,
+              `rw,noexec,nosuid,size=512m,mode=0700,uid=${containerAgentUid},gid=${containerSharedGid}`,
+            ],
+            [
+              containerDaemonExecutableDir,
+              `rw,nosuid,size=64m,mode=0700,uid=${containerAgentUid},gid=${containerSharedGid}`,
             ],
             ...input.launchSpec.memoryBackedPaths.map((path) => [
               path,
-              // opencode's working SQLite database lives under the memory-backed
-              // opencode data dir, so the size must fit a real session's DB and
-              // WAL. The stable engine owns its runtime tree; the daemon retains
-              // shared-group access.
               `rw,noexec,nosuid,size=512m,mode=0770,uid=${containerAgentUid},gid=${containerSharedGid}`,
             ]),
           ]),
