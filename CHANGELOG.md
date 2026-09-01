@@ -1,5 +1,12 @@
 # devboxes
 
+## 0.3.1
+
+### Patch Changes
+
+- Build the CLI release from a clean environment with the native tools required
+  for every supported npm package and binary.
+
 ## 0.3.0
 
 ### Minor Changes
