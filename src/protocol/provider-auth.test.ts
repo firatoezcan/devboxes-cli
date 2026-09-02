@@ -1,6 +1,48 @@
 import { describe, expect, it } from "bun:test";
 
-import { normalizeOpencodeProviderId, validateOpencodeProviderAuth } from "./provider-auth";
+import {
+  hydrateOpencodeProviderAuth,
+  normalizeOpencodeProviderId,
+  validateOpencodeProviderAuth,
+  validateWorkspaceImageQualificationProviderAuthLease,
+} from "./provider-auth";
+
+describe("hydrateOpencodeProviderAuth", () => {
+  it("maps canonical API and OAuth metadata into the OpenCode runtime shape", () => {
+    expect(
+      hydrateOpencodeProviderAuth({
+        type: "api",
+        key: "provider-key",
+        metadata: { baseURL: "https://models.example.test/v1" },
+      }),
+    ).toEqual({
+      type: "api",
+      key: "provider-key",
+      settings: { baseURL: "https://models.example.test/v1" },
+    });
+    expect(
+      hydrateOpencodeProviderAuth({
+        type: "oauth",
+        refresh: "refresh-token",
+        access: "access-token",
+        expires: 2_000_000_000_000,
+        accountId: "account-id",
+        enterpriseUrl: "https://enterprise.example.test",
+        metadata: { tenant: "tenant-id" },
+      }),
+    ).toEqual({
+      type: "oauth",
+      refresh: "refresh-token",
+      access: "access-token",
+      expires: 2_000_000_000_000,
+      metadata: {
+        accountID: "account-id",
+        enterpriseUrl: "https://enterprise.example.test",
+        tenant: "tenant-id",
+      },
+    });
+  });
+});
 
 describe("normalizeOpencodeProviderId", () => {
   it("trims and lowercases valid provider ids", () => {
@@ -24,6 +66,47 @@ describe("normalizeOpencodeProviderId", () => {
         "Opencode provider id is invalid.",
       );
     }
+  });
+});
+
+describe("validateWorkspaceImageQualificationProviderAuthLease", () => {
+  it("preserves the selected canonical API credential and custom-host metadata", () => {
+    expect(
+      validateWorkspaceImageQualificationProviderAuthLease({
+        providerID: "custom-provider",
+        modelID: "model/v2",
+        auth: {
+          type: "api",
+          key: "provider-key",
+          metadata: { baseURL: "https://models.example.test/v1" },
+        },
+      }),
+    ).toEqual({
+      providerID: "custom-provider",
+      modelID: "model/v2",
+      auth: {
+        type: "api",
+        key: "provider-key",
+        metadata: { baseURL: "https://models.example.test/v1" },
+      },
+    });
+  });
+
+  it("rejects a non-normalized provider or blank model", () => {
+    expect(() =>
+      validateWorkspaceImageQualificationProviderAuthLease({
+        providerID: " Custom-Provider ",
+        modelID: "model",
+        auth: { type: "api", key: "provider-key" },
+      }),
+    ).toThrow("Workspace Image qualification provider id is not normalized.");
+    expect(() =>
+      validateWorkspaceImageQualificationProviderAuthLease({
+        providerID: "custom-provider",
+        modelID: " ",
+        auth: { type: "api", key: "provider-key" },
+      }),
+    ).toThrow("Workspace Image qualification model id is invalid.");
   });
 });
 

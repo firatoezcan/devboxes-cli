@@ -41,6 +41,21 @@ export type OpencodeProviderAuthJson = Record<
 // What validation actually admits: opencode's wellknown entries never pass
 // this boundary, so downstream code can rely on the api/oauth split.
 export type OpencodeProviderAuth = OpencodeApiAuth | OpencodeOauthAuth;
+export type OpencodeRuntimeProviderAuth =
+  | { type: "api"; key: string; settings?: Record<string, string> }
+  | {
+      type: "oauth";
+      access: string;
+      expires: number;
+      metadata?: Record<string, OpencodeProviderAuthMetadataValue>;
+      refresh: string;
+    };
+export type WorkspaceImageQualificationProviderAuthLease = {
+  providerID: string;
+  modelID: string;
+  auth: OpencodeProviderAuth;
+};
+export const workspaceImageQualificationProviderAuthTtlMs = 40 * 60_000;
 
 export type OpencodeProviderAuthSourceValue =
   | string
@@ -51,11 +66,10 @@ export type OpencodeProviderAuthSourceValue =
   | OpencodeProviderAuthSourceValue[]
   | { [key: string]: OpencodeProviderAuthSourceValue };
 
-// The provider-auth endpoint has two complete server implementations — the
-// dashboard's internal route (claim-captured organization credentials) and the
-// runner machine's local credential broker (claim-captured local credentials).
-// Both serve this route shape with a per-task bearer token, and the in-container
-// daemon talks to whichever base URL its task was launched with.
+// Task provider-auth endpoints serve this route shape with a per-task bearer
+// token, and the in-container daemon talks to whichever base URL launched it.
+// Workspace Image qualification validates the same envelope at its dedicated
+// builder-authenticated route.
 export const opencodeProviderAuthPath = "/opencode-tasks/:taskId/provider-auth";
 
 export const OpencodeProviderAuthResponseSchema = Type.Record(
@@ -67,6 +81,14 @@ export type OpencodeProviderAuthResponse = Static<typeof OpencodeProviderAuthRes
 const ProviderAuthRecordSchema = Type.Object(
   { type: Type.String({ minLength: 1 }) },
   { additionalProperties: true },
+);
+const WorkspaceImageQualificationProviderAuthLeaseSchema = Type.Object(
+  {
+    providerID: Type.String({ minLength: 1 }),
+    modelID: Type.String({ minLength: 1 }),
+    auth: ProviderAuthRecordSchema,
+  },
+  { additionalProperties: false },
 );
 
 const ApiProviderAuthSchema = Type.Object(
@@ -190,6 +212,53 @@ export const validateOpencodeProviderAuth = (
   throw new Error(
     `Opencode credentials for provider ${providerId} must be API-key or OAuth entries.`,
   );
+};
+
+export const validateWorkspaceImageQualificationProviderAuthLease = (
+  source: WorkspaceImageQualificationProviderAuthLease,
+): WorkspaceImageQualificationProviderAuthLease => {
+  const lease = Value.Parse(WorkspaceImageQualificationProviderAuthLeaseSchema, source);
+  const providerID = normalizeOpencodeProviderId(lease.providerID);
+  if (providerID !== lease.providerID) {
+    throw new Error("Workspace Image qualification provider id is not normalized.");
+  }
+  const modelID = lease.modelID.trim();
+  if (!modelID || modelID !== lease.modelID) {
+    throw new Error("Workspace Image qualification model id is invalid.");
+  }
+  const auth = validateOpencodeProviderAuth(providerID, lease.auth);
+  if (
+    auth.type === "oauth" &&
+    auth.expires !== 0 &&
+    auth.expires <= Date.now() + workspaceImageQualificationProviderAuthTtlMs
+  ) {
+    throw new Error("Workspace Image qualification OAuth lease expires too soon.");
+  }
+  return {
+    providerID,
+    modelID,
+    auth,
+  };
+};
+
+export const hydrateOpencodeProviderAuth = (
+  auth: OpencodeProviderAuth,
+): OpencodeRuntimeProviderAuth => {
+  if (auth.type === "api") {
+    return auth.metadata
+      ? { type: "api", key: auth.key, settings: auth.metadata }
+      : { type: "api", key: auth.key };
+  }
+  const metadata = { ...auth.metadata };
+  if (auth.accountId) metadata.accountID = auth.accountId;
+  if (auth.enterpriseUrl) metadata.enterpriseUrl = auth.enterpriseUrl;
+  return {
+    type: "oauth",
+    access: auth.access,
+    expires: auth.expires,
+    metadata,
+    refresh: auth.refresh,
+  };
 };
 
 export const opencodeProviderAuthFingerprint = (providerId: string, auth: OpencodeProviderAuth) => {
