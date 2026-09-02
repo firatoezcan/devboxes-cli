@@ -1,5 +1,11 @@
 # devboxes
 
+## 0.3.2
+
+### Patch Changes
+
+- Install and verify the pinned Docker Compose release before validating the public CLI release.
+
 ## 0.3.1
 
 ### Patch Changes
