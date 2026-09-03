@@ -1,5 +1,12 @@
 # devboxes
 
+## 0.3.3
+
+### Patch Changes
+
+- Use configured Provider Accounts for shared OpenCode connections. Replace an
+  existing Windows installation with the verified download.
+
 ## 0.3.2
 
 ### Patch Changes
