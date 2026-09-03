@@ -138,17 +138,25 @@ jobs:
             launcher="$install_root/bin/devboxes"
             test "$("$launcher" --version)" = "$VERSION"
             test -n "$("$launcher" --help)"
-            global_root="$(
+            published_wrapper="$(
               env \
                 HOME="$install_root/home" \
                 NPM_CONFIG_USERCONFIG="$install_root/npmrc" \
                 PATH="$install_root/bin:$PATH" \
-                corepack "pnpm@$pnpm_version" root \
+                corepack "pnpm@$pnpm_version" list devboxes \
                   --global \
+                  --depth 0 \
+                  --json \
                   --config.global-dir="$install_root/global" \
-                  --config.global-bin-dir="$install_root/bin"
+                  --config.global-bin-dir="$install_root/bin" | \
+                node -e '
+                  const { readFileSync, realpathSync } = require("node:fs");
+                  const { join } = require("node:path");
+                  const packagePath = JSON.parse(readFileSync(0, "utf8"))[0]?.dependencies?.devboxes?.path;
+                  if (!packagePath) throw new Error("pnpm did not report the installed devboxes package");
+                  process.stdout.write(realpathSync(join(packagePath, "bin/devboxes.cjs")));
+                '
             )"
-            published_wrapper="$(node -p 'require("node:fs").realpathSync(process.argv[1])' "$global_root/devboxes/bin/devboxes.cjs")"
             native_binary="$(node -p 'require("node:fs").realpathSync(require("node:module").createRequire(process.argv[1]).resolve(process.argv[2]))' "$published_wrapper" "@devboxes/cli-$TARGET/bin/devboxes.exe")"
             test "$("$native_binary" --version)" = "$VERSION"
             test -n "$("$native_binary" --help)"
@@ -243,9 +251,11 @@ jobs:
               }
               $LauncherHelp = (& $Launcher --help | Out-String).Trim()
               if ($LASTEXITCODE -ne 0 -or -not $LauncherHelp) { throw "installed help failed" }
-              $GlobalRoot = (& corepack "pnpm@$PnpmVersion" root --global "--config.global-dir=$GlobalDir" "--config.global-bin-dir=$BinDir").Trim()
-              if ($LASTEXITCODE -ne 0 -or -not $GlobalRoot) { throw "pnpm $PnpmVersion root failed" }
-              $PublishedWrapper = (& node -p 'require("node:fs").realpathSync(process.argv[1])' (Join-Path $GlobalRoot "devboxes\bin\devboxes.cjs")).Trim()
+              $GlobalPackages = & corepack "pnpm@$PnpmVersion" list devboxes --global --depth 0 --json "--config.global-dir=$GlobalDir" "--config.global-bin-dir=$BinDir"
+              if ($LASTEXITCODE -ne 0 -or -not $GlobalPackages) { throw "pnpm $PnpmVersion list failed" }
+              $PackagePath = @($GlobalPackages | ConvertFrom-Json)[0].dependencies.devboxes.path
+              if (-not $PackagePath) { throw "pnpm $PnpmVersion did not report the installed devboxes package" }
+              $PublishedWrapper = (& node -p 'require("node:fs").realpathSync(require("node:path").join(process.argv[1], "bin/devboxes.cjs"))' $PackagePath).Trim()
               if ($LASTEXITCODE -ne 0 -or -not $PublishedWrapper) { throw "pnpm $PnpmVersion wrapper resolution failed" }
               $NativeBinary = (& node -p 'require("node:fs").realpathSync(require("node:module").createRequire(process.argv[1]).resolve(process.argv[2]))' $PublishedWrapper "@devboxes/cli-win32-x64/bin/devboxes.exe").Trim()
               if ($LASTEXITCODE -ne 0 -or -not $NativeBinary) { throw "pnpm $PnpmVersion native binary resolution failed" }
