@@ -171,7 +171,7 @@ jobs:
             $NpmPackage = "devboxes@$env:VERSION"
             $ReleaseBase = "https://github.com/firatoezcan/devboxes-cli/releases/download/$env:TAG"
             $ActualTarget = node -p "process.platform + '-' + process.arch"
-            if ($ActualTarget -ne "win32-x64" -or $ActualTarget -ne $env:TARGET) {
+            if ($ActualTarget -ne "win32-x64" -or $env:TARGET -ne "windows-x64") {
               throw "unsupported acceptance host: $ActualTarget"
             }
             $CheckedOutTag = git describe --tags --exact-match
