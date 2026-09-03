@@ -54,7 +54,7 @@ try {
   }
 
   if (Test-Path $destination) {
-    [IO.File]::Replace($staged, $destination, $null)
+    [IO.File]::Replace($staged, $destination, [NullString]::Value)
   } else {
     [IO.File]::Move($staged, $destination)
   }
