@@ -1,0 +1,346 @@
+name: Release acceptance
+
+run-name: Accept Devboxes ${{ inputs.version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Published Devboxes version in X.Y.Z form
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  accept:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            target: darwin-x64
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64
+          - runner: windows-2025
+            target: windows-x64
+    steps:
+      - name: Validate version
+        id: version
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            printf "Devboxes version must be X.Y.Z (got '%s').\n" "$VERSION" >&2
+            exit 1
+          fi
+          printf 'tag=v%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare receipt
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          receipt_dir="$RUNNER_TEMP/devboxes-acceptance-$VERSION-$TARGET"
+          mkdir -p "$receipt_dir"
+          {
+            printf 'version=%s\n' "$VERSION"
+            printf 'target=%s\n' "$TARGET"
+            printf 'runner_os=%s\n' "$RUNNER_OS"
+            printf 'runner_arch=%s\n' "$RUNNER_ARCH"
+          } > "$receipt_dir/receipt.txt"
+
+      - name: Check out published source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: firatoezcan/devboxes-cli
+          ref: ${{ steps.version.outputs.tag }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.23.2
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.4.0
+
+      - name: Accept POSIX release
+        if: ${{ matrix.target != 'windows-x64' }}
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          receipt_dir="$RUNNER_TEMP/devboxes-acceptance-$VERSION-$TARGET"
+          exec > >(tee -a "$receipt_dir/receipt.txt") 2>&1
+          unset GH_TOKEN GITHUB_TOKEN NODE_AUTH_TOKEN NPM_TOKEN
+
+          npm_package="devboxes@$VERSION"
+          release_base="https://github.com/firatoezcan/devboxes-cli/releases/download/$TAG"
+          actual_target="$(node -p 'process.platform + "-" + process.arch')"
+          test "$actual_target" = "$TARGET"
+          test "$(git describe --tags --exact-match)" = "$TAG"
+          test "$(node -p 'require("./package.json").version')" = "$VERSION"
+          printf 'node=%s\n' "$(node --version)"
+          printf 'bun=%s\n' "$(bun --version)"
+          if [[ "$TARGET" == linux-* ]]; then
+            glibc="$(node -p 'process.report.getReport().header.glibcVersionRuntime || ""')"
+            test -n "$glibc"
+            printf 'glibc=%s\n' "$glibc"
+          fi
+
+          installer_root="$(mktemp -d)"
+          installer="$installer_root/install"
+          installer_bin="$installer_root/bin/devboxes"
+          curl --proto '=https' --tlsv1.2 -fsSL "$release_base/install" -o "$installer"
+          cmp "$installer" install
+          mkdir -p "$installer_root/bin"
+          printf 'previous installation\n' > "$installer_bin"
+          DEVBOXES_INSTALL_DIR="$installer_root/bin" sh "$installer" "$VERSION"
+          test "$("$installer_bin" --version)" = "$VERSION"
+          test -n "$("$installer_bin" --help)"
+          test -z "$(find "$installer_root/bin" -maxdepth 1 -name '.devboxes*' -print -quit)"
+          printf 'accepted public installer replacement\n'
+
+          for pnpm_version in 10.34.5 11.25.0; do
+            install_root="$(mktemp -d)"
+            mkdir -p "$install_root/home"
+            : > "$install_root/npmrc"
+            env \
+              HOME="$install_root/home" \
+              NPM_CONFIG_CACHE="$install_root/npm-cache" \
+              NPM_CONFIG_USERCONFIG="$install_root/npmrc" \
+              PATH="$install_root/bin:$PATH" \
+              corepack "pnpm@$pnpm_version" add \
+                --global \
+                --global-dir "$install_root/global" \
+                --global-bin-dir "$install_root/bin" \
+                --store-dir "$install_root/store" \
+                "$npm_package"
+            launcher="$install_root/bin/devboxes"
+            test "$("$launcher" --version)" = "$VERSION"
+            test -n "$("$launcher" --help)"
+            global_root="$(
+              env \
+                HOME="$install_root/home" \
+                NPM_CONFIG_USERCONFIG="$install_root/npmrc" \
+                PATH="$install_root/bin:$PATH" \
+                corepack "pnpm@$pnpm_version" root \
+                  --global \
+                  --config.global-dir="$install_root/global" \
+                  --config.global-bin-dir="$install_root/bin"
+            )"
+            native_binary="$global_root/@devboxes/cli-$TARGET/bin/devboxes.exe"
+            test "$("$native_binary" --version)" = "$VERSION"
+            test -n "$("$native_binary" --help)"
+            cmp "$native_binary" "$installer_bin"
+            cmp "$global_root/devboxes/bin/devboxes.cjs" bin/devboxes.cjs
+            printf 'accepted %s with pnpm %s\n' "$TARGET" "$pnpm_version"
+          done
+
+          bun test bin/devboxes.test.ts
+
+      - name: Accept Windows release
+        if: ${{ matrix.target == 'windows-x64' }}
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          Set-StrictMode -Version Latest
+          $ReceiptDir = Join-Path $env:RUNNER_TEMP "devboxes-acceptance-$env:VERSION-$env:TARGET"
+          $Receipt = Join-Path $ReceiptDir "receipt.txt"
+          Start-Transcript -Path $Receipt -Append
+          try {
+            Remove-Item Env:GH_TOKEN, Env:GITHUB_TOKEN, Env:NODE_AUTH_TOKEN, Env:NPM_TOKEN -ErrorAction SilentlyContinue
+            $NpmPackage = "devboxes@$env:VERSION"
+            $ReleaseBase = "https://github.com/firatoezcan/devboxes-cli/releases/download/$env:TAG"
+            $ActualTarget = node -p "process.platform + '-' + process.arch"
+            if ($ActualTarget -ne "win32-x64" -or $env:TARGET -ne "windows-x64") {
+              throw "unsupported acceptance host: $ActualTarget"
+            }
+            $CheckedOutTag = git describe --tags --exact-match
+            if ($CheckedOutTag -ne $env:TAG) { throw "checked out '$CheckedOutTag', expected '$env:TAG'" }
+            $SourceVersion = node -p "require('./package.json').version"
+            if ($SourceVersion -ne $env:VERSION) {
+              throw "tag package version is '$SourceVersion', expected '$env:VERSION'"
+            }
+            Write-Host "node=$(node --version)"
+            Write-Host "bun=$(bun --version)"
+
+            $InstallerRoot = Join-Path $env:RUNNER_TEMP "devboxes-installer-$([guid]::NewGuid().ToString('N'))"
+            $Installer = Join-Path $InstallerRoot "install.ps1"
+            $InstallerBinDir = Join-Path $InstallerRoot "bin"
+            $InstallerBinary = Join-Path $InstallerBinDir "devboxes.exe"
+            New-Item -ItemType Directory -Force -Path $InstallerBinDir | Out-Null
+            Invoke-WebRequest -UseBasicParsing -Uri "$ReleaseBase/install.ps1" -OutFile $Installer
+            $TaggedInstallerBytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes("install.ps1"))
+            $DownloadedInstallerBytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes($Installer))
+            if ($DownloadedInstallerBytes -ne $TaggedInstallerBytes) {
+              throw "the public installer differs from the checked-out tag"
+            }
+            [IO.File]::WriteAllText($InstallerBinary, "previous installation`n")
+            Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+            & $Installer -Version $env:VERSION -InstallDir $InstallerBinDir
+            $InstalledVersion = (& $InstallerBinary --version).Trim()
+            if ($LASTEXITCODE -ne 0 -or $InstalledVersion -ne $env:VERSION) {
+              throw "installed version is '$InstalledVersion', expected '$env:VERSION'"
+            }
+            $InstalledHelp = (& $InstallerBinary --help | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0 -or -not $InstalledHelp) { throw "installed help failed" }
+            $InstallerStaged = Get-ChildItem -Force -Path $InstallerBinDir | Where-Object { $_.Name -like ".devboxes-*" }
+            if ($InstallerStaged) { throw "the installer left staged files behind" }
+            Write-Host "accepted public installer replacement"
+
+            $BasePath = $env:PATH
+            foreach ($PnpmVersion in @("10.34.5", "11.25.0")) {
+              $InstallRoot = Join-Path $env:RUNNER_TEMP "devboxes-pnpm-$PnpmVersion-$([guid]::NewGuid().ToString('N'))"
+              $HomeDir = Join-Path $InstallRoot "home"
+              $BinDir = Join-Path $InstallRoot "bin"
+              $GlobalDir = Join-Path $InstallRoot "global"
+              $Npmrc = Join-Path $InstallRoot "npmrc"
+              New-Item -ItemType Directory -Force -Path $HomeDir | Out-Null
+              New-Item -ItemType File -Force -Path $Npmrc | Out-Null
+              $env:HOME = $HomeDir
+              $env:USERPROFILE = $HomeDir
+              $env:NPM_CONFIG_CACHE = Join-Path $InstallRoot "npm-cache"
+              $env:NPM_CONFIG_USERCONFIG = $Npmrc
+              $env:PATH = "$BinDir$([IO.Path]::PathSeparator)$BasePath"
+
+              & corepack "pnpm@$PnpmVersion" add `
+                --global `
+                --global-dir $GlobalDir `
+                --global-bin-dir $BinDir `
+                --store-dir (Join-Path $InstallRoot "store") `
+                $NpmPackage
+              if ($LASTEXITCODE -ne 0) { throw "pnpm $PnpmVersion install failed" }
+
+              $Launcher = Join-Path $BinDir "devboxes.cmd"
+              $LauncherVersion = (& $Launcher --version).Trim()
+              if ($LASTEXITCODE -ne 0 -or $LauncherVersion -ne $env:VERSION) {
+                throw "installed version is '$LauncherVersion', expected '$env:VERSION'"
+              }
+              $LauncherHelp = (& $Launcher --help | Out-String).Trim()
+              if ($LASTEXITCODE -ne 0 -or -not $LauncherHelp) { throw "installed help failed" }
+              $GlobalRoot = (& corepack "pnpm@$PnpmVersion" root --global "--config.global-dir=$GlobalDir" "--config.global-bin-dir=$BinDir").Trim()
+              if ($LASTEXITCODE -ne 0 -or -not $GlobalRoot) { throw "pnpm $PnpmVersion root failed" }
+              $NativeBinary = Join-Path $GlobalRoot "@devboxes\cli-win32-x64\bin\devboxes.exe"
+              $NativeVersion = (& $NativeBinary --version).Trim()
+              if ($LASTEXITCODE -ne 0 -or $NativeVersion -ne $env:VERSION) {
+                throw "native version is '$NativeVersion', expected '$env:VERSION'"
+              }
+              $NativeHelp = (& $NativeBinary --help | Out-String).Trim()
+              if ($LASTEXITCODE -ne 0 -or -not $NativeHelp) { throw "native help failed" }
+              if ((Get-FileHash -Algorithm SHA256 $NativeBinary).Hash -ne (Get-FileHash -Algorithm SHA256 $InstallerBinary).Hash) {
+                throw "the npm native binary differs from the release binary"
+              }
+              $PublishedWrapper = Join-Path $GlobalRoot "devboxes\bin\devboxes.cjs"
+              if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($PublishedWrapper)) -ne [Convert]::ToBase64String([IO.File]::ReadAllBytes("bin/devboxes.cjs"))) {
+                throw "the npm wrapper differs from the checked-out tag"
+              }
+              Write-Host "accepted $env:TARGET with pnpm $PnpmVersion"
+            }
+            $env:PATH = $BasePath
+
+            & bun test bin/devboxes.test.ts
+            if ($LASTEXITCODE -ne 0) { throw "launcher contract test failed" }
+
+            $CompletePayload = Join-Path $env:RUNNER_TEMP "devboxes-complete-$([guid]::NewGuid().ToString('N'))"
+            [IO.File]::WriteAllText($CompletePayload, "complete native executable")
+            $script:CompleteHash = (Get-FileHash -Algorithm SHA256 $CompletePayload).Hash.ToLowerInvariant()
+            $script:FailureMode = ""
+            $script:FailureAsset = "devboxes-$env:VERSION-windows-x64.exe"
+
+            function Invoke-WebRequest {
+              [CmdletBinding()]
+              param(
+                [switch]$UseBasicParsing,
+                [Parameter(Mandatory = $true)][string]$Uri,
+                [Parameter(Mandatory = $true)][string]$OutFile
+              )
+              if ($Uri.EndsWith("/SHA256SUMS")) {
+                $Expected = if ($script:FailureMode -eq "wrong-checksum") { "0" * 64 } else { $script:CompleteHash }
+                [IO.File]::WriteAllText($OutFile, "$Expected  $script:FailureAsset`n")
+                return
+              }
+              if (-not $Uri.EndsWith("/$script:FailureAsset")) { throw "unexpected acceptance URL: $Uri" }
+              switch ($script:FailureMode) {
+                "wrong-checksum" { [IO.File]::WriteAllText($OutFile, "complete native executable") }
+                "truncated-download" { [IO.File]::WriteAllText($OutFile, "truncated") }
+                "interrupted-download" {
+                  [IO.File]::WriteAllText($OutFile, "partial")
+                  throw "download interrupted"
+                }
+                default { throw "unexpected transport call for $script:FailureMode" }
+              }
+            }
+
+            function Assert-ControlledFailure {
+              param(
+                [Parameter(Mandatory = $true)][string]$Name,
+                [Parameter(Mandatory = $true)][string]$ScriptPath,
+                [Parameter(Mandatory = $true)][string]$ExpectedMessage
+              )
+              $FailureRoot = Join-Path $env:RUNNER_TEMP "devboxes-$Name-$([guid]::NewGuid().ToString('N'))"
+              $FailureDestination = Join-Path $FailureRoot "devboxes.exe"
+              New-Item -ItemType Directory -Force -Path $FailureRoot | Out-Null
+              [IO.File]::WriteAllText($FailureDestination, "working installation")
+              $Before = [Convert]::ToBase64String([IO.File]::ReadAllBytes($FailureDestination))
+              $Failed = $false
+              try {
+                & $ScriptPath -Version $env:VERSION -InstallDir $FailureRoot
+              } catch {
+                $Failed = $true
+                if ($_.Exception.Message -notlike "*$ExpectedMessage*") { throw }
+                Write-Host "$Name rejected with $($_.Exception.Message)"
+              }
+              if (-not $Failed) { throw "$Name did not fail" }
+              $After = [Convert]::ToBase64String([IO.File]::ReadAllBytes($FailureDestination))
+              if ($After -ne $Before) { throw "$Name changed the working installation" }
+              $Staged = Get-ChildItem -Force -Path $FailureRoot | Where-Object { $_.Name -like ".devboxes-*" }
+              if ($Staged) { throw "$Name left staged files behind" }
+              Write-Host "$Name preserved the working installation and cleaned staged files"
+            }
+
+            foreach ($Mode in @("wrong-checksum", "truncated-download", "interrupted-download")) {
+              $script:FailureMode = $Mode
+              $ExpectedMessage = if ($Mode -eq "interrupted-download") { "download interrupted" } else { "Checksum verification failed" }
+              Assert-ControlledFailure -Name $Mode -ScriptPath $Installer -ExpectedMessage $ExpectedMessage
+            }
+
+            $UnsupportedInstaller = Join-Path $InstallerRoot "install-unsupported.ps1"
+            $InstallerSource = Get-Content $Installer -Raw
+            $TargetCheck = "[Environment]::Is64BitOperatingSystem"
+            if ($InstallerSource.IndexOf($TargetCheck) -lt 0 -or $InstallerSource.IndexOf($TargetCheck) -ne $InstallerSource.LastIndexOf($TargetCheck)) {
+              throw "the installer target check changed"
+            }
+            [IO.File]::WriteAllText($UnsupportedInstaller, $InstallerSource.Replace($TargetCheck, '$false'))
+            $script:FailureMode = "unsupported-target"
+            Assert-ControlledFailure -Name "unsupported-target" -ScriptPath $UnsupportedInstaller -ExpectedMessage "Windows 32-bit binary"
+          } finally {
+            Stop-Transcript
+          }
+
+      - name: Upload receipt
+        if: ${{ always() && steps.version.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: devboxes-acceptance-${{ inputs.version }}-${{ matrix.target }}
+          path: ${{ runner.temp }}/devboxes-acceptance-${{ inputs.version }}-${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 90
