@@ -11,6 +11,16 @@ const { nativePackageByTarget } = require(join(import.meta.dir, "devboxes.cjs"))
   nativePackageByTarget: Record<string, string>;
 };
 const itOnPosix = process.platform === "win32" ? it.skip : it;
+const nativeTermination =
+  process.platform === "win32"
+    ? {
+        program: "setTimeout(() => process.exit(44), 10);",
+        result: { code: 44, signal: null },
+      }
+    : {
+        program: 'setTimeout(() => process.kill(process.pid, "SIGHUP"), 10);',
+        result: { code: null, signal: "SIGHUP" },
+      };
 
 const createInstalledLauncher = async (
   nativeProgram: string,
@@ -40,8 +50,28 @@ const createInstalledLauncher = async (
     join(nativeRoot, "package.json"),
     `${JSON.stringify({ name: nativePackage, version: nativeVersion })}\n`,
   );
-  await writeFile(nativeBinary, `#!/usr/bin/env node\n${nativeProgram}\n`);
-  await chmod(nativeBinary, 0o755);
+  if (process.platform === "win32") {
+    const nativeSource = join(nativeRoot, "bin", "devboxes.ts");
+    await writeFile(nativeSource, nativeProgram);
+    const compiler = Bun.spawn(
+      [
+        process.execPath,
+        "build",
+        "--compile",
+        "--no-compile-autoload-dotenv",
+        "--no-compile-autoload-bunfig",
+        "--target=bun-windows-x64",
+        "--outfile",
+        nativeBinary,
+        nativeSource,
+      ],
+      { stdin: "ignore", stdout: "inherit", stderr: "inherit" },
+    );
+    if ((await compiler.exited) !== 0) throw new Error("Failed to compile the native fixture.");
+  } else {
+    await writeFile(nativeBinary, `#!/usr/bin/env node\n${nativeProgram}\n`);
+    await chmod(nativeBinary, 0o755);
+  }
 
   return launcher;
 };
@@ -97,7 +127,7 @@ process.stdin.on("end", () => {
     expect(stderr).toBe("native stderr");
   });
 
-  it("forwards a targeted noninteractive Ctrl-C to the native command", async () => {
+  itOnPosix("forwards a targeted noninteractive Ctrl-C to the native command", async () => {
     const launcher = await createInstalledLauncher(`
 process.on("SIGINT", () => {
   process.stdout.write("forwarded");
@@ -185,7 +215,7 @@ setInterval(() => {}, 1_000);
     expect(output).not.toContain("signals:2");
   });
 
-  it("forwards a targeted SIGTERM from an interactive launcher", async () => {
+  itOnPosix("forwards a targeted SIGTERM from an interactive launcher", async () => {
     const launcher = await createInstalledLauncher(`
 process.on("SIGTERM", () => {
   process.stdout.write("forwarded\\n");
@@ -214,13 +244,11 @@ setTimeout(() => process.exit(97), 500);
     expect(output).toContain("forwarded");
   });
 
-  it("preserves a signal exit from the native command", async () => {
-    const launcher = await createInstalledLauncher(`
-setTimeout(() => process.kill(process.pid, "SIGHUP"), 10);
-`);
+  it("preserves native termination", async () => {
+    const launcher = await createInstalledLauncher(nativeTermination.program);
     const child = spawn("node", [launcher], { stdio: "ignore" });
 
-    await expect(waitForExit(child)).resolves.toEqual({ code: null, signal: "SIGHUP" });
+    await expect(waitForExit(child)).resolves.toEqual(nativeTermination.result);
   });
 
   it("rejects a native package from a different Devboxes release", async () => {
