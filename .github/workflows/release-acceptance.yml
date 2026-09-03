@@ -58,6 +58,11 @@ jobs:
             printf 'runner_arch=%s\n' "$RUNNER_ARCH"
           } > "$receipt_dir/receipt.txt"
 
+      - name: Preserve tagged source bytes on Windows
+        if: ${{ matrix.target == 'windows-x64' }}
+        shell: pwsh
+        run: git config --global core.autocrlf false
+
       - name: Check out published source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -143,11 +148,12 @@ jobs:
                   --config.global-dir="$install_root/global" \
                   --config.global-bin-dir="$install_root/bin"
             )"
-            native_binary="$global_root/@devboxes/cli-$TARGET/bin/devboxes.exe"
+            published_wrapper="$(node -p 'require("node:fs").realpathSync(process.argv[1])' "$global_root/devboxes/bin/devboxes.cjs")"
+            native_binary="$(node -p 'require("node:fs").realpathSync(require("node:module").createRequire(process.argv[1]).resolve(process.argv[2]))' "$published_wrapper" "@devboxes/cli-$TARGET/bin/devboxes.exe")"
             test "$("$native_binary" --version)" = "$VERSION"
             test -n "$("$native_binary" --help)"
             cmp "$native_binary" "$installer_bin"
-            cmp "$global_root/devboxes/bin/devboxes.cjs" bin/devboxes.cjs
+            cmp "$published_wrapper" bin/devboxes.cjs
             printf 'accepted %s with pnpm %s\n' "$TARGET" "$pnpm_version"
           done
 
@@ -239,7 +245,10 @@ jobs:
               if ($LASTEXITCODE -ne 0 -or -not $LauncherHelp) { throw "installed help failed" }
               $GlobalRoot = (& corepack "pnpm@$PnpmVersion" root --global "--config.global-dir=$GlobalDir" "--config.global-bin-dir=$BinDir").Trim()
               if ($LASTEXITCODE -ne 0 -or -not $GlobalRoot) { throw "pnpm $PnpmVersion root failed" }
-              $NativeBinary = Join-Path $GlobalRoot "@devboxes\cli-win32-x64\bin\devboxes.exe"
+              $PublishedWrapper = (& node -p 'require("node:fs").realpathSync(process.argv[1])' (Join-Path $GlobalRoot "devboxes\bin\devboxes.cjs")).Trim()
+              if ($LASTEXITCODE -ne 0 -or -not $PublishedWrapper) { throw "pnpm $PnpmVersion wrapper resolution failed" }
+              $NativeBinary = (& node -p 'require("node:fs").realpathSync(require("node:module").createRequire(process.argv[1]).resolve(process.argv[2]))' $PublishedWrapper "@devboxes/cli-win32-x64/bin/devboxes.exe").Trim()
+              if ($LASTEXITCODE -ne 0 -or -not $NativeBinary) { throw "pnpm $PnpmVersion native binary resolution failed" }
               $NativeVersion = (& $NativeBinary --version).Trim()
               if ($LASTEXITCODE -ne 0 -or $NativeVersion -ne $env:VERSION) {
                 throw "native version is '$NativeVersion', expected '$env:VERSION'"
@@ -249,7 +258,6 @@ jobs:
               if ((Get-FileHash -Algorithm SHA256 $NativeBinary).Hash -ne (Get-FileHash -Algorithm SHA256 $InstallerBinary).Hash) {
                 throw "the npm native binary differs from the release binary"
               }
-              $PublishedWrapper = Join-Path $GlobalRoot "devboxes\bin\devboxes.cjs"
               if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($PublishedWrapper)) -ne [Convert]::ToBase64String([IO.File]::ReadAllBytes("bin/devboxes.cjs"))) {
                 throw "the npm wrapper differs from the checked-out tag"
               }
