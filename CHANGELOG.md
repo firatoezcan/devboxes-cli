@@ -1,5 +1,11 @@
 # devboxes
 
+## 0.3.4
+
+### Patch Changes
+
+- Validate the Windows launcher with a native executable before publication.
+
 ## 0.3.3
 
 ### Patch Changes
