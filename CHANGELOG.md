@@ -1,5 +1,11 @@
 # devboxes
 
+## 0.3.5
+
+### Patch Changes
+
+- Retry transient Windows sharing violations during installer replacement.
+
 ## 0.3.4
 
 ### Patch Changes
