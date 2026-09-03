@@ -280,9 +280,11 @@ jobs:
 
             $CompletePayload = Join-Path $env:RUNNER_TEMP "devboxes-complete-$([guid]::NewGuid().ToString('N'))"
             [IO.File]::WriteAllText($CompletePayload, "complete native executable")
-            $script:CompleteHash = (Get-FileHash -Algorithm SHA256 $CompletePayload).Hash.ToLowerInvariant()
-            $script:FailureMode = ""
-            $script:FailureAsset = "devboxes-$env:VERSION-windows-x64.exe"
+            $global:DevboxesAcceptanceFailureState = [pscustomobject]@{
+              CompleteHash = (Get-FileHash -Algorithm SHA256 $CompletePayload).Hash.ToLowerInvariant()
+              Mode = $null
+              Asset = "devboxes-$env:VERSION-windows-x64.exe"
+            }
 
             function Invoke-WebRequest {
               [CmdletBinding()]
@@ -291,20 +293,21 @@ jobs:
                 [Parameter(Mandatory = $true)][string]$Uri,
                 [Parameter(Mandatory = $true)][string]$OutFile
               )
+              $FailureState = $global:DevboxesAcceptanceFailureState
               if ($Uri.EndsWith("/SHA256SUMS")) {
-                $Expected = if ($script:FailureMode -eq "wrong-checksum") { "0" * 64 } else { $script:CompleteHash }
-                [IO.File]::WriteAllText($OutFile, "$Expected  $script:FailureAsset`n")
+                $Expected = if ($FailureState.Mode -eq "wrong-checksum") { "0" * 64 } else { $FailureState.CompleteHash }
+                [IO.File]::WriteAllText($OutFile, "$Expected  $($FailureState.Asset)`n")
                 return
               }
-              if (-not $Uri.EndsWith("/$script:FailureAsset")) { throw "unexpected acceptance URL: $Uri" }
-              switch ($script:FailureMode) {
+              if (-not $Uri.EndsWith("/$($FailureState.Asset)")) { throw "unexpected acceptance URL: $Uri" }
+              switch ($FailureState.Mode) {
                 "wrong-checksum" { [IO.File]::WriteAllText($OutFile, "complete native executable") }
                 "truncated-download" { [IO.File]::WriteAllText($OutFile, "truncated") }
                 "interrupted-download" {
                   [IO.File]::WriteAllText($OutFile, "partial")
                   throw "download interrupted"
                 }
-                default { throw "unexpected transport call for $script:FailureMode" }
+                default { throw "unexpected transport call for $($FailureState.Mode)" }
               }
             }
 
@@ -312,6 +315,7 @@ jobs:
               param(
                 [Parameter(Mandatory = $true)][string]$Name,
                 [Parameter(Mandatory = $true)][string]$ScriptPath,
+                [Parameter(Mandatory = $true)][string]$FailureMode,
                 [Parameter(Mandatory = $true)][string]$ExpectedMessage
               )
               $FailureRoot = Join-Path $env:RUNNER_TEMP "devboxes-$Name-$([guid]::NewGuid().ToString('N'))"
@@ -321,6 +325,7 @@ jobs:
               $Before = [Convert]::ToBase64String([IO.File]::ReadAllBytes($FailureDestination))
               $Failed = $false
               try {
+                $global:DevboxesAcceptanceFailureState.Mode = $FailureMode
                 & $ScriptPath -Version $env:VERSION -InstallDir $FailureRoot
               } catch {
                 $Failed = $true
@@ -336,9 +341,8 @@ jobs:
             }
 
             foreach ($Mode in @("wrong-checksum", "truncated-download", "interrupted-download")) {
-              $script:FailureMode = $Mode
               $ExpectedMessage = if ($Mode -eq "interrupted-download") { "download interrupted" } else { "Checksum verification failed" }
-              Assert-ControlledFailure -Name $Mode -ScriptPath $Installer -ExpectedMessage $ExpectedMessage
+              Assert-ControlledFailure -Name $Mode -ScriptPath $Installer -FailureMode $Mode -ExpectedMessage $ExpectedMessage
             }
 
             $UnsupportedInstaller = Join-Path $InstallerRoot "install-unsupported.ps1"
@@ -348,9 +352,9 @@ jobs:
               throw "the installer target check changed"
             }
             [IO.File]::WriteAllText($UnsupportedInstaller, $InstallerSource.Replace($TargetCheck, '$false'))
-            $script:FailureMode = "unsupported-target"
-            Assert-ControlledFailure -Name "unsupported-target" -ScriptPath $UnsupportedInstaller -ExpectedMessage "Windows 32-bit binary"
+            Assert-ControlledFailure -Name "unsupported-target" -ScriptPath $UnsupportedInstaller -FailureMode "unsupported-target" -ExpectedMessage "Windows 32-bit binary"
           } finally {
+            Remove-Variable -Scope Global -Name DevboxesAcceptanceFailureState -ErrorAction SilentlyContinue
             Stop-Transcript
           }
 
