@@ -6,6 +6,14 @@ import { join } from "node:path";
 import type { OpencodeLaunchSpec } from "./launch-spec";
 
 export const containerHome = "/home/workspace";
+export const containerDaemonUid = 0;
+export const containerAgentUid = 1001;
+export const containerSharedGid = 1000;
+export const containerDaemonPrivateDir = "/run/devboxes/daemon";
+export const containerDaemonExecutableDir = "/run/devboxes/exec";
+export const containerDaemonNodeModulesDir = `${containerDaemonExecutableDir}/node_modules`;
+export const containerDaemonDataDir = "/var/lib/devboxes";
+export const containerOpencodeDatabasePath = `${containerDaemonDataDir}/opencode.sqlite`;
 export const containerSecretsDir = "/run/devboxes/secrets";
 export const containerBackendTokenFile = `${containerSecretsDir}/backend-token`;
 export const containerOpencodeConfigJsonFile = `${containerSecretsDir}/opencode-config.json`;
@@ -116,7 +124,7 @@ export const hostOpencodeConfigJsonBase64 = (opencodeConfigDir?: string) => {
     );
     return Buffer.from(readFileSync(opencodeConfigPath, "utf8")).toString("base64");
   } catch (error) {
-    if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") {
+    if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") {
       throw error;
     }
     return undefined;

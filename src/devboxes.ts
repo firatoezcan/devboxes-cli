@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { chmod, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -7,7 +8,7 @@ import { log, note, spinner } from "@clack/prompts";
 import { treaty } from "@elysiajs/eden";
 import { createAuthClient } from "better-auth/client";
 import { deviceAuthorizationClient } from "better-auth/client/plugins";
-import { Command } from "commander";
+import { Command, InvalidArgumentError } from "commander";
 import open from "open";
 import Type, { type Static } from "typebox";
 import Value from "typebox/value";
@@ -32,6 +33,10 @@ export type DevboxesCliOptions = {
 export type DevboxesConfig = {
   apiBaseUrl: string;
   authBaseUrl: string;
+  telemetry?: {
+    dsn: string;
+    environment: string;
+  };
   organizationId?: string;
   sessionToken?: string;
   machineId?: string;
@@ -45,11 +50,19 @@ export type DevboxesConfig = {
   }>;
 };
 
+type ConfigJsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | ConfigJsonValue[]
+  | { [key: string]: ConfigJsonValue };
+
 export type DevboxesContext = {
   config: DevboxesConfig;
   configPath: string;
   // Unknown config.json keys from a newer binary, preserved on write.
-  configExtras?: Record<string, unknown>;
+  configExtras?: Record<string, ConfigJsonValue>;
 };
 
 const LocalCredentialReferenceSchema = Type.Object(
@@ -65,6 +78,15 @@ const LocalCredentialReferenceSchema = Type.Object(
 const ConfigFileSchema = Type.Object({
   apiBaseUrl: Type.Optional(Type.String({ minLength: 1 })),
   authBaseUrl: Type.Optional(Type.String({ minLength: 1 })),
+  telemetry: Type.Optional(
+    Type.Object(
+      {
+        dsn: Type.String(),
+        environment: Type.String(),
+      },
+      { additionalProperties: false },
+    ),
+  ),
   organizationId: Type.Optional(Type.String({ minLength: 1 })),
   sessionToken: Type.Optional(Type.String({ minLength: 1 })),
   machineId: Type.Optional(Type.String({ format: "uuid" })),
@@ -72,6 +94,7 @@ const ConfigFileSchema = Type.Object({
   apiKey: Type.Optional(Type.String({ minLength: 1 })),
   opencodeProviderCredentials: Type.Optional(Type.Array(LocalCredentialReferenceSchema)),
 });
+const AgentSessionIdSchema = Type.String({ format: "uuid" });
 
 type ConfigFile = Static<typeof ConfigFileSchema>;
 
@@ -102,39 +125,36 @@ export const platformDataHome = () => {
 
 const defaultConfigPath = () => join(platformConfigHome(), "devboxes", "config.json");
 
-export const writeConfig = async (context: DevboxesContext) => {
-  // The config carries both the terminal session and runner API key: atomic
-  // fsync'd tmp+rename, 0600.
-  // Known fields win over preserved unknown keys from a newer binary.
+// The config can carry the terminal session and runner API key, so every write
+// uses the same atomic fsync'd tmp+rename boundary and 0600 file mode.
+const writeConfigFile = async (configPath: string, config: ConfigFile) => {
   await writeSecretFile({
-    path: context.configPath,
-    contents: `${JSON.stringify({ ...context.configExtras, ...context.config }, null, 2)}\n`,
+    path: configPath,
+    contents: `${JSON.stringify(config, null, 2)}\n`,
     tmpPrefix: ".config.",
   });
-  if (context.configPath === defaultConfigPath()) {
-    await chmod(dirname(context.configPath), 0o700);
+  if (configPath === defaultConfigPath()) {
+    await chmod(dirname(configPath), 0o700);
   }
 };
 
-export const loadContext = async (options: DevboxesCliOptions): Promise<DevboxesContext> => {
-  const configPath = options.config ?? defaultConfigPath();
+const readConfigFile = async (configPath: string, customConfigPath: boolean) => {
   let fileConfig: ConfigFile = {};
   let rawConfigText: string | null = null;
   try {
     rawConfigText = await readFile(configPath, "utf8");
   } catch (error) {
-    const missing =
-      error && typeof error === "object" && "code" in error && error.code === "ENOENT";
+    const missing = error instanceof Error && "code" in error && error.code === "ENOENT";
     if (!missing) throw error;
   }
   if (rawConfigText !== null) {
-    if (!options.config) await chmod(dirname(configPath), 0o700);
-    await chmod(configPath, 0o600);
+    if (!customConfigPath) {
+      await chmod(dirname(configPath), 0o700);
+      await chmod(configPath, 0o600);
+    }
     try {
       fileConfig = Value.Parse(ConfigFileSchema, JSON.parse(rawConfigText));
     } catch (error) {
-      // A raw TypeBox/JSON error prints as little as the word "Parse": name
-      // the file and the recovery at the boundary instead.
       throw new Error(
         `Devboxes CLI config at ${configPath} is invalid: ${
           error instanceof Error ? error.message : String(error)
@@ -142,6 +162,31 @@ export const loadContext = async (options: DevboxesCliOptions): Promise<Devboxes
       );
     }
   }
+  return fileConfig;
+};
+
+export const writeConfig = async (context: DevboxesContext) =>
+  writeConfigFile(context.configPath, { ...context.configExtras, ...context.config });
+
+export const persistTelemetrySetting = async (
+  options: Pick<DevboxesCliOptions, "config">,
+  telemetry: DevboxesConfig["telemetry"],
+) => {
+  const configPath = options.config ?? defaultConfigPath();
+  const fileConfig = await readConfigFile(configPath, options.config !== undefined);
+  if (telemetry) {
+    fileConfig.telemetry = telemetry;
+    await writeConfigFile(configPath, fileConfig);
+  } else if (fileConfig.telemetry) {
+    delete fileConfig.telemetry;
+    await writeConfigFile(configPath, fileConfig);
+  }
+  return configPath;
+};
+
+export const loadContext = async (options: DevboxesCliOptions): Promise<DevboxesContext> => {
+  const configPath = options.config ?? defaultConfigPath();
+  const fileConfig = await readConfigFile(configPath, options.config !== undefined);
   // Unknown keys written by a newer CLI round-trip through writeConfig.
   const knownConfigKeys = new Set(Object.keys(ConfigFileSchema.properties));
   const configExtras = Object.fromEntries(
@@ -228,6 +273,7 @@ export const loadContext = async (options: DevboxesCliOptions): Promise<Devboxes
     config: {
       apiBaseUrl,
       authBaseUrl,
+      telemetry: fileConfig.telemetry,
       organizationId:
         options.organization ?? process.env.DEVBOX_ORGANIZATION_ID ?? fileConfig.organizationId,
       sessionToken: process.env.DEVBOX_CLI_SESSION_TOKEN ?? fileConfig.sessionToken,
@@ -257,6 +303,15 @@ export class ApiRequestError extends Error {
   }
 }
 
+const ApiErrorStatusSchema = Type.Number();
+const ApiErrorValueSchema = Type.Object(
+  {
+    code: Type.Optional(Type.String()),
+    error: Type.Optional(Type.String()),
+  },
+  { additionalProperties: true },
+);
+
 // Translates an Eden treaty error into one readable line. The raw response
 // body is never serialized into the message — a validation error echoes the
 // request body back, and dispatch bodies carry task text that must stay out
@@ -266,14 +321,10 @@ export const apiRequestError = (
   error: { status: unknown; value: unknown },
   reauthenticateWith: "login" | "connect" = "login",
 ) => {
-  const value = error.value as { code?: unknown; error?: unknown } | null;
-  const code =
-    value && typeof value === "object" && typeof value.code === "string" ? value.code : null;
-  const detail =
-    value && typeof value === "object" && typeof value.error === "string"
-      ? value.error
-      : "The API answered without an error description.";
-  const status = typeof error.status === "number" ? error.status : 0;
+  const value = Value.Check(ApiErrorValueSchema, error.value) ? error.value : null;
+  const code = value?.code ?? null;
+  const detail = value?.error ?? "The API answered without an error description.";
+  const status = Value.Check(ApiErrorStatusSchema, error.status) ? error.status : 0;
   const hint =
     status === 401 ? ` Run \`${cliCommandName} ${reauthenticateWith}\` and try again.` : "";
   return new ApiRequestError(
@@ -438,12 +489,12 @@ export const parseGitHubIssueReference = (task: string) => {
 // scheme-default ports, ".git", and slashes stripped. Project inference compares
 // these keys with exact string equality only — never fuzzy — so a remote that
 // does not normalize to exactly one project repository selects nothing.
-const schemeDefaultPorts: Record<string, string> = {
-  "http:": "80",
-  "https:": "443",
-  "ssh:": "22",
-  "git:": "9418",
-};
+const schemeDefaultPorts = new Map([
+  ["http:", "80"],
+  ["https:", "443"],
+  ["ssh:", "22"],
+  ["git:", "9418"],
+]);
 
 export const normalizeGitRemoteUrl = (remote: string) => {
   const trimmed = remote.trim();
@@ -463,7 +514,8 @@ export const normalizeGitRemoteUrl = (remote: string) => {
     }
     // Local paths and file:// remotes have no host to match a hosted project.
     if (!url.hostname) return null;
-    const port = url.port && url.port !== schemeDefaultPorts[url.protocol] ? `:${url.port}` : "";
+    const port =
+      url.port && url.port !== schemeDefaultPorts.get(url.protocol) ? `:${url.port}` : "";
     host = `${url.hostname}${port}`;
     path = url.pathname;
   }
@@ -503,7 +555,7 @@ export type DispatchInput = {
   model?: string;
   branch?: string;
   title?: string;
-  blueprint?: string;
+  blueprintVersionId?: string;
   // Directory whose git origin remote may infer the project when neither
   // --project, --repo, nor an issue reference selects one. Defaults to the
   // process working directory.
@@ -586,7 +638,9 @@ export const dispatchDevboxesTask = async (context: DevboxesContext, input: Disp
   // The dashboard's dispatch dialog defaults the base branch to main; keep
   // the CLI on the same product default.
   const branch = input.branch?.trim() || "main";
-  const model = input.model?.trim();
+  const model = input.model?.trim() || undefined;
+  const title = input.title?.trim() || undefined;
+  const blueprintVersionId = input.blueprintVersionId?.trim() || undefined;
   // A bare issue reference targets the default "Implement GitHub Issue"
   // blueprint, whose prompt parses ISSUE_URL and DESTINATION_BRANCH from the
   // final lines of the task input.
@@ -598,9 +652,9 @@ export const dispatchDevboxesTask = async (context: DevboxesContext, input: Disp
     projectId: project.id,
     task: taskPrompt,
     branch,
-    ...(model ? { model } : {}),
-    ...(input.title?.trim() ? { title: input.title.trim() } : {}),
-    ...(input.blueprint?.trim() ? { blueprintId: input.blueprint.trim() } : {}),
+    model,
+    title,
+    blueprintVersionId,
   });
   if (dispatched.error) throw apiRequestError("Dispatch", dispatched.error);
   if (!dispatched.data) throw new Error("Dispatch returned no session.");
@@ -617,6 +671,33 @@ export const dispatchDevboxesTask = async (context: DevboxesContext, input: Disp
   };
 };
 
+export type ContinueInput = {
+  agentSessionId: string;
+  task: string;
+};
+
+export const continueDevboxesSession = async (context: DevboxesContext, input: ContinueInput) => {
+  const { backend, organizationId } = connectedBackend(context);
+  if (!input.task.trim()) throw new Error("Continuation requires task text.");
+
+  const continuation = await backend.api
+    .org({ organizationId })
+    ["agent-sessions"]({ agentSessionId: input.agentSessionId })
+    .continuations.post({ task: input.task, clientMessageId: randomUUID() });
+  if (continuation.error) throw apiRequestError("Session continuation", continuation.error);
+  const session = continuation.data;
+  if (!session) throw new Error("Session continuation returned no Session.");
+  if (session.id !== input.agentSessionId) {
+    throw new Error("Session continuation returned a different Session.");
+  }
+
+  return {
+    agentSessionId: session.id,
+    runId: session.continuationRunId,
+    status: session.currentTask.status,
+  };
+};
+
 export const readDevboxesSession = async (context: DevboxesContext, agentSessionId: string) => {
   const { backend, organizationId } = connectedBackend(context);
   const sessionResponse = await backend.api
@@ -626,124 +707,61 @@ export const readDevboxesSession = async (context: DevboxesContext, agentSession
   if (sessionResponse.error) throw apiRequestError("Agent session lookup", sessionResponse.error);
   const session = sessionResponse.data;
   if (!session) throw new Error("Agent session lookup returned no session.");
+  const currentRun = session.runs.at(-1);
+  if (!currentRun) throw new Error("Session lookup returned no Run.");
+  const currentTask = session.currentTask;
+  if (currentTask.runId !== currentRun.id) {
+    throw new Error("Session lookup returned a task for a different Run.");
+  }
 
-  // The run row is the product truth for outcome and PR link. A missing run
-  // (404) degrades to session-status truth instead of failing status/result —
-  // defensive only: run deletion cascades to the dispatch task, so in steady
-  // state the session lookup above 404s first and this branch covers just the
-  // in-between window (and a run hidden by soft deletion).
+  // The Run is the product truth for status, outcome, and usage. A
+  // session without its canonical Run is an invalid read, not another public
+  // status shape.
   const runResponse = await backend.api
     .org({ organizationId })
-    .runs({ runId: session.runId })
+    .runs({ runId: currentRun.id })
     .get();
-  if (runResponse.error && runResponse.error.status !== 404) {
-    throw apiRequestError("Run lookup", runResponse.error);
-  }
-  const run = runResponse.data ?? null;
+  if (runResponse.error) throw apiRequestError("Run lookup", runResponse.error);
+  const run = runResponse.data;
+  if (!run) throw new Error("Run lookup returned no Run.");
 
-  return { session, run };
+  return { session, currentTask, run };
 };
 
 const terminalRunStatuses = new Set(["succeeded", "failed", "cancelled"]);
-const terminalSessionStatuses = new Set(["completed", "stopped", "failed", "cancelled"]);
 
-export const sessionReachedTerminalState = (input: {
-  session: { status: string };
-  run: { status: string } | null;
-}) =>
-  input.run
-    ? terminalRunStatuses.has(input.run.status)
-    : terminalSessionStatuses.has(input.session.status);
-
-// A stalled read must not hang `result` forever; the read leg gets the same
-// ceiling as the login flow's browser-approval poll.
-const finalOutputReadTimeoutMs = 5 * 60_000;
-
-// Reads the session's projected message history from the v2 read API and
-// extracts the text of the latest assistant message as the session's final
-// output. A session that never reached opencode has no output yet.
-const readFinalAssistantMessage = async (
-  context: DevboxesContext,
-  agentSessionId: string,
-  opencodeSessionId: string | null,
-) => {
-  if (!opencodeSessionId) return null;
-  const { backend, organizationId } = connectedBackend(context);
-  const readDeadline = AbortSignal.timeout(finalOutputReadTimeoutMs);
-  const response = await backend.api
-    .org({ organizationId })
-    ["agent-sessions"]({ agentSessionId })
-    .opencode.v2.session({ sessionID: opencodeSessionId })
-    .message.get({ fetch: { signal: readDeadline } })
-    .catch((error: unknown) => {
-      // AbortSignal.timeout surfaces as an opaque TimeoutError; name the deadline.
-      if (readDeadline.aborted) {
-        throw new Error(
-          `Opencode message read timed out after ${finalOutputReadTimeoutMs / 60_000} minutes without a response.`,
-        );
-      }
-      throw error;
-    });
-  if (response.error) throw apiRequestError("Opencode message read", response.error);
-
-  // Messages arrive ascending; the last assistant message is the final turn.
-  const messages = response.data ?? [];
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (!message || message.info.role !== "assistant") continue;
-    const texts: string[] = [];
-    for (const part of message.parts) {
-      if (part.type !== "text" || part.synthetic || part.ignored) continue;
-      texts.push(part.text);
-    }
-    return texts.join("\n\n").trim() || null;
-  }
-  return null;
-};
+export const sessionReachedTerminalState = (input: { run: { status: string } }) =>
+  terminalRunStatuses.has(input.run.status);
 
 export const readDevboxesSessionResult = async (
   context: DevboxesContext,
   agentSessionId: string,
 ) => {
-  const { session, run } = await readDevboxesSession(context, agentSessionId);
-  let finalOutput: string | null = null;
-  let finalOutputError: string | null = null;
-  try {
-    finalOutput = await readFinalAssistantMessage(
-      context,
-      agentSessionId,
-      session.opencodeSessionId,
-    );
-  } catch (error) {
-    // The outcome and PR link stay useful even when event storage is
-    // unreachable; surface the gap instead of failing the whole result.
-    finalOutputError = error instanceof Error ? error.message : String(error);
-  }
+  const { session, currentTask, run } = await readDevboxesSession(context, agentSessionId);
   return {
     session,
+    currentTask,
     run,
-    terminal: sessionReachedTerminalState({ session, run }),
-    finalOutput,
-    finalOutputError,
+    terminal: sessionReachedTerminalState({ run }),
   };
 };
 
 const sessionStatusJson = (input: Awaited<ReturnType<typeof readDevboxesSession>>) => ({
   agentSessionId: input.session.id,
-  sessionStatus: input.session.status,
-  runId: input.session.runId,
-  runStatus: input.run?.status ?? null,
-  currentStep: input.run?.currentStep ?? null,
+  sessionStatus: input.currentTask.status,
+  runId: input.run.id,
+  runStatus: input.run.status,
+  currentStep: input.run.currentStep,
   terminal: sessionReachedTerminalState(input),
-  repository: input.session.repositoryFullName,
-  branch: input.run?.branch ?? input.session.baseBranch,
-  model: `${input.session.modelProviderId}/${input.session.modelId}`,
-  pullRequestUrl: input.run?.pullRequestUrl ?? null,
-  errorMessage: input.run?.errorMessage ?? input.session.errorMessage ?? null,
-  queuedAt: input.run?.queuedAt ?? null,
-  startedAt: input.run?.startedAt ?? null,
-  completedAt: input.run?.completedAt ?? null,
-  costUsd: input.run?.costUsd ?? null,
+  repository: input.currentTask.repositoryFullName,
+  branch: input.run.branch ?? input.currentTask.baseBranch,
+  model: `${input.currentTask.modelProviderId}/${input.currentTask.modelId}`,
+  outcome: input.run.outcome,
+  errorMessage: input.run.errorMessage ?? input.currentTask.errorMessage ?? null,
+  queuedAt: input.run.queuedAt,
+  startedAt: input.run.startedAt,
+  completedAt: input.run.completedAt,
+  usage: input.run.usage,
 });
 
 const printSessionStatus = (input: Awaited<ReturnType<typeof readDevboxesSession>>) => {
@@ -751,11 +769,17 @@ const printSessionStatus = (input: Awaited<ReturnType<typeof readDevboxesSession
   note(
     [
       `Session: ${status.agentSessionId} (${status.sessionStatus})`,
-      `Run: ${status.runId} (${status.runStatus ?? "unknown"})`,
+      `Run: ${status.runId} (${status.runStatus})`,
       ...(status.currentStep ? [`Step: ${status.currentStep}`] : []),
       `Repository: ${status.repository} → ${status.branch}`,
       `Model: ${status.model}`,
-      ...(status.pullRequestUrl ? [`Pull request: ${status.pullRequestUrl}`] : []),
+      ...(status.outcome?.summary ? [`Outcome: ${status.outcome.summary.text}`] : []),
+      ...(status.outcome?.externalResults.flatMap((result) =>
+        result.canonicalUrl ? [`${result.type}: ${result.canonicalUrl}`] : [],
+      ) ?? []),
+      ...(status.outcome?.publicationFailures.map(
+        (failure) => `${failure.type} publication failed: ${failure.error}`,
+      ) ?? []),
       ...(status.errorMessage ? [`Error: ${status.errorMessage}`] : []),
     ].join("\n"),
     "Devboxes session",
@@ -765,6 +789,12 @@ const printSessionStatus = (input: Awaited<ReturnType<typeof readDevboxesSession
 export const addAccountCommands = (program: Command) => {
   const cliOptions = (command: Command): DevboxesCliOptions =>
     command.optsWithGlobals<DevboxesCliOptions>();
+  const agentSessionIdArgument = (value: string) => {
+    if (!Value.Check(AgentSessionIdSchema, value)) {
+      throw new InvalidArgumentError("must be a UUID");
+    }
+    return value;
+  };
 
   const loginCommand = program.command("login");
   loginCommand
@@ -789,7 +819,10 @@ export const addAccountCommands = (program: Command) => {
     .option("--model <provider/model>", "model id (uses the server default when omitted)")
     .option("--branch <branch>", "base branch and PR destination", "main")
     .option("--title <title>", "run title")
-    .option("--blueprint <id>", "blueprint id (defaults to the Implement GitHub Issue blueprint)")
+    .option(
+      "--blueprint-version <id>",
+      "Blueprint Version id (defaults to the current Implement GitHub Issue version)",
+    )
     .option("--json", "print the dispatch result as JSON on stdout", false)
     .action(async (taskWords: string[]) => {
       const options = dispatchCommand.opts<{
@@ -798,7 +831,7 @@ export const addAccountCommands = (program: Command) => {
         model?: string;
         branch: string;
         title?: string;
-        blueprint?: string;
+        blueprintVersion?: string;
         json: boolean;
       }>();
       const context = await loadContext(cliOptions(dispatchCommand));
@@ -809,7 +842,7 @@ export const addAccountCommands = (program: Command) => {
         model: options.model,
         branch: options.branch,
         title: options.title,
-        blueprint: options.blueprint,
+        blueprintVersionId: options.blueprintVersion,
       });
       if (options.json) {
         process.stdout.write(`${JSON.stringify(dispatched, null, 2)}\n`);
@@ -832,6 +865,31 @@ export const addAccountCommands = (program: Command) => {
       );
     });
 
+  const continueCommand = program.command("continue");
+  continueCommand
+    .description("continue an existing Devboxes Session with a fresh Run")
+    .argument("<agentSessionId>", "Session ID returned by dispatch", agentSessionIdArgument)
+    .argument("<task...>", "free-form task for the fresh Run")
+    .option("--json", "print the continuation result as JSON on stdout", false)
+    .action(async (agentSessionId: string, taskWords: string[]) => {
+      const options = continueCommand.opts<{ json: boolean }>();
+      const context = await loadContext(cliOptions(continueCommand));
+      const continuation = await continueDevboxesSession(context, {
+        agentSessionId,
+        task: taskWords.join(" "),
+      });
+      if (options.json) {
+        process.stdout.write(`${JSON.stringify(continuation, null, 2)}\n`);
+        return;
+      }
+      log.success(
+        `Continued Session ${continuation.agentSessionId} with Run ${continuation.runId} (${continuation.status}).`,
+      );
+      log.info(
+        `Follow it with \`${cliCommandName} status ${continuation.agentSessionId}\` and fetch the outcome with \`${cliCommandName} result ${continuation.agentSessionId}\`.`,
+      );
+    });
+
   const statusCommand = program.command("status");
   statusCommand
     .description("show the current status of a dispatched session")
@@ -850,7 +908,7 @@ export const addAccountCommands = (program: Command) => {
 
   const resultCommand = program.command("result");
   resultCommand
-    .description("show the final output and pull request of a finished session")
+    .description("show the outcome of a finished session")
     .argument("<agentSessionId>", "agent session id returned by dispatch")
     .option("--json", "print the machine-readable result on stdout", false)
     .action(async (agentSessionId: string) => {
@@ -859,25 +917,12 @@ export const addAccountCommands = (program: Command) => {
       const result = await readDevboxesSessionResult(context, agentSessionId);
       const status = sessionStatusJson(result);
       if (options.json) {
-        process.stdout.write(
-          `${JSON.stringify(
-            {
-              ...status,
-              finalOutput: result.finalOutput,
-              finalOutputError: result.finalOutputError,
-            },
-            null,
-            2,
-          )}\n`,
-        );
+        process.stdout.write(`${JSON.stringify(status, null, 2)}\n`);
       } else {
         printSessionStatus(result);
-        if (result.finalOutput) note(result.finalOutput, "Final output");
-        if (result.finalOutputError)
-          log.warn(`Final output unavailable: ${result.finalOutputError}`);
         if (!result.terminal) {
           log.warn(
-            `The session is still ${status.runStatus ?? status.sessionStatus}; poll \`${cliCommandName} status ${agentSessionId}\` until it finishes.`,
+            `The Run is still ${status.runStatus}; poll \`${cliCommandName} status ${agentSessionId}\` until it finishes.`,
           );
         }
       }
@@ -887,10 +932,10 @@ export const addAccountCommands = (program: Command) => {
 
   const mcpCommand = program.command("mcp");
   mcpCommand
-    .description("serve dispatch/status/result as MCP tools over stdio")
+    .description("serve dispatch/continue/status/result as MCP tools over stdio")
     .action(async () => {
       const context = await loadContext(cliOptions(mcpCommand));
-      // Deferred so dispatch/status/result never pay the MCP SDK import, and
+      // Deferred so account commands never pay the MCP SDK import, and
       // so devboxes.ts and mcp.ts avoid a static import cycle.
       const { runDevboxesMcpServer } = await import("./mcp");
       await runDevboxesMcpServer(context);

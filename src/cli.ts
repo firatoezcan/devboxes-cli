@@ -4,6 +4,7 @@ import { Command, Option } from "commander";
 
 import { addAccountCommands, cliVersion } from "./devboxes";
 import { addRunnerCommands } from "./runner/runner";
+import { addTelemetryCommands, captureCliTelemetryError } from "./telemetry";
 
 export const createDevboxesCommand = () => {
   const program = new Command()
@@ -18,6 +19,7 @@ export const createDevboxesCommand = () => {
 
   addAccountCommands(program);
   addRunnerCommands(program);
+  addTelemetryCommands(program);
   program.action(() => program.outputHelp());
   return program;
 };
@@ -33,7 +35,7 @@ if (import.meta.main) {
     const write = stream.write.bind(stream);
     stream.write = ((chunk: string | Uint8Array, ...rest: unknown[]) =>
       write(
-        typeof chunk === "string" ? Bun.stripANSI(chunk) : chunk,
+        chunk instanceof Uint8Array ? chunk : Bun.stripANSI(chunk),
         ...(rest as []),
       )) as typeof stream.write;
   }
@@ -41,6 +43,7 @@ if (import.meta.main) {
   try {
     await createDevboxesCommand().parseAsync(Bun.argv, { from: "node" });
   } catch (error) {
+    await captureCliTelemetryError(error);
     // User-facing failures end as one readable line, not a stack trace.
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(process.exitCode && process.exitCode !== 0 ? Number(process.exitCode) : 1);

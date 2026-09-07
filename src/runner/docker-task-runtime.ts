@@ -1,14 +1,26 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
+import { armor, Decrypter, Encrypter } from "age-encryption";
 import Docker from "dockerode";
+import Type, { type Static } from "typebox";
+import Value from "typebox/value";
 
 import { reconciliationLabels } from "../protocol/frozen";
 import {
+  validateOpencodeProviderAuth,
+  type OpencodeProviderAuthJson,
+} from "../protocol/provider-auth";
+import {
+  containerAgentUid,
   containerBackendTokenFile,
+  containerDaemonExecutableDir,
+  containerDaemonPrivateDir,
+  containerDaemonUid,
   containerOpencodeConfigJsonFile,
+  containerSharedGid,
   hostOpencodeConfigJsonBase64,
   taskContainerName,
   taskStateImage,
@@ -19,6 +31,7 @@ import {
   type OpencodeTaskLaunchInput,
   type OpencodeTaskStopInput,
 } from "../protocol/task-runtime";
+import { writeSecretFile } from "../secret-file";
 import { runnerRuntimeEnv } from "./runtime-env";
 
 type TaskSecretFiles = {
@@ -26,6 +39,16 @@ type TaskSecretFiles = {
   secretDir: string;
   opencodeConfigJsonFile?: string;
 };
+
+const FileSystemErrorSchema = Type.Object({ code: Type.String() }, { additionalProperties: true });
+
+const ProviderAuthSnapshotSchema = Type.Object(
+  {
+    providerId: Type.String(),
+    auth: Type.Object({ type: Type.String({ minLength: 1 }) }, { additionalProperties: true }),
+  },
+  { additionalProperties: true },
+);
 
 // Control-plane calls (inspect, create, start, stop, remove, list) complete
 // in milliseconds; a wedged dockerd must surface as an error instead of
@@ -47,14 +70,22 @@ const taskSecretRoot = () => {
   return defaultTaskSecretRoot;
 };
 
+const taskSecretDirectory = (organizationId: string, taskId: string) => {
+  const secretRoot = taskSecretRoot();
+  const secretDir = resolve(secretRoot, organizationId, taskId);
+  if (!secretDir.startsWith(`${secretRoot}${sep}`)) {
+    throw new Error("Opencode task secret path escaped the task secret root.");
+  }
+  return secretDir;
+};
+
 const prepareTaskSecretFiles = async (input: {
   organizationId: string;
   tokenScopeId: string;
   backendToken: string;
   opencodeConfigJsonBase64?: string;
 }): Promise<TaskSecretFiles> => {
-  const secretRoot = taskSecretRoot();
-  const secretDir = resolve(secretRoot, input.organizationId, input.tokenScopeId);
+  const secretDir = taskSecretDirectory(input.organizationId, input.tokenScopeId);
   // Owner-only directories, matching writeSecretFile: the default root lives
   // under the world-writable tmpdir, and 0755 intermediate dirs would let any
   // local user enumerate live organization and task ids.
@@ -86,11 +117,7 @@ const removeOpencodeTaskDockerSecrets = async (input: {
   organizationId: string;
   taskId: string;
 }) => {
-  const secretRoot = taskSecretRoot();
-  const taskSecretDir = resolve(secretRoot, input.organizationId, input.taskId);
-  if (!taskSecretDir.startsWith(`${secretRoot}${sep}`)) {
-    throw new Error("Opencode task secret path escaped the task secret root.");
-  }
+  const taskSecretDir = taskSecretDirectory(input.organizationId, input.taskId);
   await rm(taskSecretDir, {
     recursive: true,
     force: true,
@@ -101,7 +128,13 @@ const directoryEntries = async (path: string) => {
   try {
     return await readdir(path, { withFileTypes: true });
   } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+    let fileSystemError: Static<typeof FileSystemErrorSchema>;
+    try {
+      fileSystemError = Value.Parse(FileSystemErrorSchema, error);
+    } catch {
+      throw error;
+    }
+    if (fileSystemError.code === "ENOENT") {
       return [];
     }
     throw error;
@@ -119,6 +152,60 @@ const removeStateImage = async (docker: Docker, stateImage: string) => {
 
 export class DockerOpencodeTaskRuntime {
   constructor(private readonly options: { daemonApiBaseUrl: string }) {}
+
+  async persistProviderAuthSnapshot(input: {
+    organizationId: string;
+    taskId: string;
+    providerId: string;
+    providerAuth: OpencodeProviderAuthJson;
+    passphrase: string;
+  }) {
+    const auth = input.providerAuth[input.providerId];
+    if (!auth) {
+      throw new Error(`Claimed provider auth for ${input.providerId} is unavailable.`);
+    }
+    const validated = validateOpencodeProviderAuth(input.providerId, auth);
+    const encrypter = new Encrypter();
+    encrypter.setScryptWorkFactor(12);
+    encrypter.setPassphrase(input.passphrase);
+    const ciphertext = await encrypter.encrypt(
+      JSON.stringify({ providerId: input.providerId, auth: validated }),
+    );
+    await writeSecretFile({
+      path: join(taskSecretDirectory(input.organizationId, input.taskId), "provider-auth.age"),
+      contents: `${armor.encode(ciphertext)}\n`,
+      tmpPrefix: ".provider-auth.",
+    });
+  }
+
+  async readProviderAuthSnapshot(input: {
+    organizationId: string;
+    taskId: string;
+    providerId: string;
+    passphrase: string;
+  }): Promise<OpencodeProviderAuthJson> {
+    try {
+      const armored = await readFile(
+        join(taskSecretDirectory(input.organizationId, input.taskId), "provider-auth.age"),
+        "utf8",
+      );
+      const decrypter = new Decrypter();
+      decrypter.addPassphrase(input.passphrase);
+      const plaintext = await decrypter.decrypt(armor.decode(armored), "text");
+      const snapshot = Value.Parse(ProviderAuthSnapshotSchema, JSON.parse(plaintext));
+      if (snapshot.providerId !== input.providerId) {
+        throw new Error("Provider auth snapshot identity does not match the task claim.");
+      }
+      return {
+        [input.providerId]: validateOpencodeProviderAuth(input.providerId, snapshot.auth),
+      };
+    } catch (error) {
+      throw new Error(
+        `Claim-captured provider auth for ${input.providerId} is unavailable after runner restart.`,
+        { cause: error },
+      );
+    }
+  }
 
   // Surfaces every task container and per-task secret directory left on this host so
   // the runner can tear down the ones whose tasks already finished elsewhere.
@@ -246,25 +333,29 @@ export class DockerOpencodeTaskRuntime {
         });
       }
 
+      // The server-authored spec carries every product decision; this
+      // runtime overlays only the client-owned env keys whose values live
+      // on this machine (broker URL, docker-reachable API base, whether a
+      // host opencode.json exists).
+      const environment = {
+        ...input.launchSpec.env,
+        DEVBOX_BACKEND_BASE_URL: this.options.daemonApiBaseUrl,
+        DEVBOX_OPENCODE_PROVIDER_AUTH_URL: validatedProviderAuthUrl(input.providerAuthUrl),
+        OPENCODE_STARTUP_TIMEOUT_MS: "120000",
+        DEVBOX_OPENCODE_CONFIG_JSON_FILE: secretFiles.opencodeConfigJsonFile
+          ? containerOpencodeConfigJsonFile
+          : undefined,
+      } satisfies Record<string, string | undefined>;
+
       const created = await docker.createContainer({
         name,
         Image: image,
-        // The server-authored spec carries every product decision; this
-        // runtime overlays only the client-owned env keys whose values live
-        // on this machine (broker URL, docker-reachable API base, whether a
-        // host opencode.json exists).
-        Env: Object.entries({
-          ...input.launchSpec.env,
-          DEVBOX_BACKEND_BASE_URL: this.options.daemonApiBaseUrl,
-          DEVBOX_OPENCODE_PROVIDER_AUTH_URL: validatedProviderAuthUrl(input.providerAuthUrl),
-          // First engine boot after a cold runtime start exceeded 30s twice in prod E2E.
-          OPENCODE_READY_MS: "120000",
-          ...(secretFiles.opencodeConfigJsonFile
-            ? { DEVBOX_OPENCODE_CONFIG_JSON_FILE: containerOpencodeConfigJsonFile }
-            : {}),
-        }).map(([name, value]) => `${name}=${value}`),
+        Env: Object.entries(environment).flatMap(([name, value]) =>
+          value === undefined ? [] : [`${name}=${value}`],
+        ),
         WorkingDir: input.launchSpec.workingDir,
         Entrypoint: [input.launchSpec.entrypoint],
+        User: `${containerDaemonUid}:${containerSharedGid}`,
         Labels: {
           ...input.launchSpec.labels,
           // Reconciliation reads these back after restarts, so the reader
@@ -276,6 +367,9 @@ export class DockerOpencodeTaskRuntime {
         },
         HostConfig: {
           AutoRemove: false,
+          CapDrop: ["ALL"],
+          CapAdd: ["DAC_OVERRIDE", "SETGID", "SETUID"],
+          SecurityOpt: ["no-new-privileges"],
           Mounts: [
             {
               Type: "bind" as const,
@@ -298,15 +392,20 @@ export class DockerOpencodeTaskRuntime {
           // keys; tmpfs keeps them out of the writable layer that the
           // crash-recovery `docker commit` snapshots into an image. The
           // option string is docker mechanics and stays runtime-owned.
-          Tmpfs: Object.fromEntries(
-            input.launchSpec.memoryBackedPaths.map((path) => [
+          Tmpfs: Object.fromEntries([
+            [
+              containerDaemonPrivateDir,
+              `rw,noexec,nosuid,size=512m,mode=0700,uid=${containerAgentUid},gid=${containerSharedGid}`,
+            ],
+            [
+              containerDaemonExecutableDir,
+              `rw,nosuid,size=64m,mode=0700,uid=${containerAgentUid},gid=${containerSharedGid}`,
+            ],
+            ...input.launchSpec.memoryBackedPaths.map((path) => [
               path,
-              // opencode's working SQLite database lives under the memory-backed
-              // opencode data dir, so the size must fit a real session's DB and
-              // WAL, not just the small provider auth file.
-              "rw,noexec,nosuid,size=512m,mode=0700,uid=1000,gid=1000",
+              `rw,noexec,nosuid,size=512m,mode=0770,uid=${containerAgentUid},gid=${containerSharedGid}`,
             ]),
-          ),
+          ]),
           ExtraHosts: ["host.docker.internal:host-gateway"],
         },
       });
@@ -389,6 +488,21 @@ export class DockerOpencodeTaskRuntime {
         if ((error as { statusCode?: number }).statusCode === 404) return;
         throw error;
       });
+    const deletionDeadline = Date.now() + 10_000;
+    for (;;) {
+      const existing = await docker
+        .getContainer(container)
+        .inspect()
+        .catch((error) => {
+          if ((error as { statusCode?: number }).statusCode === 404) return null;
+          throw error;
+        });
+      if (!existing) break;
+      if (Date.now() >= deletionDeadline) {
+        throw new Error("Docker task container still exists after removal was requested.");
+      }
+      await Bun.sleep(100);
+    }
     await removeStateImage(docker, stateImage);
     await removeOpencodeTaskDockerSecrets({
       organizationId,

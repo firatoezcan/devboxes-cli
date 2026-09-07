@@ -1,5 +1,46 @@
 # devboxes
 
+## 0.3.5
+
+### Patch Changes
+
+- Retry transient Windows sharing violations during installer replacement.
+
+## 0.3.4
+
+### Patch Changes
+
+- Validate the Windows launcher with a native executable before publication.
+
+## 0.3.3
+
+### Patch Changes
+
+- Use configured Provider Accounts for shared OpenCode connections. Replace an
+  existing Windows installation with the verified download.
+
+## 0.3.2
+
+### Patch Changes
+
+- Install and verify the pinned Docker Compose release before validating the public CLI release.
+
+## 0.3.1
+
+### Patch Changes
+
+- Build the CLI release from a clean environment with the native tools required
+  for every supported npm package and binary.
+
+## 0.3.0
+
+### Minor Changes
+
+- 30295c4: Add opt-in CLI error telemetry with `devboxes telemetry enable` and `devboxes telemetry disable`.
+- 3134a97: Replace the removed `dispatch --blueprint` option with `dispatch --blueprint-version` so each dispatch selects an exact Blueprint Version.
+- a665094: Continue an existing Session with a fresh Run from the CLI or MCP, and load explicitly selected read-only config files without modifying them.
+- 1b98bc0: Return the stored structured Run outcome from `status` and `result` instead of reconstructing final output and pull-request details from Session events.
+
 ## 0.2.4
 
 ### Patch Changes

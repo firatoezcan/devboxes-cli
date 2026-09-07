@@ -28,11 +28,12 @@ import {
   listenerRegistrationDeviceClientId,
   listenerUpgradeRequiredCode,
 } from "../protocol/frozen";
+import { OpencodeLaunchSpecSchema, opencodeWorkspaceLaunchProtocol } from "../protocol/launch-spec";
 import {
-  opencodeExactProviderIdsLaunchProtocol,
-  OpencodeLaunchSpecSchema,
-} from "../protocol/launch-spec";
-import { normalizeOpencodeProviderId } from "../protocol/provider-auth";
+  normalizeOpencodeProviderId,
+  opencodeProviderAuthFingerprint,
+  type OpencodeProviderAuthJson,
+} from "../protocol/provider-auth";
 import { taskContainerName } from "../protocol/task-runtime";
 import {
   OpencodeConnectorDescriptorSchema,
@@ -80,11 +81,22 @@ type ActiveTask = {
   containerId: string | null;
   containerName: string | null;
   attemptCount: number;
+  providerAuth?: OpencodeProviderAuthJson;
+};
+
+type LocalProviderCredentialIdentity = {
+  providerId: string;
+  authType: "api" | "oauth" | null;
+  credentialFingerprint: string | null;
 };
 
 const OpencodeAuthFileSchema = Type.Record(
   Type.String({ minLength: 1 }),
   Type.Object({ type: Type.String({ minLength: 1 }) }, { additionalProperties: true }),
+);
+const OpencodeConnectorProviderSchema = Type.Object(
+  { providerId: Type.String({ minLength: 1 }) },
+  { additionalProperties: true },
 );
 
 // ChatGPT-subscription codex logins carry a literal null API key next to their
@@ -135,8 +147,8 @@ const registerMachine = async (
 ) => {
   const backend = bearerBackend(context.config.apiBaseUrl, credential);
   const result = await backend.api.internal["runner-machines"].register.post({
-    ...(organizationId ? { organizationId } : {}),
-    ...(context.config.machineId ? { machineId: context.config.machineId } : {}),
+    organizationId,
+    machineId: context.config.machineId,
     name: context.config.name ?? `${runnerRuntime}-${runnerNativePlatform}`,
     runtime: runnerRuntime,
     nativePlatform: runnerNativePlatform,
@@ -277,7 +289,7 @@ const discoveredCredentialsFromFile = async (
   if (source === "codex-auth-file") {
     const parsed = Value.Parse(CodexAuthCacheSchema, JSON.parse(await readFile(authFile, "utf8")));
     const apiKey = parsed.OPENAI_API_KEY;
-    if (typeof apiKey !== "string" || !apiKey.trim() || seenProviderIds.has("openai")) return [];
+    if (!apiKey?.trim() || seenProviderIds.has("openai")) return [];
     seenProviderIds.add("openai");
     return [{ providerId: "openai", authFile, source, authType: "api" }];
   }
@@ -304,8 +316,7 @@ const discoverLocalOpencodeProviderCredentials = async (context: DevboxesContext
     try {
       discovered.push(...(await discoveredCredentialsFromFile(credentialFile, seenProviderIds)));
     } catch (error) {
-      const missing =
-        error && typeof error === "object" && "code" in error && error.code === "ENOENT";
+      const missing = error instanceof Error && "code" in error && error.code === "ENOENT";
       if (missing && !credentialFile.configured) continue;
       log.warn(
         `Skipped ${credentialFile.source} at ${credentialFile.authFile}: ${
@@ -332,12 +343,15 @@ const saveCredentialFileReferences = async (
           entry.providerId !== "opencode" ||
           entry.providerIdFormat === "exact"),
     ),
-    ...selected.map((entry) => ({
-      providerId: entry.providerId,
-      authFile: entry.authFile,
-      source: entry.source,
-      ...(entry.providerId === "opencode" ? { providerIdFormat: "exact" as const } : {}),
-    })),
+    ...selected.map((entry) => {
+      const reference: LocalOpencodeProviderCredentialReference = {
+        providerId: entry.providerId,
+        authFile: entry.authFile,
+        source: entry.source,
+      };
+      if (entry.providerId === "opencode") reference.providerIdFormat = "exact";
+      return reference;
+    }),
   ];
   await writeConfig(context);
   log.success(
@@ -374,7 +388,7 @@ const codexChatgptSubscriptionDetected = async () => {
       JSON.parse(await readFile(codexAuthFile, "utf8")),
     );
     const apiKey = parsed.OPENAI_API_KEY;
-    return (typeof apiKey !== "string" || !apiKey.trim()) && parsed.tokens !== undefined;
+    return !apiKey?.trim() && parsed.tokens !== undefined;
   } catch {
     return false;
   }
@@ -397,8 +411,8 @@ const fetchOpencodeConnectors = async (context: DevboxesContext) => {
   for (const entry of served) {
     if (Value.Check(OpencodeConnectorDescriptorSchema, entry)) {
       connectors.push(entry);
-    } else if (entry && typeof entry === "object" && "providerId" in entry) {
-      unknownProviderIds.push(String(entry.providerId));
+    } else if (Value.Check(OpencodeConnectorProviderSchema, entry)) {
+      unknownProviderIds.push(entry.providerId);
     }
   }
   if (unknownProviderIds.length > 0) {
@@ -451,14 +465,16 @@ export const connectOpencodeProviderSubscription = async (
     // past the vendor deadline, matching the dashboard connect flow's
     // tolerance.
     const deadlineMs = started.expiresAtMs + 60 * 1000;
+    const attemptSignal = AbortSignal.timeout(Math.max(1, deadlineMs - Date.now()));
     for (;;) {
-      if (Date.now() > deadlineMs) {
+      const remainingMs = deadlineMs - Date.now();
+      if (remainingMs <= 0) {
         throw new Error(`${connector.label} device authorization expired before it was approved.`);
       }
-      await sleep(intervalSeconds * 1000);
+      await sleep(Math.min(intervalSeconds * 1000, remainingMs));
       let result: Awaited<ReturnType<typeof pollOpencodeOauthDeviceFlow>>;
       try {
-        result = await pollOpencodeOauthDeviceFlow(connector, started.payload);
+        result = await pollOpencodeOauthDeviceFlow(connector, started.payload, attemptSignal);
       } catch {
         continue;
       }
@@ -471,7 +487,7 @@ export const connectOpencodeProviderSubscription = async (
       const store = await readCredentialStoreForRewrite(storeAccess);
       store.entries[connector.providerId] = {
         auth: result.auth,
-        ...(result.accountLabel ? { accountLabel: result.accountLabel } : {}),
+        accountLabel: result.accountLabel || undefined,
       };
       await writeCredentialStore({ ...storeAccess, store });
       approval?.stop(`${connector.label} approved.`);
@@ -713,11 +729,11 @@ const interactiveCredentialSetup = async (
   const choice = await select({
     message: "What would you like to do?",
     options: [
-      ...actions.map((action, index) => ({
-        value: index,
-        label: action.label,
-        ...(action.hint ? { hint: action.hint } : {}),
-      })),
+      ...actions.map((action, index) =>
+        action.hint
+          ? { value: index, label: action.label, hint: action.hint }
+          : { value: index, label: action.label },
+      ),
       { value: -1, label: "Nothing right now" },
     ],
   });
@@ -807,6 +823,9 @@ export const syncOpencodeProviderCredentials = async (
   if (!context.config.organizationId) {
     throw new Error("Credential sync requires a registered runner organization.");
   }
+  if (!context.config.machineId) {
+    throw new Error("Credential sync requires a registered Runner machine.");
+  }
 
   const references = context.config.opencodeProviderCredentials ?? [];
   const store = (await openCredentialStoreIfPresent(context))?.store ?? {
@@ -826,13 +845,15 @@ export const syncOpencodeProviderCredentials = async (
       "No local Opencode provider credentials are configured. Run `devboxes credentials setup` before syncing credentials.",
     );
   }
-  if (options.provider) {
-    const requestedProviders = new Set(
-      options.provider
-        .split(",")
-        .map((providerId) => providerId.trim())
-        .filter(Boolean),
-    );
+  const requestedProviders = options.provider
+    ? new Set(
+        options.provider
+          .split(",")
+          .map((providerId) => providerId.trim())
+          .filter(Boolean),
+      )
+    : null;
+  if (requestedProviders) {
     providerIds = providerIds.filter((providerId) => requestedProviders.has(providerId));
     if (providerIds.length === 0) {
       throw new Error("No configured local Opencode provider credentials match --provider.");
@@ -869,7 +890,7 @@ export const syncOpencodeProviderCredentials = async (
       syncable.push({
         providerId,
         auth: storeEntry.auth,
-        ...(storeEntry.accountLabel ? { accountLabel: storeEntry.accountLabel } : {}),
+        accountLabel: storeEntry.accountLabel,
       });
       continue;
     }
@@ -905,41 +926,44 @@ export const syncOpencodeProviderCredentials = async (
   // terminal session is deliberately not reused for exporting local secrets.
   const sessionToken = await runnerDeviceSessionToken(context, "credential sync");
   const backend = bearerBackend(context.config.apiBaseUrl, sessionToken);
+  const catalogResponse = await backend.api
+    .org({ organizationId: context.config.organizationId })
+    .credentials["opencode-provider-credentials"].get();
+  if (catalogResponse.error) {
+    throw apiRequestError("List Organization Provider Accounts", catalogResponse.error, "connect");
+  }
+  const apiKeyProviderIds = new Set<string>(
+    catalogResponse.data?.apiKeyProviders.map((provider) => provider.id) ?? [],
+  );
+  const oauthProviderIds = new Set<string>(
+    catalogResponse.data?.oauthProviders.map((provider) => provider.id) ?? [],
+  );
+  const supportedSyncable = syncable.filter(({ providerId, auth }) => {
+    const supported =
+      auth.type === "api" ? apiKeyProviderIds.has(providerId) : oauthProviderIds.has(providerId);
+    if (!supported) {
+      log.warn(
+        `Skipped ${providerId}: this provider and auth type cannot be stored as an Organization Provider Account.`,
+      );
+    }
+    return supported;
+  });
+  if (supportedSyncable.length === 0) {
+    throw new Error("No local credentials match the supported Organization provider auth types.");
+  }
 
-  for (const { providerId, auth, accountLabel } of syncable) {
+  for (const { providerId, auth, accountLabel } of supportedSyncable) {
     const syncBody = {
       providerId,
-      // OAuth omits the label so the server applies the connector label.
-      ...(auth.type === "api" ? { label: `${providerId} API key` } : {}),
-      ...(accountLabel ? { accountLabel } : {}),
+      runnerMachineId: context.config.machineId,
+      accountLabel,
       auth,
     };
-    let response = await backend.api
+    const response = await backend.api
       .org({ organizationId: context.config.organizationId })
       .credentials["opencode-provider-credentials"].sync.post(syncBody);
     if (response.error) {
-      const error = apiRequestError(`Sync provider ${providerId}`, response.error, "connect");
-      if (
-        error.code !== "provider_credential_unavailable" ||
-        !process.stdin.isTTY ||
-        !process.stdout.isTTY
-      ) {
-        throw error;
-      }
-      const saveAnyway = await prompts.confirm({
-        message: `Validation for ${providerId} is unavailable. Save this credential anyway?`,
-        initialValue: false,
-      });
-      if (isCancel(saveAnyway) || !saveAnyway) throw error;
-      response = await backend.api
-        .org({ organizationId: context.config.organizationId })
-        .credentials["opencode-provider-credentials"].sync.post({
-          ...syncBody,
-          saveAnyway: true,
-        });
-      if (response.error) {
-        throw apiRequestError(`Sync provider ${providerId}`, response.error, "connect");
-      }
+      throw apiRequestError(`Sync provider ${providerId}`, response.error, "connect");
     }
     log.success(`Synced ${providerId} provider credentials to Devboxes.`);
   }
@@ -1288,7 +1312,6 @@ export const runRunnerDoctor = async (
 };
 
 export const startCredentialBroker = (
-  runtime: LocalRunnerOpencodeProviderAuthRuntime,
   activeCredentials: ReadonlyMap<string, ActiveOpencodeCredentialTask>,
 ) => {
   // Task containers reach the broker through host.docker.internal, which on
@@ -1302,9 +1325,10 @@ export const startCredentialBroker = (
   for (let attempt = 0; attempt < 20 && !app; attempt++) {
     const candidatePort = 34000 + Math.floor(Math.random() * 1000);
     try {
-      app = createOpencodeCredentialBroker({ runtime, activeCredentials }).listen({
+      app = createOpencodeCredentialBroker({ activeCredentials }).listen({
         hostname: "0.0.0.0",
         port: candidatePort,
+        reusePort: false,
       });
     } catch (error) {
       const code = error instanceof Error && "code" in error ? error.code : undefined;
@@ -1350,6 +1374,7 @@ const listen = async (
 
   const maxConcurrent = options.maxConcurrent ?? 1;
   const activeTasks = new Map<string, ActiveTask>();
+  const activeModelResolutions = new Map<string, ActiveOpencodeCredentialTask>();
   console.info(`Devboxes ${runnerVersion} starting container runtime...`);
   const { DockerOpencodeTaskRuntime } = await import("./docker-task-runtime");
   const taskRuntime = new DockerOpencodeTaskRuntime({
@@ -1360,44 +1385,61 @@ const listen = async (
     throw new Error("This command requires a registered runner. Run `devboxes connect` first.");
   }
   const backend = bearerBackend(context.config.apiBaseUrl, apiKey);
-  const heartbeat = async () => {
+  const heartbeat = async (localProviderCredentials: LocalProviderCredentialIdentity[]) => {
     const result = await backend.api.internal["runner-machines"].heartbeat.post({
       nativePlatform: runnerNativePlatform,
       supportedPlatforms: runnerSupportedPlatforms,
       listenerVersion: runnerVersion,
+      localProviderCredentials,
     });
     if (result.error) throw apiRequestError("Heartbeat", result.error, "connect");
     return result.data;
   };
-  const openedStore = await openCredentialStoreIfPresent(context);
-  const ambiguousReference = context.config.opencodeProviderCredentials?.find(
-    (credential) => credential.providerId === "opencode" && credential.providerIdFormat !== "exact",
-  );
-  if (ambiguousReference) {
-    throw new Error(ambiguousOpencodeCredentialMessage);
+  const openedStore = await openCredentialStoreIfPresent(context).catch((error) => {
+    console.error(
+      `Device credential store is unavailable for runner claims: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return undefined;
+  });
+  let providerSnapshotPassphrase = openedStore?.access.passphrase;
+  const credentialSnapshotPassphrase = async () => {
+    if (!providerSnapshotPassphrase) {
+      providerSnapshotPassphrase = (await credentialStoreAccess(context)).passphrase;
+    }
+    return providerSnapshotPassphrase;
+  };
+  const configuredCredentials: LocalOpencodeProviderCredentialReference[] = [];
+  for (const credential of context.config.opencodeProviderCredentials ?? []) {
+    if (credential.providerId === "opencode" && credential.providerIdFormat !== "exact") {
+      console.error(
+        `Local provider credential opencode is unavailable for runner claims: ${ambiguousOpencodeCredentialMessage}`,
+      );
+      continue;
+    }
+    configuredCredentials.push(credential);
   }
-  // Providers this machine serves from disk through the broker. Both lists are
-  // fixed at startup; `devboxes credentials setup` during a running listen needs a
-  // restart to be advertised. Org-stored credentials qualify further tasks
+  // Provider sources this machine can read from disk are fixed at startup;
+  // `devboxes credentials setup` needs a restart to advertise a new source.
+  // The credential behind an existing id is read before every claim so replacing
+  // an API key with OAuth, or OAuth with an API key, changes the next claim's
+  // immutable monetary authority. Org-stored credentials qualify further tasks
   // server-side and those launch against the dashboard route instead.
-  const localProviderIds = new Set([
-    ...(context.config.opencodeProviderCredentials ?? []).map(
-      (credential) => credential.providerId,
-    ),
+  const localProviderCredentialIds = new Set([
+    ...configuredCredentials.map((credential) => credential.providerId),
     ...Object.keys(openedStore?.store.entries ?? {}),
   ]);
   const credentialRuntime = new LocalRunnerOpencodeProviderAuthRuntime(
-    context.config.opencodeProviderCredentials ?? [],
+    configuredCredentials,
     openedStore?.access,
     () => fetchOpencodeConnectors(context),
   );
-  const credentialBroker = startCredentialBroker(credentialRuntime, activeTasks);
-  // Idle keep-alive for stored subscription token families: refresh-on-serve
-  // only fires when a task boots, so a machine that sits unused would let its
-  // rotating refresh tokens lapse. Sweep at startup for anything that expired
-  // while the runner was off, then hourly; the 70-minute window outlasts a
-  // full cron period so nothing expires between fires. The sweep shares the
-  // broker's runtime, so cron and task boots single-flight per family.
+  const credentialBroker = startCredentialBroker(activeTasks);
+  const modelResolutionCredentialBroker = startCredentialBroker(activeModelResolutions);
+  // Claim-time refresh cannot keep an idle subscription token family alive.
+  // Sweep at startup for anything that expired while the runner was off, then
+  // hourly; the 70-minute window outlasts a full cron period so nothing expires
+  // between fires. The sweep shares the claim runtime, so cron and claim refresh
+  // single-flight per family.
   const credentialRefreshWindowMs = 70 * 60 * 1000;
   if (openedStore) {
     void credentialRuntime.refreshExpiringStoredCredentials({
@@ -1411,9 +1453,43 @@ const listen = async (
         }),
       ).unref()
     : undefined;
+  const runnerProviderSnapshot = async () => {
+    const localProviderCredentials: LocalProviderCredentialIdentity[] = [];
+    const claimProviderAuth = new Map<string, OpencodeProviderAuthJson>();
+    for (const providerId of [...localProviderCredentialIds].sort()) {
+      try {
+        const providerAuth = await credentialRuntime.providerAuthForProvider({ providerId });
+        const auth = providerAuth[providerId];
+        if (!auth) {
+          throw new Error(`Local provider credential ${providerId} did not return its auth type.`);
+        }
+        if (auth.type !== "api" && auth.type !== "oauth") {
+          throw new Error(`Local provider credential ${providerId} has unsupported auth type.`);
+        }
+        const credentialFingerprint = opencodeProviderAuthFingerprint(providerId, auth);
+        localProviderCredentials.push({
+          providerId,
+          authType: auth.type,
+          credentialFingerprint,
+        });
+        claimProviderAuth.set(providerId, providerAuth);
+      } catch {
+        const validationError = `Local provider credential ${providerId} could not be loaded or refreshed. Run \`devboxes credentials status --live\`, repair this provider, then restart \`devboxes listen\`.`;
+        localProviderCredentials.push({
+          providerId,
+          authType: null,
+          credentialFingerprint: null,
+        });
+        console.error(validationError);
+      }
+    }
+    return { localProviderCredentials, claimProviderAuth };
+  };
+  let modelResolutionWork: Promise<void> | null = null;
   try {
     console.info("Connecting to Devboxes...");
-    await heartbeat();
+    let providerSnapshot = await runnerProviderSnapshot();
+    await heartbeat(providerSnapshot.localProviderCredentials);
 
     // Startup reconciliation: containers and per-task secrets survive runner
     // restarts. The read-only task listing (never a lease refresh, which would fake
@@ -1457,11 +1533,65 @@ const listen = async (
           continue;
         }
         if (state?.Running) {
-          if (!task.modelProviderId || !task.perTaskToken) {
+          if (
+            !task.modelProviderId ||
+            !task.perTaskToken ||
+            !task.providerAuthSource ||
+            !task.providerCredentialFingerprint
+          ) {
             console.info(
               `Skipped re-adopting task ${task.taskId}: provider auth context is absent.`,
             );
             continue;
+          }
+          let providerAuth: OpencodeProviderAuthJson | undefined;
+          if (task.providerAuthSource === "local-broker") {
+            let snapshotPassphrase: string;
+            try {
+              snapshotPassphrase = await credentialSnapshotPassphrase();
+            } catch (error) {
+              console.info(
+                `Skipped re-adopting task ${task.taskId}: ${error instanceof Error ? error.message : String(error)}`,
+              );
+              continue;
+            }
+            try {
+              providerAuth = await taskRuntime.readProviderAuthSnapshot({
+                organizationId: task.organizationId,
+                taskId: task.taskId,
+                providerId: task.modelProviderId,
+                passphrase: snapshotPassphrase,
+              });
+            } catch {
+              providerAuth = undefined;
+            }
+            const auth = providerAuth?.[task.modelProviderId];
+            if (
+              !auth ||
+              (auth.type !== "api" && auth.type !== "oauth") ||
+              opencodeProviderAuthFingerprint(task.modelProviderId, auth) !==
+                task.providerCredentialFingerprint
+            ) {
+              const errorMessage =
+                "The claim-captured local provider credential is unavailable after runner restart.";
+              await taskRuntime.stopTask({
+                taskId: task.taskId,
+                organizationId: task.organizationId,
+                containerId: task.containerId,
+              });
+              const reported = await backend.api.internal["runner-machines"]
+                .tasks({ taskId: task.taskId })
+                .report.post({
+                  status: "failed",
+                  errorMessage,
+                  attemptCount: task.attemptCount,
+                });
+              if (reported.error) {
+                throw apiRequestError("Credential authority report", reported.error, "connect");
+              }
+              console.info(`Failed task ${task.taskId}: ${errorMessage}`);
+              continue;
+            }
           }
           // The reconciliation minted a fresh per-task token; the container's
           // mounted secret file must hold the same token the broker serves.
@@ -1482,6 +1612,7 @@ const listen = async (
             containerId: task.containerId,
             containerName: task.containerName,
             attemptCount: task.attemptCount,
+            providerAuth,
           });
           console.info(`Re-adopted running task ${task.taskId}.`);
           continue;
@@ -1543,7 +1674,7 @@ const listen = async (
     let consecutiveFailures = 0;
     while (!stop.signal.aborted) {
       try {
-        await heartbeat();
+        await heartbeat(providerSnapshot.localProviderCredentials);
 
         for (const task of activeTasks.values()) {
           // A daemon that dies before reporting (provider auth unavailable, a
@@ -1648,22 +1779,222 @@ const listen = async (
           }
         }
 
+        providerSnapshot = await runnerProviderSnapshot();
+        if (!modelResolutionWork) {
+          const resolutionClaim = await backend.api.internal["runner-machines"][
+            "model-resolutions"
+          ].claim.post({
+            launchProtocols: [opencodeWorkspaceLaunchProtocol],
+          });
+          if (resolutionClaim.error) {
+            throw apiRequestError("Model resolution claim", resolutionClaim.error, "connect");
+          }
+          const resolution = resolutionClaim.data;
+          if (resolution && resolution !== "No Content") {
+            const providerAuth =
+              resolution.action === "resolve" && resolution.source === "local-broker"
+                ? providerSnapshot.claimProviderAuth.get(resolution.providerId)
+                : undefined;
+            const auth =
+              resolution.action === "resolve" ? providerAuth?.[resolution.providerId] : undefined;
+            if (
+              resolution.action === "resolve" &&
+              resolution.source === "local-broker" &&
+              (!auth ||
+                (auth.type !== "api" && auth.type !== "oauth") ||
+                opencodeProviderAuthFingerprint(resolution.providerId, auth) !==
+                  resolution.credentialFingerprint)
+            ) {
+              throw new Error(
+                `Workspace model resolution ${resolution.resolutionId} did not retain its local credential authority.`,
+              );
+            }
+            if (resolution.action === "resolve") {
+              activeModelResolutions.set(resolution.resolutionId, {
+                taskId: resolution.resolutionId,
+                organizationId: resolution.organizationId,
+                modelProviderId: resolution.providerId,
+                perTaskToken: resolution.perCapabilityToken,
+                providerAuth,
+              });
+            }
+            modelResolutionWork = (async () => {
+              let containerId: string | null =
+                resolution.resource.runtime === "docker"
+                  ? resolution.resource.containerName
+                  : resolution.resource.podName;
+              const leaseAbort = new AbortController();
+              let leaseLost = false;
+              const renewLease = async () => {
+                const renewed = await backend.api.internal["runner-machines"]
+                  ["model-resolutions"]({ resolutionId: resolution.resolutionId })
+                  .lease.post(
+                    { leaseId: resolution.leaseId },
+                    { fetch: { signal: AbortSignal.timeout(10_000) } },
+                  );
+                if (renewed.error) {
+                  leaseLost = true;
+                  console.info(
+                    `Workspace model resolution lease ${resolution.resolutionId} could not be renewed (http_${renewed.error.status}); stopping Workspace work.`,
+                  );
+                  return false;
+                }
+                return true;
+              };
+              const initialLeaseRetained = await renewLease().catch(() => {
+                leaseLost = true;
+                console.info(
+                  `Workspace model resolution lease ${resolution.resolutionId} could not be renewed (network); stopping Workspace work.`,
+                );
+                return false;
+              });
+              const leaseMaintenance = (async () => {
+                while (!leaseAbort.signal.aborted) {
+                  try {
+                    await sleep(Math.min(10_000, Math.floor(resolution.leaseMs / 3)), undefined, {
+                      signal: leaseAbort.signal,
+                    });
+                  } catch (error) {
+                    if (error instanceof Error && error.name === "AbortError") break;
+                    throw error;
+                  }
+                  await renewLease().catch(() => {
+                    leaseLost = true;
+                    console.info(
+                      `Workspace model resolution lease ${resolution.resolutionId} could not be renewed (network); stopping Workspace work.`,
+                    );
+                  });
+                }
+              })();
+              try {
+                if (!initialLeaseRetained) return;
+                if (resolution.action === "resolve") {
+                  const launchSpec = Value.Parse(OpencodeLaunchSpecSchema, resolution.launchSpec);
+                  const container = await taskRuntime.launchTask({
+                    organizationId: resolution.organizationId,
+                    taskId: resolution.resolutionId,
+                    runId: resolution.resolutionId,
+                    apiKey: resolution.perCapabilityToken,
+                    providerAuthUrl:
+                      resolution.source === "local-broker"
+                        ? modelResolutionCredentialBroker.providerAuthUrl
+                        : `${taskContainerApiBaseUrl(context.config.apiBaseUrl)}/internal`,
+                    imageRef: resolution.imageRef,
+                    launchSpec,
+                  });
+                  containerId = container.containerId;
+                  while (!stop.signal.aborted && !leaseLost) {
+                    const state = await taskRuntime.inspectTask({
+                      taskId: resolution.resolutionId,
+                      containerId,
+                      containerName: container.containerName,
+                    });
+                    if (!state?.Running) break;
+                    await sleep(1_000);
+                  }
+                }
+              } catch {
+                console.info(
+                  `Workspace model resolution ${resolution.resolutionId} failed in its Workspace; resources will be cleaned.`,
+                );
+              } finally {
+                for (;;) {
+                  try {
+                    const fenced = await backend.api.internal["runner-machines"]
+                      ["model-resolutions"]({ resolutionId: resolution.resolutionId })
+                      .cleanup.post(
+                        { leaseId: resolution.leaseId, status: "fenced" },
+                        { fetch: { signal: AbortSignal.timeout(10_000) } },
+                      );
+                    if (!fenced.error || fenced.error.status === 409) break;
+                  } catch {
+                    console.info(
+                      `Workspace model resolution fence ${resolution.resolutionId} failed (network); retrying.`,
+                    );
+                  }
+                  await sleep(1_000);
+                }
+                for (;;) {
+                  try {
+                    await taskRuntime.stopTask({
+                      taskId: resolution.resolutionId,
+                      organizationId: resolution.organizationId,
+                      containerId,
+                    });
+                    break;
+                  } catch {
+                    console.info(
+                      `Workspace model resolution cleanup ${resolution.resolutionId} failed; retrying.`,
+                    );
+                    await sleep(1_000);
+                  }
+                }
+                leaseAbort.abort();
+                await leaseMaintenance;
+                for (;;) {
+                  try {
+                    const released = await backend.api.internal["runner-machines"]
+                      ["model-resolutions"]({ resolutionId: resolution.resolutionId })
+                      .cleanup.post(
+                        { leaseId: resolution.leaseId, status: "confirmed" },
+                        { fetch: { signal: AbortSignal.timeout(10_000) } },
+                      );
+                    if (!released.error || released.error.status === 409) break;
+                    console.info(
+                      `Workspace model resolution cleanup receipt ${resolution.resolutionId} failed (http_${released.error.status}); retrying.`,
+                    );
+                  } catch {
+                    console.info(
+                      `Workspace model resolution cleanup receipt ${resolution.resolutionId} failed (network); retrying.`,
+                    );
+                  }
+                  await sleep(1_000);
+                }
+                activeModelResolutions.delete(resolution.resolutionId);
+              }
+            })().finally(() => {
+              modelResolutionWork = null;
+            });
+          }
+        }
+
         if (activeTasks.size < maxConcurrent) {
           const claimResult = await backend.api.internal["runner-machines"].claim.post({
             leaseMs: 120_000,
-            // Providers the local broker can serve; the server unions these
-            // with the org's stored credentials, which run on any machine
-            // through the dashboard provider-auth route.
-            availableProviderIds: [...localProviderIds],
             // The launch-spec protocols this binary executes; a server that
             // serves none of them answers listener_upgrade_required.
-            launchProtocols: [opencodeExactProviderIdsLaunchProtocol],
+            launchProtocols: [opencodeWorkspaceLaunchProtocol],
           });
           if (claimResult.error) throw apiRequestError("Claim", claimResult.error, "connect");
           // An empty queue answers 204, which Eden types as the "No Content" literal.
           const task = claimResult.data;
-          if (task && typeof task !== "string") {
+          if (task && task !== "No Content") {
             console.info(`Claimed task ${task.taskId}; launching on ${task.platform}...`);
+            const providerAuth =
+              task.launchSpec.providerAuthSource === "local-broker"
+                ? providerSnapshot.claimProviderAuth.get(task.modelProviderId)
+                : undefined;
+            const pinnedAuth = providerAuth?.[task.modelProviderId];
+            if (
+              task.launchSpec.providerAuthSource === "local-broker" &&
+              (!pinnedAuth ||
+                (pinnedAuth.type !== "api" && pinnedAuth.type !== "oauth") ||
+                opencodeProviderAuthFingerprint(task.modelProviderId, pinnedAuth) !==
+                  task.providerCredentialFingerprint)
+            ) {
+              throw new Error(
+                `Claimed task ${task.taskId} did not retain its local credential authority.`,
+              );
+            }
+            if (providerAuth) {
+              await taskRuntime.persistProviderAuthSnapshot({
+                organizationId: task.organizationId,
+                taskId: task.taskId,
+                providerId: task.modelProviderId,
+                providerAuth,
+                passphrase: await credentialSnapshotPassphrase(),
+              });
+            }
             let activeTask: ActiveTask = {
               taskId: task.taskId,
               organizationId: task.organizationId,
@@ -1672,6 +2003,7 @@ const listen = async (
               containerId: null,
               containerName: null,
               attemptCount: task.attemptCount,
+              providerAuth,
             };
             activeTasks.set(task.taskId, activeTask);
             const launchLeaseRefresh = setInterval(() => {
@@ -1792,8 +2124,10 @@ const listen = async (
       }
     }
   } finally {
+    if (modelResolutionWork) await modelResolutionWork;
     credentialRefreshJob?.stop();
     await credentialBroker.close();
+    await modelResolutionCredentialBroker.close();
   }
 };
 

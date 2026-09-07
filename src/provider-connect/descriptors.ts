@@ -15,12 +15,24 @@ import type { OpencodeConnectorDescriptor } from "./descriptor-schema";
 
 const openaiIssuer = "https://auth.openai.com";
 
+export const opencodeApiKeyProviders = [
+  { id: "anthropic", label: "Anthropic" },
+  { id: "cerebras", label: "Cerebras" },
+  { id: "deepseek", label: "DeepSeek" },
+  { id: "groq", label: "Groq" },
+  { id: "mistral", label: "Mistral" },
+  { id: "openai", label: "OpenAI" },
+  { id: "opencode", label: "OpenCode Zen" },
+  { id: "opencode-go", label: "OpenCode Go" },
+  { id: "togetherai", label: "Together AI" },
+  { id: "xai", label: "xAI" },
+] as const;
+
 export const opencodeProviderConnectors: readonly OpencodeConnectorDescriptor[] = [
   {
     providerId: "openai",
     label: "ChatGPT Pro/Plus",
-    description:
-      "Authorize an OpenAI ChatGPT Pro or Plus subscription. Runs on this credential use the Codex model set included with the subscription.",
+    description: "Authorize an OpenAI ChatGPT Pro or Plus subscription.",
     kind: "openai-device",
     // The Codex CLI's public client; opencode reuses it for the same reason.
     clientId: "app_EMoamEEZ73f0CkXaXp7hrann",
@@ -65,3 +77,26 @@ export const opencodeProviderConnectors: readonly OpencodeConnectorDescriptor[] 
     },
   },
 ];
+
+// Organization Provider Accounts are validated directly by the API. Keep
+// this surface bounded to providers with a maintained direct HTTP boundary;
+// Runner-local discovery continues to use the complete lists above.
+export const organizationOpencodeApiKeyProviders = opencodeApiKeyProviders.filter(
+  (provider) => provider.id === "opencode-go" || provider.id === "xai",
+);
+
+export const organizationOpencodeProviderConnectors = opencodeProviderConnectors.filter(
+  (connector) => connector.providerId === "openai" || connector.providerId === "xai",
+);
+
+export const organizationOpencodeProviderAuthSupported = (providerId: string, authType: string) => {
+  if (authType === "api") {
+    return organizationOpencodeApiKeyProviders.some((provider) => provider.id === providerId);
+  }
+  if (authType === "oauth") {
+    return organizationOpencodeProviderConnectors.some(
+      (connector) => connector.providerId === providerId,
+    );
+  }
+  return false;
+};

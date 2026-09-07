@@ -52,4 +52,24 @@ describe("Devboxes root options", () => {
       auth: "https://auth.example.com",
     });
   });
+
+  it("rejects missing or invalid continuation input at the command boundary", async () => {
+    for (const [args, expectedError] of [
+      [["continue"], "missing required argument 'agentSessionId'"],
+      [["continue", "not-a-session", "Keep working."], "must be a UUID"],
+      [["continue", "00000000-0000-7000-8000-000000000001"], "missing required argument 'task'"],
+    ] as const) {
+      const child = Bun.spawn([process.execPath, "src/cli.ts", ...args], {
+        cwd: join(import.meta.dir, ".."),
+        env: { ...process.env, BROWSER: "none" },
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+
+      expect(await child.exited).toBe(1);
+      expect(await new Response(child.stdout).text()).toBe("");
+      expect(await new Response(child.stderr).text()).toContain(expectedError);
+    }
+  });
 });
