@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import {
   cliVersion,
+  continueDevboxesSession,
   dispatchDevboxesTask,
   readDevboxesSession,
   readDevboxesSessionResult,
@@ -11,7 +12,7 @@ import {
   type DevboxesContext,
 } from "./devboxes";
 
-const jsonResult = (value: unknown) => ({
+const jsonResult = (value: z.infer<ReturnType<typeof z.json>>) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
 });
 
@@ -39,13 +40,31 @@ export const createDevboxesMcpServer = (context: DevboxesContext) => {
         model: z.string().optional().describe("Model id (uses the server default when omitted)"),
         branch: z.string().optional().describe("Base branch and PR destination (default main)"),
         title: z.string().optional().describe("Run title"),
-        blueprint: z
+        blueprintVersionId: z
           .string()
           .optional()
-          .describe("Blueprint id (defaults to the Implement GitHub Issue blueprint)"),
+          .describe(
+            "Exact Blueprint Version id (defaults to the current Implement GitHub Issue version)",
+          ),
       },
     },
     async (input) => jsonResult(await dispatchDevboxesTask(context, input)),
+  );
+
+  server.registerTool(
+    "continue_session",
+    {
+      description:
+        "Continue an existing durable Devboxes Session with a fresh Run. Preserves the Session identity and returns the fresh Run ID and current Session status.",
+      inputSchema: {
+        agentSessionId: z.uuid().describe("Session ID returned by dispatch_task"),
+        task: z
+          .string()
+          .refine((value) => value.trim().length > 0, "Task text is required")
+          .describe("Free-form task for the fresh Run"),
+      },
+    },
+    async (input) => jsonResult(await continueDevboxesSession(context, input)),
   );
 
   server.registerTool(
@@ -61,13 +80,14 @@ export const createDevboxesMcpServer = (context: DevboxesContext) => {
       const current = await readDevboxesSession(context, input.agentSessionId);
       return jsonResult({
         agentSessionId: current.session.id,
-        sessionStatus: current.session.status,
-        runId: current.session.runId,
-        runStatus: current.run?.status ?? null,
-        currentStep: current.run?.currentStep ?? null,
+        sessionStatus: current.currentTask.status,
+        runId: current.run.id,
+        runStatus: current.run.status,
+        currentStep: current.run.currentStep,
         terminal: sessionReachedTerminalState(current),
-        pullRequestUrl: current.run?.pullRequestUrl ?? null,
-        errorMessage: current.run?.errorMessage ?? current.session.errorMessage ?? null,
+        outcome: current.run.outcome,
+        errorMessage: current.run.errorMessage ?? current.currentTask.errorMessage ?? null,
+        usage: current.run.usage,
       });
     },
   );
@@ -76,7 +96,7 @@ export const createDevboxesMcpServer = (context: DevboxesContext) => {
     "get_session_result",
     {
       description:
-        "Read the outcome of a Devboxes session: final assistant output, pull request URL, and error message. Meaningful once get_session_status reports terminal: true.",
+        "Read the structured outcome of a Devboxes Session. Meaningful once get_session_status reports terminal: true.",
       inputSchema: {
         agentSessionId: z.string().describe("Agent session id returned by dispatch_task"),
       },
@@ -85,14 +105,12 @@ export const createDevboxesMcpServer = (context: DevboxesContext) => {
       const result = await readDevboxesSessionResult(context, input.agentSessionId);
       return jsonResult({
         agentSessionId: result.session.id,
-        sessionStatus: result.session.status,
-        runStatus: result.run?.status ?? null,
+        sessionStatus: result.currentTask.status,
+        runStatus: result.run.status,
         terminal: result.terminal,
-        pullRequestUrl: result.run?.pullRequestUrl ?? null,
-        errorMessage: result.run?.errorMessage ?? result.session.errorMessage ?? null,
-        costUsd: result.run?.costUsd ?? null,
-        finalOutput: result.finalOutput,
-        finalOutputError: result.finalOutputError,
+        outcome: result.run.outcome,
+        errorMessage: result.run.errorMessage ?? result.currentTask.errorMessage ?? null,
+        usage: result.run.usage,
       });
     },
   );

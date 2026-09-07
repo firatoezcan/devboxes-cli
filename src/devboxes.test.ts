@@ -1,15 +1,19 @@
 import { beforeAll, afterAll, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { eq } from "drizzle-orm";
+import Type from "typebox";
+import Value from "typebox/value";
 
+import { serializedJsonb } from "@/db/jsonb";
 import * as schema from "@/db/schema";
 import { createApiIntegrationHarness } from "@/test/api-integration";
+import { installWorkspaceImageBuilderStub } from "@/test/workspace-image-builder";
 
 import { createDevboxesCommand } from "./cli";
 import {
@@ -27,8 +31,27 @@ import { createDevboxesMcpServer } from "./mcp";
 const ownerUserId = "devboxes-cli-owner";
 const ownerEmail = "devboxes-cli-owner@example.com";
 const ownerPassword = "devboxes-cli-owner-password";
+const imageBuilder = installWorkspaceImageBuilderStub({ origin: "https://image-builder.test" });
+const preservedConfigSchema = Type.Object(
+  {
+    organizationId: Type.String(),
+    machineId: Type.String(),
+    name: Type.String(),
+    apiKey: Type.String(),
+    opencodeProviderCredentials: Type.Array(
+      Type.Object({
+        providerId: Type.String(),
+        authFile: Type.String(),
+        source: Type.Literal("opencode-auth-file"),
+      }),
+    ),
+    futureConfigKey: Type.Object({ preserved: Type.Boolean() }),
+    sessionToken: Type.String(),
+  },
+  { additionalProperties: true },
+);
 
-const harness = createApiIntegrationHarness("devboxes-cli", {}, 30_000);
+afterAll(() => imageBuilder.restore());
 
 // Real repositories for cwd project inference: dispatch reads the origin
 // remote of an actual git checkout, exactly like a user's terminal would.
@@ -55,14 +78,47 @@ const gitRepoWithOrigin = async (remote: string) => {
 };
 
 describe("devboxes CLI", () => {
+  const harness = createApiIntegrationHarness(
+    "devboxes-cli",
+    async () => {
+      const [
+        { createApp },
+        { internalRunnerMachineRoutes },
+        { meRoutes },
+        { createOrganizationRoutes },
+        { orgAgentSessionRoutes },
+        { orgProjectRoutes },
+        { orgRunRoutes },
+      ] = await Promise.all([
+        import("@/app-shell"),
+        import("@/routes/internal/runner-machines"),
+        import("@/routes/me"),
+        import("@/routes/org.$organizationId"),
+        import("@/routes/org.$organizationId/agent-sessions"),
+        import("@/routes/org.$organizationId/projects"),
+        import("@/routes/org.$organizationId/runs"),
+      ]);
+      return createApp()
+        .use(internalRunnerMachineRoutes)
+        .use(meRoutes)
+        .use(createOrganizationRoutes(orgAgentSessionRoutes, orgProjectRoutes, orgRunRoutes));
+    },
+    {
+      DEVBOX_WORKSPACE_IMAGE_BUILDER_URL: "https://image-builder.test",
+      DEVBOX_WORKSPACE_IMAGE_BUILDER_CALLBACK_TOKEN: "test-builder-token",
+    },
+    "postgres",
+    30_000,
+  );
+
   let dbClient: Awaited<ReturnType<typeof harness.db>>;
   let listener: ReturnType<typeof Bun.serve>;
   let origin: string;
   let configDir: string;
   let context: DevboxesContext;
   let organizationId: string;
-  let fixture: Awaited<ReturnType<typeof harness.seedGithubProjectRun>>;
-  let secondFixture: Awaited<ReturnType<typeof harness.seedGithubProjectRun>>;
+  let fixture: Awaited<ReturnType<typeof harness.seedGithubProject>>;
+  let secondFixture: Awaited<ReturnType<typeof harness.seedGithubProject>>;
   const heartbeatAuthorizations: string[] = [];
 
   beforeAll(async () => {
@@ -93,15 +149,18 @@ describe("devboxes CLI", () => {
     await harness.seedOpencodeProviderCredential({
       organizationId,
       createdByUserId: ownerUserId,
-      providerId: "opencode",
+      providerId: "xai",
+      validatedModelIds: ["grok-4.6"],
+      validatedModelLabels: { "grok-4.6": "Grok 4.6" },
+      validatedProviderLabel: "xAI",
     });
-    fixture = await harness.seedGithubProjectRun({
+    fixture = await harness.seedGithubProject({
       organizationId,
       createdByUserId: ownerUserId,
     });
     // A second project proves --repo/issue-URL project selection instead of a
     // single-project fallback.
-    secondFixture = await harness.seedGithubProjectRun({
+    secondFixture = await harness.seedGithubProject({
       organizationId,
       createdByUserId: ownerUserId,
       repository: { name: "acme/other-service", url: "https://github.com/acme/other-service" },
@@ -109,13 +168,13 @@ describe("devboxes CLI", () => {
     });
     // Two projects whose repository URLs normalize to the same comparison key
     // (https vs scp-like), so a cwd remote can match more than one project.
-    await harness.seedGithubProjectRun({
+    await harness.seedGithubProject({
       organizationId,
       createdByUserId: ownerUserId,
       repository: { name: "acme/duplicated", url: "https://github.com/acme/duplicated" },
       githubAppInstallation: { githubInstallationId: "103" },
     });
-    await harness.seedGithubProjectRun({
+    await harness.seedGithubProject({
       organizationId,
       createdByUserId: ownerUserId,
       repository: { name: "acme/duplicated", url: "git@github.com:acme/duplicated.git" },
@@ -129,6 +188,8 @@ describe("devboxes CLI", () => {
         name: "Implement",
         order: 1,
         action: "opencode.run",
+        kind: "agentic",
+        inputTemplate: serializedJsonb({}),
       });
     }
 
@@ -172,7 +233,7 @@ describe("devboxes CLI", () => {
     let rejected = false;
     let rejection: unknown;
     const operation = start();
-    void operation.catch((error: unknown) => {
+    void operation.catch((error) => {
       rejected = true;
       rejection = error;
     });
@@ -211,25 +272,26 @@ describe("devboxes CLI", () => {
     const command = createDevboxesCommand();
     expect(command.name()).toBe("devboxes");
     // The command surface is a set contract; help-listing order is cosmetics.
-    expect(command.options.map((option) => option.long).sort()).toEqual(
-      ["--api", "--auth", "--config", "--organization", "--version"].sort(),
-    );
-    expect(command.commands.map((child) => child.name()).sort()).toEqual(
+    expect(command.options.map((option) => option.flags).sort()).toEqual(
       [
-        "connect",
-        "credentials",
-        "dispatch",
-        "doctor",
-        "listen",
-        "login",
-        "mcp",
-        "result",
-        "status",
+        "--api <url>",
+        "--auth <url>",
+        "--config <path>",
+        "--organization <id>",
+        "-V, --version",
       ].sort(),
     );
     const dispatch = command.commands.find((child) => child.name() === "dispatch");
-    expect(dispatch?.options.map((option) => option.long).sort()).toEqual(
-      ["--blueprint", "--branch", "--json", "--model", "--project", "--repo", "--title"].sort(),
+    expect(dispatch?.options.map((option) => option.flags).sort()).toEqual(
+      [
+        "--blueprint-version <id>",
+        "--branch <branch>",
+        "--json",
+        "--model <provider/model>",
+        "--project <id>",
+        "--repo <owner/name>",
+        "--title <title>",
+      ].sort(),
     );
     expect(
       dispatch?.options.find((option) => option.long === "--model")?.defaultValue,
@@ -339,6 +401,19 @@ describe("devboxes CLI", () => {
     ).rejects.toThrow("must use HTTPS");
   });
 
+  it("loads an explicit existing config without changing the file", async () => {
+    const configPath = join(configDir, `read-only-${randomUUID()}.json`);
+    const contents = `${JSON.stringify({ apiBaseUrl: `${origin}/api` }, null, 2)}\n`;
+    await writeFile(configPath, contents);
+    await chmod(configPath, 0o444);
+
+    const loaded = await loadContext({ config: configPath });
+
+    expect(loaded.config.apiBaseUrl).toBe(`${origin}/api`);
+    expect(await readFile(configPath, "utf8")).toBe(contents);
+    expect((await stat(configPath)).mode & 0o777).toBe(0o444);
+  });
+
   it("logs in through the real device authorization flow", async () => {
     const loginPromise = loginDevboxes(context);
 
@@ -385,7 +460,7 @@ describe("devboxes CLI", () => {
     // A fresh context loads the persisted credentials the way every later
     // command invocation would.
     context = await loadContext({ config: context.configPath });
-  }, 60_000);
+  });
 
   it("login and connect preserve runner identity in config.json", async () => {
     const machineName = `preserved-${randomUUID().slice(0, 8)}`;
@@ -450,7 +525,10 @@ describe("devboxes CLI", () => {
         .parseAsync(["--config", configPath, "login"], { from: "user" }),
     );
 
-    const afterLogin = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
+    const afterLogin = Value.Parse(
+      preservedConfigSchema,
+      JSON.parse(await readFile(configPath, "utf8")),
+    );
     expect(afterLogin).toMatchObject({
       organizationId,
       machineId: registration.machine.id,
@@ -465,7 +543,10 @@ describe("devboxes CLI", () => {
       .exitOverride()
       .parseAsync(["--config", configPath, "connect", "--name", machineName], { from: "user" });
 
-    const afterConnect = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
+    const afterConnect = Value.Parse(
+      preservedConfigSchema,
+      JSON.parse(await readFile(configPath, "utf8")),
+    );
     expect(afterConnect).toMatchObject({
       organizationId,
       machineId: registration.machine.id,
@@ -511,7 +592,7 @@ describe("devboxes CLI", () => {
       );
     }
     expect(heartbeatAuthorizations).toContain(`Bearer ${String(afterConnect.apiKey)}`);
-  }, 60_000);
+  });
 
   it("connect reuses the login session without a runner device flow", async () => {
     const configPath = join(configDir, `reuse-login-session-${randomUUID()}.json`);
@@ -572,17 +653,18 @@ describe("devboxes CLI", () => {
         where: { id: saved.machineId, organizationId, name: machineName },
       }),
     ).toBeDefined();
-  }, 60_000);
+  });
 
   let dispatchedSessionId: string;
   let dispatchedRunId: string;
+  let dispatchedTaskId: string;
 
   it("dispatches free-form task text to the project matching --repo", async () => {
     const dispatched = await dispatchDevboxesTask(context, {
       task: "Fix the flaky retry handling in the queue worker.",
       repo: fixture.repositoryFullName,
-      model: "opencode/big-pickle",
-      blueprint: fixture.blueprintId,
+      model: "xai/grok-4.6",
+      blueprintVersionId: fixture.blueprintVersionId,
     });
     dispatchedSessionId = dispatched.agentSessionId;
     dispatchedRunId = dispatched.runId;
@@ -592,12 +674,19 @@ describe("devboxes CLI", () => {
     expect(dispatched.repository).toBe(fixture.repositoryFullName);
 
     const task = await dbClient.db.query.opencodeDispatchTasks.findFirst({
-      where: { id: dispatched.agentSessionId, organizationId },
+      where: {
+        sessionId: dispatched.agentSessionId,
+        runId: dispatched.runId,
+        organizationId,
+      },
     });
+    if (!task) throw new Error("Expected the dispatched task.");
+    dispatchedTaskId = task.id;
+    expect(task.id).not.toBe(dispatched.agentSessionId);
     expect(task?.status).toBe("queued");
     expect(task?.taskPrompt).toContain("Fix the flaky retry handling in the queue worker.");
-    expect(task?.modelProviderId).toBe("opencode");
-    expect(task?.modelId).toBe("big-pickle");
+    expect(task?.modelProviderId).toBe("xai");
+    expect(task?.modelId).toBe("grok-4.6");
     const run = await dbClient.db.query.runs.findFirst({
       where: { id: dispatched.runId, organizationId },
     });
@@ -608,18 +697,22 @@ describe("devboxes CLI", () => {
     const issueUrl = `https://github.com/${fixture.repositoryFullName}/issues/42`;
     const dispatched = await dispatchDevboxesTask(context, {
       task: issueUrl,
-      blueprint: fixture.blueprintId,
+      blueprintVersionId: fixture.blueprintVersionId,
     });
 
     expect(dispatched.projectId).toBe(fixture.projectId);
     const task = await dbClient.db.query.opencodeDispatchTasks.findFirst({
-      where: { id: dispatched.agentSessionId, organizationId },
+      where: {
+        sessionId: dispatched.agentSessionId,
+        runId: dispatched.runId,
+        organizationId,
+      },
     });
     expect(task?.taskPrompt).toContain(`ISSUE_URL=${issueUrl}`);
     expect(task?.taskPrompt).toContain("DESTINATION_BRANCH=main");
     expect(task?.baseBranch).toBe("main");
-    expect(task?.modelProviderId).toBe("opencode");
-    expect(task?.modelId).toBe("big-pickle");
+    expect(task?.modelProviderId).toBe("xai");
+    expect(task?.modelId).toBe("grok-4.6");
   });
 
   it("refuses an ambiguous dispatch instead of guessing a project", async () => {
@@ -636,7 +729,7 @@ describe("devboxes CLI", () => {
     const repoDir = await gitRepoWithOrigin("git@github.com:acme/other-service.git");
     const dispatched = await dispatchDevboxesTask(context, {
       task: "Tighten the reconnect backoff.",
-      blueprint: secondFixture.blueprintId,
+      blueprintVersionId: secondFixture.blueprintVersionId,
       cwd: repoDir,
     });
 
@@ -648,7 +741,11 @@ describe("devboxes CLI", () => {
     expect(dispatched.inferredFromGitRemote).toBe("github.com/acme/other-service");
 
     const task = await dbClient.db.query.opencodeDispatchTasks.findFirst({
-      where: { id: dispatched.agentSessionId, organizationId },
+      where: {
+        sessionId: dispatched.agentSessionId,
+        runId: dispatched.runId,
+        organizationId,
+      },
     });
     expect(task?.repositoryFullName).toBe("acme/other-service");
   });
@@ -662,7 +759,7 @@ describe("devboxes CLI", () => {
     );
     const dispatched = await dispatchDevboxesTask(context, {
       task: "Rotate the webhook signing key.",
-      blueprint: secondFixture.blueprintId,
+      blueprintVersionId: secondFixture.blueprintVersionId,
       cwd: repoDir,
     });
 
@@ -677,7 +774,7 @@ describe("devboxes CLI", () => {
     const dispatched = await dispatchDevboxesTask(context, {
       task: "Ship it on the dashboard project instead.",
       repo: fixture.repositoryFullName,
-      blueprint: fixture.blueprintId,
+      blueprintVersionId: fixture.blueprintVersionId,
       cwd: repoDir,
     });
     expect(dispatched.projectId).toBe(fixture.projectId);
@@ -721,9 +818,12 @@ describe("devboxes CLI", () => {
     await harness.seedOpencodeProviderCredential({
       organizationId: soloOrganizationId,
       createdByUserId: ownerUserId,
-      providerId: "opencode",
+      providerId: "xai",
+      validatedModelIds: ["grok-4.6"],
+      validatedModelLabels: { "grok-4.6": "Grok 4.6" },
+      validatedProviderLabel: "xAI",
     });
-    const soloFixture = await harness.seedGithubProjectRun({
+    const soloFixture = await harness.seedGithubProject({
       organizationId: soloOrganizationId,
       createdByUserId: ownerUserId,
       repository: { name: "acme/solo-service", url: "https://github.com/acme/solo-service" },
@@ -736,6 +836,8 @@ describe("devboxes CLI", () => {
       name: "Implement",
       order: 1,
       action: "opencode.run",
+      kind: "agentic",
+      inputTemplate: serializedJsonb({}),
     });
 
     const soloContext = await loadContext({
@@ -745,7 +847,7 @@ describe("devboxes CLI", () => {
     // configDir is not a git checkout, so no remote can tip the selection.
     const dispatched = await dispatchDevboxesTask(soloContext, {
       task: "Ship the only project.",
-      blueprint: soloFixture.blueprintId,
+      blueprintVersionId: soloFixture.blueprintVersionId,
       cwd: configDir,
     });
 
@@ -758,15 +860,38 @@ describe("devboxes CLI", () => {
   it("reads session and run status for a dispatched session", async () => {
     const current = await readDevboxesSession(context, dispatchedSessionId);
     expect(current.session.id).toBe(dispatchedSessionId);
-    expect(current.session.status).toBe("queued");
-    expect(current.run?.id).toBe(dispatchedRunId);
-    expect(current.run?.status).toBe("queued");
+    expect(current.currentTask.status).toBe("queued");
+    expect(current.run.id).toBe(dispatchedRunId);
+    expect(current.run.status).toBe("queued");
     // The run route serves the current step's name, not the step row.
-    expect(current.run?.currentStep).toBe("Implement");
+    expect(current.run.currentStep).toBe("Implement");
+    expect(current.run.usage).toEqual({
+      tokensInput: 0,
+      tokensOutput: 0,
+      tokensCacheRead: 0,
+      tokensCacheWrite: 0,
+      monetaryBasis: "unavailable",
+    });
 
     await expect(
       readDevboxesSession(context, "00000000-0000-7000-8000-00000000dead"),
     ).rejects.toThrow("404");
+  });
+
+  it("fails status when its canonical Run is unavailable", async () => {
+    await dbClient.db
+      .update(schema.runs)
+      .set({ deletedAt: new Date() })
+      .where(eq(schema.runs.id, dispatchedRunId));
+
+    try {
+      await expect(readDevboxesSession(context, dispatchedSessionId)).rejects.toThrow("404");
+    } finally {
+      await dbClient.db
+        .update(schema.runs)
+        .set({ deletedAt: null })
+        .where(eq(schema.runs.id, dispatchedRunId));
+    }
   });
 
   it("extends the session expiry when a connected command is used", async () => {
@@ -790,99 +915,69 @@ describe("devboxes CLI", () => {
     expect(refreshed.expiresAt.getTime()).toBeGreaterThan(Date.now() + 6 * 24 * 60 * 60 * 1000);
   });
 
-  it("reads the result with pull request link and final assistant output", async () => {
-    // The v2 read API projects the durable session log; the final output is
-    // the latest assistant message's text parts.
+  it("reads the structured Run outcome without reconstructing Session events", async () => {
     await dbClient.db
       .update(schema.opencodeDispatchTasks)
-      .set({ opencodeSessionId: "ses-cli" })
-      .where(eq(schema.opencodeDispatchTasks.id, dispatchedSessionId));
-    const { appendRawOpencodeEventsToClickHouse } = await import("@/clickhouse/opencode-events");
-    await appendRawOpencodeEventsToClickHouse({
-      organizationId,
-      agentSessionId: dispatchedSessionId,
-      events: [
-        {
-          id: "evt-input",
-          created: 1,
-          type: "session.input.admitted",
-          durable: { aggregateID: "ses-cli", seq: 1, version: 1 },
-          data: {
-            sessionID: "ses-cli",
-            inputID: "msg-user",
-            input: {
-              type: "text",
-              data: { text: "Fix the flaky retry handling in the queue worker." },
-            },
-          },
-        },
-        {
-          id: "evt-step-started",
-          created: 2,
-          type: "session.step.started",
-          durable: { aggregateID: "ses-cli", seq: 2, version: 1 },
-          data: { sessionID: "ses-cli", assistantMessageID: "msg-assistant" },
-        },
-        {
-          id: "evt-text-started",
-          created: 3,
-          type: "session.text.started",
-          durable: { aggregateID: "ses-cli", seq: 3, version: 1 },
-          data: { sessionID: "ses-cli", assistantMessageID: "msg-assistant", ordinal: 0 },
-        },
-        {
-          id: "evt-text-ended",
-          created: 4,
-          type: "session.text.ended",
-          durable: { aggregateID: "ses-cli", seq: 4, version: 1 },
-          data: {
-            sessionID: "ses-cli",
-            assistantMessageID: "msg-assistant",
-            ordinal: 0,
-            text: "Retry handling now backs off exponentially; opened a pull request.",
-          },
-        },
-        {
-          id: "evt-step-ended",
-          created: 5,
-          type: "session.step.ended",
-          durable: { aggregateID: "ses-cli", seq: 5, version: 1 },
-          data: { sessionID: "ses-cli", assistantMessageID: "msg-assistant", finish: "stop" },
-        },
-      ],
-    });
+      .set({
+        opencodeSessionId: "ses-cli",
+        status: "completed",
+        startedAt: new Date(Date.now() - 1_000),
+        completedAt: new Date(),
+      })
+      .where(eq(schema.opencodeDispatchTasks.id, dispatchedTaskId));
     await dbClient.db
       .update(schema.runs)
       .set({
         status: "succeeded",
-        pullRequestUrl: "https://github.com/firatoezcan/devboxes-dashboard/pull/77",
+        outcome: serializedJsonb({
+          summary: {
+            text: "Retry handling now backs off exponentially; opened a pull request.",
+            producingRunStepId: null,
+          },
+          privateArtifacts: [],
+          externalResults: [
+            {
+              type: "pull_request",
+              provider: "github",
+              externalId: "firatoezcan/devboxes-dashboard#77",
+              canonicalUrl: "https://github.com/firatoezcan/devboxes-dashboard/pull/77",
+              publicationState: "published",
+              producingRunStepId: null,
+            },
+          ],
+          publicationFailures: [],
+        }),
         completedAt: new Date(),
       })
       .where(eq(schema.runs.id, dispatchedRunId));
 
     const result = await readDevboxesSessionResult(context, dispatchedSessionId);
     expect(result.terminal).toBe(true);
-    expect(result.run?.pullRequestUrl).toBe(
-      "https://github.com/firatoezcan/devboxes-dashboard/pull/77",
-    );
-    expect(result.finalOutputError).toBeNull();
-    expect(result.finalOutput).toBe(
+    expect(result.run.outcome?.summary?.text).toBe(
       "Retry handling now backs off exponentially; opened a pull request.",
+    );
+    expect(result.run.usage).toEqual({
+      tokensInput: 0,
+      tokensOutput: 0,
+      tokensCacheRead: 0,
+      tokensCacheWrite: 0,
+      monetaryBasis: "unavailable",
+    });
+    expect(result.run.outcome?.externalResults[0]?.canonicalUrl).toBe(
+      "https://github.com/firatoezcan/devboxes-dashboard/pull/77",
     );
   });
 
   it("serves the full result from a suffix-less --api base URL", async () => {
-    // Before base-URL normalization moved into loadContext, this exact shape
-    // worked for every command except the final-output fetch (404).
+    // The result route works with the same normalized base as every command.
     const suffixless = await loadContext({ config: context.configPath, api: origin });
     const result = await readDevboxesSessionResult(suffixless, dispatchedSessionId);
-    expect(result.finalOutputError).toBeNull();
-    expect(result.finalOutput).toBe(
+    expect(result.run.outcome?.summary?.text).toBe(
       "Retry handling now backs off exponentially; opened a pull request.",
     );
   });
 
-  it("serves dispatch/status/result as MCP tools over the stored credentials", async () => {
+  it("serves dispatch/continue/status/result as MCP tools over the stored credentials", async () => {
     const server = createDevboxesMcpServer(context);
     const client = new Client({ name: "devboxes-cli-test", version: "0.0.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -891,14 +986,15 @@ describe("devboxes CLI", () => {
     try {
       const tools = await client.listTools();
       expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
+        "continue_session",
         "dispatch_task",
         "get_session_result",
         "get_session_status",
       ]);
-      // dispatch_task mirrors the CLI dispatch flags, including --blueprint.
+      // dispatch_task mirrors the CLI dispatch flags, including exact Blueprint Version selection.
       const dispatchTool = tools.tools.find((tool) => tool.name === "dispatch_task");
       expect(Object.keys(dispatchTool?.inputSchema.properties ?? {}).sort()).toEqual(
-        ["blueprint", "branch", "model", "project", "repo", "task", "title"].sort(),
+        ["blueprintVersionId", "branch", "model", "project", "repo", "task", "title"].sort(),
       );
       expect(dispatchTool?.inputSchema.properties?.model).toMatchObject({ type: "string" });
       expect(dispatchTool?.inputSchema.properties?.model).not.toHaveProperty("const");
@@ -908,12 +1004,13 @@ describe("devboxes CLI", () => {
         arguments: {
           task: "Add MCP blueprint parity coverage.",
           repo: "acme/other-service",
-          blueprint: secondFixture.blueprintId,
+          blueprintVersionId: secondFixture.blueprintVersionId,
         },
       });
       expect(mcpDispatch.isError).toBeFalsy();
       const mcpDispatchContent = mcpDispatch.content as Array<{ type: string; text: string }>;
       const mcpDispatched = JSON.parse(mcpDispatchContent[0]!.text) as {
+        agentSessionId: string;
         runId: string;
         projectId: string;
       };
@@ -923,6 +1020,25 @@ describe("devboxes CLI", () => {
       });
       expect(mcpRun?.blueprintVersionId).toBe(secondFixture.blueprintVersionId);
 
+      const activeContinuationTask = "Do not add this task to the active Run.";
+      const activeContinuation = await client.callTool({
+        name: "continue_session",
+        arguments: {
+          agentSessionId: mcpDispatched.agentSessionId,
+          task: activeContinuationTask,
+        },
+      });
+      expect(activeContinuation.isError).toBe(true);
+      expect(
+        await dbClient.db.query.sessionInputs.findFirst({
+          where: {
+            content: activeContinuationTask,
+            organizationId,
+            sessionId: mcpDispatched.agentSessionId,
+          },
+        }),
+      ).toBeUndefined();
+
       const statusResult = await client.callTool({
         name: "get_session_status",
         arguments: { agentSessionId: dispatchedSessionId },
@@ -931,23 +1047,92 @@ describe("devboxes CLI", () => {
       const status = JSON.parse(statusContent[0]!.text) as {
         runStatus: string;
         terminal: boolean;
-        pullRequestUrl: string;
+        outcome: { summary: { text: string } };
+        usage: { monetaryBasis: string };
       };
       expect(status.runStatus).toBe("succeeded");
       expect(status.terminal).toBe(true);
-      expect(status.pullRequestUrl).toBe(
-        "https://github.com/firatoezcan/devboxes-dashboard/pull/77",
+      expect(status.outcome.summary.text).toBe(
+        "Retry handling now backs off exponentially; opened a pull request.",
       );
+      expect(status.usage.monetaryBasis).toBe("unavailable");
 
       const resultCall = await client.callTool({
         name: "get_session_result",
         arguments: { agentSessionId: dispatchedSessionId },
       });
       const resultContent = resultCall.content as Array<{ type: string; text: string }>;
-      const sessionResult = JSON.parse(resultContent[0]!.text) as { finalOutput: string };
-      expect(sessionResult.finalOutput).toBe(
+      const sessionResult = JSON.parse(resultContent[0]!.text) as {
+        outcome: { summary: { text: string } };
+        usage: { monetaryBasis: string };
+      };
+      expect(sessionResult.outcome.summary.text).toBe(
         "Retry handling now backs off exponentially; opened a pull request.",
       );
+      expect(sessionResult.usage.monetaryBasis).toBe("unavailable");
+
+      const continuationTask =
+        "  Continue the durable Session with this exact task.\nKeep the spacing intact.  ";
+      const continuationCall = await client.callTool({
+        name: "continue_session",
+        arguments: { agentSessionId: dispatchedSessionId, task: continuationTask },
+      });
+      expect(continuationCall.isError).toBeFalsy();
+      const continuationContent = continuationCall.content as Array<{
+        type: string;
+        text: string;
+      }>;
+      const continuation = JSON.parse(continuationContent[0]!.text) as {
+        agentSessionId: string;
+        runId: string;
+        status: string;
+      };
+      expect(continuation).toMatchObject({
+        agentSessionId: dispatchedSessionId,
+        status: "queued",
+      });
+
+      const runB = await dbClient.db.query.runs.findFirst({
+        where: { id: continuation.runId, organizationId },
+      });
+      expect(runB).toMatchObject({
+        sessionId: dispatchedSessionId,
+        sessionSequence: 2,
+        previousRunId: dispatchedRunId,
+        status: "queued",
+      });
+      const admittedInput = await dbClient.db.query.sessionInputs.findFirst({
+        where: {
+          content: continuationTask,
+          organizationId,
+          sessionId: dispatchedSessionId,
+        },
+      });
+      expect(admittedInput).toMatchObject({
+        content: continuationTask,
+        pendingRunId: continuation.runId,
+      });
+
+      const continuedStatusResult = await client.callTool({
+        name: "get_session_status",
+        arguments: { agentSessionId: dispatchedSessionId },
+      });
+      const continuedStatusContent = continuedStatusResult.content as Array<{
+        type: string;
+        text: string;
+      }>;
+      const continuedStatus = JSON.parse(continuedStatusContent[0]!.text) as {
+        runId: string;
+        runStatus: string;
+        sessionStatus: string;
+        terminal: boolean;
+      };
+      expect(continuedStatus).toMatchObject({
+        runId: continuation.runId,
+        runStatus: "queued",
+        sessionStatus: "queued",
+        terminal: false,
+      });
 
       const missing = await client.callTool({
         name: "get_session_status",

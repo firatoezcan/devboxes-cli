@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+
+import Type from "typebox";
+import Value from "typebox/value";
 
 // The runtime is exercised against a real Docker Engine API server on a unix
 // socket — the same wire dockerode speaks to a live dockerd — so these tests
@@ -18,7 +21,8 @@ const daemonApiBaseUrl = "http://host.docker.internal:3001/api";
 // A server-authored launch spec as the claim response serves it; this runtime
 // executes it and overlays only the machine-local env keys.
 const launchSpec = {
-  launchProtocol: "devboxes-launch-v2" as const,
+  launchProtocol: "devboxes-launch-v7" as const,
+  workspaceCapability: "agent-task" as const,
   workingDir: "/workspace",
   entrypoint: "/entrypoint.sh",
   env: {
@@ -26,26 +30,34 @@ const launchSpec = {
     XDG_CONFIG_HOME: "/home/workspace/.config",
     XDG_DATA_HOME: "/home/workspace/.local/share",
     OPENCODE_CONFIG: "/home/workspace/.config/opencode/opencode.json",
-    OPENCODE_EXPERIMENTAL_HTTPAPI: "true",
+    OPENCODE_DATABASE_PATH: "/var/lib/devboxes/opencode.sqlite",
     OPENCODE_EXPERIMENTAL_WORKSPACES: "true",
-    DEVBOX_OPENCODE_TASK_ID: "task_1",
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "safe.directory",
+    GIT_CONFIG_VALUE_0: "/workspace",
+    DEVBOX_WORKSPACE_CAPABILITY: "agent-task" as const,
+    DEVBOX_WORKSPACE_CAPABILITY_ID: "task_1",
+    OPENCODE_WORKSPACE_ID: "wrk_task_1",
     DEVBOX_RUN_ID: "run_1",
     DEVBOX_BACKEND_TOKEN_FILE: "/run/devboxes/secrets/backend-token",
-    DEVBOX_DAEMON_VERSION: "0.8.1",
+    DEVBOX_DAEMON_PRIVATE_DIR: "/run/devboxes/daemon",
+    DEVBOX_DAEMON_VERSION: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     DEVBOX_DAEMON_PLATFORM: "linux/amd64",
     DEVBOX_DAEMON_SHA256: "a".repeat(64),
     DEVBOX_DAEMON_BOOTSTRAP_PROTOCOL: "devboxes-daemon-bootstrap-v1",
   },
-  memoryBackedPaths: ["/home/workspace/.local/share/opencode"],
+  memoryBackedPaths: ["/home/workspace/.local/share"],
   labels: {
     "app.kubernetes.io/managed-by": "firops-control-plane",
-    "devboxes.firops.io/daemon-version": "0.8.1",
+    "devboxes.firops.io/daemon-version":
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "devboxes.firops.io/daemon-sha256": "a".repeat(64),
     "devboxes.firops.io/opencode-session-id": "ses_1",
   },
   providerAuthSource: "local-broker" as const,
 };
-const imageRef = "ghcr.io/firatoezcan/firops-workspace:workspace.pkgset-builder_hash";
+const imageDigest = "d".repeat(64);
+const imageRef = `registry-1.docker.io/firatoezcan/devboxes@sha256:${imageDigest}`;
 const runningState = {
   Status: "running",
   Running: true,
@@ -159,9 +171,17 @@ describe("opencode Docker task runtime against the engine API", () => {
       return { status: 500, body: { message: `unexpected ${request.pathname}` } };
     });
     const { DockerOpencodeTaskRuntime } = await import("./docker-task-runtime");
+    const runtime = new DockerOpencodeTaskRuntime({ daemonApiBaseUrl });
+    await runtime.persistProviderAuthSnapshot({
+      organizationId: "org_1",
+      taskId: "task_1",
+      providerId: "openai",
+      providerAuth: { openai: { type: "api", key: "claim-captured-openai-key" } },
+      passphrase: "machine-provider-snapshot-passphrase",
+    });
 
     try {
-      const container = await new DockerOpencodeTaskRuntime({ daemonApiBaseUrl }).launchTask({
+      const container = await runtime.launchTask({
         organizationId: "org_1",
         taskId: "task_1",
         runId: "run_1",
@@ -177,8 +197,8 @@ describe("opencode Docker task runtime against the engine API", () => {
       });
 
       const pull = engine.requests.find((request) => request.pathname === "/images/create");
-      expect(pull?.query.fromImage).toBe("ghcr.io/firatoezcan/firops-workspace");
-      expect(pull?.query.tag).toBe("workspace.pkgset-builder_hash");
+      expect(pull?.query.fromImage).toBe("registry-1.docker.io/firatoezcan/devboxes");
+      expect(pull?.query.tag).toBe(`sha256:${imageDigest}`);
 
       const create = engine.requests.find((request) => request.pathname === "/containers/create");
       assert(create, "Expected a container create request.");
@@ -187,22 +207,54 @@ describe("opencode Docker task runtime against the engine API", () => {
         Image: imageRef,
         WorkingDir: "/workspace",
         Entrypoint: ["/entrypoint.sh"],
+        User: "0:1000",
         Labels: {
           "app.kubernetes.io/managed-by": "firops-control-plane",
           "devboxes.firops.io/workload": "opencode-dispatch-task",
           "devboxes.firops.io/organization-id": "org_1",
           "devboxes.firops.io/task-id": "task_1",
-          "devboxes.firops.io/daemon-version": "0.8.1",
+          "devboxes.firops.io/daemon-version":
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "devboxes.firops.io/daemon-sha256": "a".repeat(64),
           "devboxes.firops.io/opencode-session-id": "ses_1",
         },
       });
-      const createBody = create.body as {
-        Env: string[];
-        HostConfig: Record<string, unknown>;
-      };
+      const createBody = Value.Parse(
+        Type.Object(
+          {
+            Env: Type.Array(Type.String()),
+            HostConfig: Type.Object(
+              {
+                AutoRemove: Type.Boolean(),
+                CapDrop: Type.Array(Type.String()),
+                CapAdd: Type.Array(Type.String()),
+                SecurityOpt: Type.Array(Type.String()),
+                ExtraHosts: Type.Array(Type.String()),
+                Mounts: Type.Array(
+                  Type.Object(
+                    {
+                      Type: Type.String(),
+                      Source: Type.String(),
+                      Target: Type.String(),
+                      ReadOnly: Type.Boolean(),
+                    },
+                    { additionalProperties: true },
+                  ),
+                ),
+                Tmpfs: Type.Record(Type.String(), Type.String()),
+              },
+              { additionalProperties: true },
+            ),
+          },
+          { additionalProperties: true },
+        ),
+        create.body,
+      );
       expect(createBody.HostConfig).toEqual({
         AutoRemove: false,
+        CapDrop: ["ALL"],
+        CapAdd: ["DAC_OVERRIDE", "SETGID", "SETUID"],
+        SecurityOpt: ["no-new-privileges"],
         Mounts: expect.arrayContaining([
           expect.objectContaining({
             Type: "bind",
@@ -218,34 +270,70 @@ describe("opencode Docker task runtime against the engine API", () => {
           }),
         ]),
         Tmpfs: {
-          "/home/workspace/.local/share/opencode":
-            "rw,noexec,nosuid,size=512m,mode=0700,uid=1000,gid=1000",
+          "/run/devboxes/daemon": "rw,noexec,nosuid,size=512m,mode=0700,uid=1001,gid=1000",
+          "/run/devboxes/exec": "rw,nosuid,size=64m,mode=0700,uid=1001,gid=1000",
+          "/home/workspace/.local/share": "rw,noexec,nosuid,size=512m,mode=0770,uid=1001,gid=1000",
         },
         ExtraHosts: ["host.docker.internal:host-gateway"],
       });
+      const tmpfs = createBody.HostConfig.Tmpfs;
+      const repositoryExecutableDirectory = join(
+        dirname(launchSpec.env.DEVBOX_DAEMON_PRIVATE_DIR),
+        "exec",
+      );
+      expect(
+        Object.entries(tmpfs).some(
+          ([path, options]) =>
+            options.split(",").includes("noexec") &&
+            (repositoryExecutableDirectory === path ||
+              repositoryExecutableDirectory.startsWith(`${path}/`)),
+        ),
+      ).toBe(false);
       expect(createBody.Env).toEqual(
         expect.arrayContaining([
-          "DEVBOX_OPENCODE_TASK_ID=task_1",
+          "DEVBOX_WORKSPACE_CAPABILITY_ID=task_1",
           "DEVBOX_RUN_ID=run_1",
           "DEVBOX_OPENCODE_PROVIDER_AUTH_URL=http://host.docker.internal:43111",
           "DEVBOX_OPENCODE_CONFIG_JSON_FILE=/run/devboxes/secrets/opencode-config.json",
           "DEVBOX_BACKEND_BASE_URL=http://host.docker.internal:3001/api",
-          "OPENCODE_READY_MS=120000",
+          "OPENCODE_STARTUP_TIMEOUT_MS=120000",
           "DEVBOX_BACKEND_TOKEN_FILE=/run/devboxes/secrets/backend-token",
-          "DEVBOX_DAEMON_VERSION=0.8.1",
+          "DEVBOX_DAEMON_VERSION=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "DEVBOX_DAEMON_PLATFORM=linux/amd64",
           `DEVBOX_DAEMON_SHA256=${"a".repeat(64)}`,
           "DEVBOX_DAEMON_BOOTSTRAP_PROTOCOL=devboxes-daemon-bootstrap-v1",
           "OPENCODE_CONFIG=/home/workspace/.config/opencode/opencode.json",
-          "OPENCODE_EXPERIMENTAL_HTTPAPI=true",
+          "OPENCODE_DATABASE_PATH=/var/lib/devboxes/opencode.sqlite",
           "OPENCODE_EXPERIMENTAL_WORKSPACES=true",
+          "GIT_CONFIG_COUNT=1",
+          "GIT_CONFIG_KEY_0=safe.directory",
+          "GIT_CONFIG_VALUE_0=/workspace",
         ]),
       );
+      expect(createBody.Env).not.toContain("GIT_CONFIG_VALUE_0=*");
       // No provider key, backend token, or config payload ever rides env.
       const serializedEnv = createBody.Env.join("\n");
       for (const secret of ["runner-api-key", opencodeConfigJsonBase64, "deepseek-key"]) {
         expect(serializedEnv).not.toContain(secret);
       }
+      const providerSnapshotPath = join(
+        homeRoot,
+        "secrets",
+        "org_1",
+        "task_1",
+        "provider-auth.age",
+      );
+      const encryptedProviderSnapshot = await readFile(providerSnapshotPath, "utf8");
+      expect(encryptedProviderSnapshot).not.toContain("claim-captured-openai-key");
+      expect(
+        await new DockerOpencodeTaskRuntime({ daemonApiBaseUrl }).readProviderAuthSnapshot({
+          organizationId: "org_1",
+          taskId: "task_1",
+          providerId: "openai",
+          passphrase: "machine-provider-snapshot-passphrase",
+        }),
+      ).toEqual({ openai: { type: "api", key: "claim-captured-openai-key" } });
+      expect((await stat(providerSnapshotPath)).mode & 0o777).toBe(0o600);
       expect(engine.requests.at(-1)?.pathname).toBe("/containers/container_1/start");
     } finally {
       await engine.close();
@@ -371,15 +459,16 @@ describe("opencode Docker task runtime against the engine API", () => {
       });
       // No image pull: the relaunch runs from the committed state snapshot.
       const create = engine.requests[3];
-      expect(create?.body).toMatchObject({
+      assert(create);
+      expect(create.body).toMatchObject({
         Image: "firops/opencode-task-state:5f5d08238327",
         Entrypoint: ["/entrypoint.sh"],
       });
-      expect((create?.body as { Env: string[] }).Env).toEqual(
+      expect((create.body as { Env: string[] }).Env).toEqual(
         expect.arrayContaining([
           "DEVBOX_RUN_ID=run_1",
           "DEVBOX_OPENCODE_PROVIDER_AUTH_URL=http://host.docker.internal:43111",
-          "DEVBOX_DAEMON_VERSION=0.8.1",
+          "DEVBOX_DAEMON_VERSION=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "DEVBOX_DAEMON_PLATFORM=linux/amd64",
           `DEVBOX_DAEMON_SHA256=${"a".repeat(64)}`,
         ]),
@@ -448,6 +537,9 @@ describe("opencode Docker task runtime against the engine API", () => {
       if (request.method === "DELETE" && request.pathname === "/containers/container_old") {
         return { status: 204 };
       }
+      if (request.method === "GET" && request.pathname === "/containers/container_old/json") {
+        return { status: 404, body: { message: "no such container" } };
+      }
       if (
         request.method === "DELETE" &&
         request.pathname === "/images/firops/opencode-task-state:5f5d08238327"
@@ -475,8 +567,54 @@ describe("opencode Docker task runtime against the engine API", () => {
       expect(engine.requests.map((request) => `${request.method} ${request.pathname}`)).toEqual([
         "POST /containers/container_old/stop",
         "DELETE /containers/container_old",
+        "GET /containers/container_old/json",
         "DELETE /images/firops/opencode-task-state:5f5d08238327",
       ]);
+      await expectTaskBackendTokenRemoved();
+    } finally {
+      await engine.close();
+    }
+  });
+
+  it("waits for a Docker container to be absent after remove is accepted", async () => {
+    let removed = false;
+    let postDeleteInspections = 0;
+    const engine = await startEngineServer(socketPath, (request) => {
+      if (request.pathname === "/containers/container_old/stop") {
+        return { status: 204 };
+      }
+      if (request.method === "DELETE" && request.pathname === "/containers/container_old") {
+        removed = true;
+        return { status: 204 };
+      }
+      if (
+        request.method === "GET" &&
+        request.pathname === "/containers/container_old/json" &&
+        removed
+      ) {
+        postDeleteInspections += 1;
+        return postDeleteInspections === 1
+          ? { status: 200, body: { Id: "container_old", State: { Running: true } } }
+          : { status: 404, body: { message: "no such container" } };
+      }
+      if (
+        request.method === "DELETE" &&
+        request.pathname === "/images/firops/opencode-task-state:5f5d08238327"
+      ) {
+        return { status: 200, body: [] };
+      }
+      return { status: 500, body: { message: `unexpected ${request.pathname}` } };
+    });
+    const { DockerOpencodeTaskRuntime } = await import("./docker-task-runtime");
+    await writeTaskBackendTokenFile();
+
+    try {
+      await new DockerOpencodeTaskRuntime({ daemonApiBaseUrl }).stopTask({
+        taskId: "task_1",
+        containerId: "container_old",
+        organizationId: "org_1",
+      });
+      expect(postDeleteInspections).toBe(2);
       await expectTaskBackendTokenRemoved();
     } finally {
       await engine.close();

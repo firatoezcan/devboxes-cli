@@ -15,11 +15,9 @@ export type OpencodeDaemonArtifact = {
   bootstrapProtocol: typeof opencodeDaemonBootstrapProtocol;
 };
 
-// What an enqueued task pins: the daemon version and the entrypoint contract.
-// Platform and sha256 are deliberately absent until claim time, when the
-// claiming machine's architecture resolves them (a requeue onto a
-// different-arch machine re-resolves). The persisted row carries the resolved
-// artifact afterwards.
+// Queued work carries the current release channel and the entrypoint contract.
+// Claim resolves that channel to one immutable release id, platform, and
+// sha256, then persists the exact artifact before launch.
 export type OpencodeDaemonPin = {
   version: string;
   bootstrapProtocol: typeof opencodeDaemonBootstrapProtocol;

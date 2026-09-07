@@ -8,18 +8,24 @@ import {
 import {
   credentialStoreFileName,
   credentialStoreVersion,
+  githubTaskCredentialFailureCodes,
   listenerRegistrationDeviceClientId,
   listenerUpgradeRequiredCode,
+  opencodeEnginePermissionPolicyErrorCode,
   opencodeTaskCallbackTerminalCode,
   reconciliationLabels,
   runnerMachineApiPrefix,
   runnerMachineRoutePrefix,
 } from "./frozen";
-import { clientOwnedLaunchEnvKeys, opencodeLaunchProtocol } from "./launch-spec";
+import { clientOwnedLaunchEnvKeys, opencodeWorkspaceLaunchProtocol } from "./launch-spec";
 import { opencodeProviderAuthPath } from "./provider-auth";
 import {
   containerBackendTokenFile,
+  containerDaemonDataDir,
+  containerDaemonExecutableDir,
+  containerDaemonNodeModulesDir,
   containerHome,
+  containerOpencodeDatabasePath,
   containerOpencodeConfigJsonFile,
   containerSecretsDir,
   daemonEntrypoint,
@@ -37,7 +43,7 @@ import {
 // suite exists to catch.
 describe("frozen runner contracts", () => {
   it("pins the protocol tags shipped binaries negotiate with", () => {
-    expect(opencodeLaunchProtocol).toBe("devboxes-launch-v1");
+    expect(opencodeWorkspaceLaunchProtocol).toBe("devboxes-launch-v7");
     expect(opencodeDaemonBootstrapProtocol).toBe("devboxes-daemon-bootstrap-v1");
   });
 
@@ -49,11 +55,15 @@ describe("frozen runner contracts", () => {
     ]);
   });
 
-  it("pins the container paths baked into published runner images", () => {
+  it("pins the container paths baked into published Workspace Images", () => {
     expect(containerHome).toBe("/home/workspace");
     expect(containerSecretsDir).toBe("/run/devboxes/secrets");
     expect(containerBackendTokenFile).toBe("/run/devboxes/secrets/backend-token");
     expect(containerOpencodeConfigJsonFile).toBe("/run/devboxes/secrets/opencode-config.json");
+    expect(containerDaemonDataDir).toBe("/var/lib/devboxes");
+    expect(containerDaemonExecutableDir).toBe("/run/devboxes/exec");
+    expect(containerDaemonNodeModulesDir).toBe("/run/devboxes/exec/node_modules");
+    expect(containerOpencodeDatabasePath).toBe("/var/lib/devboxes/opencode.sqlite");
     expect(daemonEntrypoint).toBe("/entrypoint.sh");
   });
 
@@ -89,6 +99,16 @@ describe("frozen runner contracts", () => {
     expect(runnerMachineRoutePrefix).toBe("/internal/runner-machines");
     expect(listenerUpgradeRequiredCode).toBe("listener_upgrade_required");
     expect(opencodeTaskCallbackTerminalCode).toBe("task_callback_terminal");
+    expect(opencodeEnginePermissionPolicyErrorCode).toBe("engine_permission_policy_violation");
+    expect(githubTaskCredentialFailureCodes).toEqual({
+      envelopeInvalid: "github_app_task_credential_envelope_invalid",
+      installationRepositoryMismatch: "github_app_installation_repository_mismatch",
+      installationRevoked: "github_app_installation_revoked",
+      installationSuspended: "github_app_installation_suspended",
+      reconsentRequired: "github_app_reconsent_required",
+      repositoryAccessRevoked: "github_app_repository_access_revoked",
+      responseInvalid: "github_app_task_credential_response_invalid",
+    });
     expect(listenerRegistrationDeviceClientId).toBe("devboxes-listener-registration");
     expect(credentialStoreFileName).toBe("provider-credentials.json.age");
     expect(credentialStoreVersion).toBe(1);

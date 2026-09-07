@@ -96,7 +96,7 @@ const run = () => {
       process.kill(process.pid, signal);
       return;
     }
-    process.exitCode = typeof code === "number" ? code : 1;
+    process.exitCode = code ?? 1;
   });
 };
 

@@ -18,6 +18,7 @@ import type { OpencodeConnectorDescriptor } from "./descriptor-schema";
 type OpenaiDeviceDescriptor = Extract<OpencodeConnectorDescriptor, { kind: "openai-device" }>;
 type GithubDeviceDescriptor = Extract<OpencodeConnectorDescriptor, { kind: "github-device" }>;
 type Rfc8628FormDescriptor = Extract<OpencodeConnectorDescriptor, { kind: "rfc8628-form" }>;
+type VendorJson = string | number | boolean | null | VendorJson[] | { [key: string]: VendorJson };
 
 const userAgent = "devboxes-dashboard";
 
@@ -25,17 +26,11 @@ const userAgent = "devboxes-dashboard";
 // when the vendor response carries no explicit expiry.
 const attemptMaxAgeMs = 15 * 60 * 1000;
 
-// Vendor calls sit on interactive paths (dialog polls, the task-container boot
-// fetch via refresh-on-serve); a hung connection must become a thrown —
-// transient — error instead of a stuck handler.
-const vendorFetchTimeoutMs = 10_000;
-
 // Zero and negatives mean "no usable interval" (opencode's parseInt||5 does
 // the same); the ceiling only guards against absurd values — a vendor asking
 // for a slower cadence must be honored, never polled faster than requested.
-const clampedIntervalSeconds = (value: unknown, fallback: number) => {
-  const seconds = typeof value === "string" ? Number.parseInt(value, 10) : value;
-  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) {
+const clampedIntervalSeconds = (seconds: number | undefined, fallback: number) => {
+  if (seconds === undefined || !Number.isFinite(seconds) || seconds <= 0) {
     return Math.min(fallback, 900);
   }
   // Ceil, not round: a fractional vendor interval must never poll faster
@@ -48,11 +43,11 @@ const clampedIntervalSeconds = (value: unknown, fallback: number) => {
 // means transient, same as any other vendor hiccup.
 const parsedVendorBody = <T extends TSchema>(
   schema: T,
-  body: unknown,
+  body: VendorJson,
   flowLabel: string,
 ): Static<T> => {
   try {
-    return Value.Parse(schema, body) as Static<T>;
+    return Value.Parse(schema, body);
   } catch {
     throw new Error(`${flowLabel} returned an unexpected response body.`);
   }
@@ -93,8 +88,13 @@ export type OpencodeOauthDeviceStart = {
 
 export type OpencodeOauthPollResult =
   | { status: "pending"; intervalSeconds: number }
-  | { status: "failed"; error: string }
-  | { status: "completed"; auth: OpencodeOauthAuth; accountLabel?: string };
+  | { status: "failed"; error: string; reason?: "insufficient-scope" }
+  | {
+      status: "completed";
+      auth: OpencodeOauthAuth;
+      accountExternalId?: string;
+      accountLabel?: string;
+    };
 
 // --- Shared vendor response schemas -----------------------------------------
 
@@ -108,6 +108,26 @@ const TokenResponseSchema = Type.Object(
   { additionalProperties: true },
 );
 
+const JwtStringSchema = Type.String();
+const JwtAuthClaimsSchema = Type.Object(
+  { chatgpt_account_id: Type.Optional(Type.Unknown()) },
+  { additionalProperties: true },
+);
+const JwtOrganizationSchema = Type.Object(
+  { id: Type.Optional(Type.Unknown()) },
+  { additionalProperties: true },
+);
+const JwtClaimsSchema = Type.Object(
+  {
+    chatgpt_account_id: Type.Optional(Type.Unknown()),
+    email: Type.Optional(Type.Unknown()),
+    sub: Type.Optional(Type.Unknown()),
+    "https://api.openai.com/auth": Type.Optional(Type.Unknown()),
+    organizations: Type.Optional(Type.Unknown()),
+  },
+  { additionalProperties: true },
+);
+
 // Claims are best-effort display/routing data; one malformed field must not
 // drop the whole token's claims (a strict schema would lose a valid
 // chatgpt_account_id next to, say, a null email). Narrow each field alone.
@@ -117,32 +137,32 @@ const bearerJwtClaims = (token: string) => {
   if (segments.length !== 3) return undefined;
   const payload = segments[1];
   if (!payload) return undefined;
-  let parsed: unknown;
+  let claims: Static<typeof JwtClaimsSchema>;
   try {
-    parsed = JSON.parse(Buffer.from(payload, "base64url").toString());
+    claims = Value.Parse(JwtClaimsSchema, JSON.parse(Buffer.from(payload, "base64url").toString()));
   } catch {
     return undefined;
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
-  const claims = parsed as Record<string, unknown>;
   const nestedAuth = claims["https://api.openai.com/auth"];
-  const nestedAccountId =
-    nestedAuth && typeof nestedAuth === "object" && !Array.isArray(nestedAuth)
-      ? (nestedAuth as Record<string, unknown>).chatgpt_account_id
-      : undefined;
-  const firstOrganization = Array.isArray(claims.organizations)
-    ? (claims.organizations[0] as unknown)
+  const nestedAccountId = Value.Check(JwtAuthClaimsSchema, nestedAuth)
+    ? nestedAuth.chatgpt_account_id
     : undefined;
-  const firstOrganizationId =
-    firstOrganization && typeof firstOrganization === "object"
-      ? (firstOrganization as Record<string, unknown>).id
-      : undefined;
+  const firstOrganization = Value.Check(Type.Array(JwtOrganizationSchema), claims.organizations)
+    ? claims.organizations[0]
+    : undefined;
+  const firstOrganizationId = firstOrganization?.id;
   return {
-    chatgptAccountId:
-      typeof claims.chatgpt_account_id === "string" ? claims.chatgpt_account_id : undefined,
-    nestedChatgptAccountId: typeof nestedAccountId === "string" ? nestedAccountId : undefined,
-    firstOrganizationId: typeof firstOrganizationId === "string" ? firstOrganizationId : undefined,
-    email: typeof claims.email === "string" ? claims.email : undefined,
+    chatgptAccountId: Value.Check(JwtStringSchema, claims.chatgpt_account_id)
+      ? claims.chatgpt_account_id
+      : undefined,
+    nestedChatgptAccountId: Value.Check(JwtStringSchema, nestedAccountId)
+      ? nestedAccountId
+      : undefined,
+    firstOrganizationId: Value.Check(JwtStringSchema, firstOrganizationId)
+      ? firstOrganizationId
+      : undefined,
+    email: Value.Check(JwtStringSchema, claims.email) ? claims.email : undefined,
+    subject: Value.Check(JwtStringSchema, claims.sub) ? claims.sub : undefined,
   };
 };
 
@@ -181,7 +201,7 @@ const openaiOauthFromTokens = (
   tokens: Static<typeof TokenResponseSchema>,
   previousRefreshToken: string,
   previousAccountId?: string,
-) => {
+): Omit<Extract<OpencodeOauthPollResult, { status: "completed" }>, "status"> => {
   const accountId = openaiAccountId(tokens) ?? previousAccountId;
   const auth: OpencodeOauthAuth = {
     type: "oauth",
@@ -192,10 +212,13 @@ const openaiOauthFromTokens = (
     // opencode's auth.json reader silently drops entries whose expires is not
     // an integer, so a fractional expires_in must never produce a float here.
     expires: Math.round(Date.now() + (tokens.expires_in ?? 3600) * 1000),
-    ...(accountId ? { accountId } : {}),
   };
+  if (accountId) auth.accountId = accountId;
   const accountLabel = tokens.id_token ? bearerJwtClaims(tokens.id_token)?.email : undefined;
-  return { auth, accountLabel };
+  if (accountId && accountLabel) return { auth, accountExternalId: accountId, accountLabel };
+  if (accountId) return { auth, accountExternalId: accountId };
+  if (accountLabel) return { auth, accountLabel };
+  return { auth };
 };
 
 const startOpenaiDeviceFlow = async (
@@ -205,7 +228,6 @@ const startOpenaiDeviceFlow = async (
     method: "POST",
     headers: { "Content-Type": "application/json", "User-Agent": userAgent },
     body: JSON.stringify({ client_id: descriptor.clientId }),
-    signal: AbortSignal.timeout(vendorFetchTimeoutMs),
   });
   if (!response.ok) {
     throw new Error(
@@ -217,7 +239,15 @@ const startOpenaiDeviceFlow = async (
     await response.json(),
     `${descriptor.label} device authorization`,
   );
-  const intervalSeconds = clampedIntervalSeconds(device.interval, 5);
+  const interval = device.interval;
+  const intervalSeconds = clampedIntervalSeconds(
+    interval === undefined
+      ? undefined
+      : Value.Check(Type.Number(), interval)
+        ? interval
+        : Number.parseInt(interval, 10),
+    5,
+  );
   return {
     userCode: device.user_code,
     // The vendor never sends a verification URL for this flow shape.
@@ -237,12 +267,13 @@ const startOpenaiDeviceFlow = async (
 const pollOpenaiDeviceFlow = async (
   descriptor: OpenaiDeviceDescriptor,
   payload: Extract<OpencodeOauthAttemptPayload, { kind: "openai-device" }>,
+  signal: AbortSignal,
 ): Promise<OpencodeOauthPollResult> => {
   const response = await fetch(descriptor.pollUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json", "User-Agent": userAgent },
     body: JSON.stringify({ device_auth_id: payload.deviceAuthId, user_code: payload.userCode }),
-    signal: AbortSignal.timeout(vendorFetchTimeoutMs),
+    signal,
   });
   // This flow shape signals "not approved yet" with 403/404 rather than
   // RFC 8628 error codes.
@@ -278,7 +309,7 @@ const pollOpenaiDeviceFlow = async (
       client_id: descriptor.clientId,
       code_verifier: grant.code_verifier,
     }).toString(),
-    signal: AbortSignal.timeout(vendorFetchTimeoutMs),
+    signal,
   });
   if (tokenResponse.status >= 500) {
     throw new Error(
@@ -328,6 +359,21 @@ const GithubAccessTokenResponseSchema = Type.Object(
   { additionalProperties: true },
 );
 
+const GithubUserResponseSchema = Type.Object(
+  {
+    id: Type.Number(),
+    login: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: true },
+);
+
+const GithubCopilotTokenResponseSchema = Type.Object(
+  {
+    token: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: true },
+);
+
 const startGithubDeviceFlow = async (
   descriptor: GithubDeviceDescriptor,
 ): Promise<OpencodeOauthDeviceStart> => {
@@ -339,7 +385,6 @@ const startGithubDeviceFlow = async (
       "User-Agent": userAgent,
     },
     body: JSON.stringify({ client_id: descriptor.clientId, scope: descriptor.scope }),
-    signal: AbortSignal.timeout(vendorFetchTimeoutMs),
   });
   if (!response.ok) {
     throw new Error(
@@ -365,7 +410,7 @@ const startGithubDeviceFlow = async (
   }
   const intervalSeconds = clampedIntervalSeconds(device.interval, 5);
   const vendorExpiryMs =
-    typeof device.expires_in === "number" && Number.isFinite(device.expires_in)
+    device.expires_in !== undefined && Number.isFinite(device.expires_in)
       ? device.expires_in * 1000
       : attemptMaxAgeMs;
   return {
@@ -385,6 +430,7 @@ const startGithubDeviceFlow = async (
 const pollGithubDeviceFlow = async (
   descriptor: GithubDeviceDescriptor,
   payload: Extract<OpencodeOauthAttemptPayload, { kind: "github-device" }>,
+  signal: AbortSignal,
 ): Promise<OpencodeOauthPollResult> => {
   const response = await fetch(descriptor.accessTokenUrl, {
     method: "POST",
@@ -398,7 +444,7 @@ const pollGithubDeviceFlow = async (
       device_code: payload.deviceCode,
       grant_type: "urn:ietf:params:oauth:grant-type:device_code",
     }),
-    signal: AbortSignal.timeout(vendorFetchTimeoutMs),
+    signal,
   });
   // Thrown means transient: the attempt stays pending and the next poll
   // retries. Only definitive vendor answers fail the attempt.
@@ -420,6 +466,67 @@ const pollGithubDeviceFlow = async (
   );
 
   if (data.access_token) {
+    const identityResponse = await fetch("https://api.github.com/user", {
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${data.access_token}`,
+        "User-Agent": userAgent,
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      signal,
+    });
+    if (!identityResponse.ok) {
+      const failure: OpencodeOauthPollResult = {
+        status: "failed",
+        error:
+          identityResponse.status === 403
+            ? "GitHub rejected the account identity check because the OAuth token has insufficient scope."
+            : "GitHub rejected the account identity check.",
+      };
+      if (identityResponse.status === 403) failure.reason = "insufficient-scope";
+      return failure;
+    }
+    const scopes = (identityResponse.headers.get("x-oauth-scopes") ?? "")
+      .split(",")
+      .map((scope) => scope.trim());
+    if (!scopes.includes("read:user")) {
+      return {
+        status: "failed",
+        reason: "insufficient-scope",
+        error: "GitHub did not grant the read:user scope required to bind the Provider Account.",
+      };
+    }
+    const identity = parsedVendorBody(
+      GithubUserResponseSchema,
+      await identityResponse.json(),
+      "GitHub account identity",
+    );
+    const copilotResponse = await fetch("https://api.github.com/copilot_internal/v2/token", {
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${data.access_token}`,
+        "User-Agent": userAgent,
+      },
+      signal,
+    });
+    if (!copilotResponse.ok) {
+      if (copilotResponse.status === 401 || copilotResponse.status === 403) {
+        return {
+          status: "failed",
+          reason: "insufficient-scope",
+          error: "GitHub did not grant this account access to the Copilot execution API.",
+        };
+      }
+      return {
+        status: "failed",
+        error: "GitHub rejected the Copilot execution capability check.",
+      };
+    }
+    parsedVendorBody(
+      GithubCopilotTokenResponseSchema,
+      await copilotResponse.json(),
+      "GitHub Copilot execution token",
+    );
     return {
       status: "completed",
       auth: {
@@ -428,6 +535,8 @@ const pollGithubDeviceFlow = async (
         access: data.access_token,
         expires: 0,
       },
+      accountExternalId: String(identity.id),
+      accountLabel: identity.login,
     };
   }
   if (data.error === "authorization_pending") {
@@ -487,8 +596,8 @@ const rfc8628OauthFromTokens = (
     access: tokens.access_token,
     expires: Math.round(Date.now() + (tokens.expires_in ?? 3600) * 1000),
   };
-  const accountLabel = tokens.id_token ? bearerJwtClaims(tokens.id_token)?.email : undefined;
-  return { auth, accountLabel };
+  const claims = tokens.id_token ? bearerJwtClaims(tokens.id_token) : undefined;
+  return { auth, accountExternalId: claims?.subject, accountLabel: claims?.email };
 };
 
 const startRfc8628FormFlow = async (
@@ -505,7 +614,6 @@ const startRfc8628FormFlow = async (
       client_id: descriptor.clientId,
       scope: descriptor.scope,
     }).toString(),
-    signal: AbortSignal.timeout(vendorFetchTimeoutMs),
   });
   if (!response.ok) {
     throw new Error(
@@ -536,9 +644,7 @@ const startRfc8628FormFlow = async (
   }
   const intervalSeconds = clampedIntervalSeconds(device.interval, 5);
   const vendorExpiryMs =
-    typeof device.expires_in === "number" &&
-    Number.isFinite(device.expires_in) &&
-    device.expires_in > 0
+    device.expires_in !== undefined && Number.isFinite(device.expires_in) && device.expires_in > 0
       ? device.expires_in * 1000
       : descriptor.defaultDeviceCodeTtlSeconds * 1000;
   return {
@@ -558,6 +664,7 @@ const startRfc8628FormFlow = async (
 const pollRfc8628FormFlow = async (
   descriptor: Rfc8628FormDescriptor,
   payload: Extract<OpencodeOauthAttemptPayload, { kind: "rfc8628-form" }>,
+  signal: AbortSignal,
 ): Promise<OpencodeOauthPollResult> => {
   const response = await fetch(descriptor.tokenUrl, {
     method: "POST",
@@ -571,7 +678,7 @@ const pollRfc8628FormFlow = async (
       client_id: descriptor.clientId,
       device_code: payload.deviceCode,
     }).toString(),
-    signal: AbortSignal.timeout(vendorFetchTimeoutMs),
+    signal,
   });
   if (response.ok) {
     const tokens = parsedVendorBody(
@@ -641,32 +748,34 @@ export const startOpencodeOauthDeviceFlow = async (
 export const pollOpencodeOauthDeviceFlow = async (
   descriptor: OpencodeConnectorDescriptor,
   payload: OpencodeOauthAttemptPayload,
+  signal: AbortSignal,
 ): Promise<OpencodeOauthPollResult> => {
   // The payload records the flow kind it was started with; a descriptor whose
   // kind moved underneath a pending attempt must fail instead of reaching the
   // wrong vendor endpoint with the wrong grant.
   if (descriptor.kind === "openai-device" && payload.kind === "openai-device") {
-    return pollOpenaiDeviceFlow(descriptor, payload);
+    return pollOpenaiDeviceFlow(descriptor, payload, signal);
   }
   if (descriptor.kind === "github-device" && payload.kind === "github-device") {
-    return pollGithubDeviceFlow(descriptor, payload);
+    return pollGithubDeviceFlow(descriptor, payload, signal);
   }
   if (descriptor.kind === "rfc8628-form" && payload.kind === "rfc8628-form") {
-    return pollRfc8628FormFlow(descriptor, payload);
+    return pollRfc8628FormFlow(descriptor, payload, signal);
   }
   throw new Error(
     `Opencode provider ${descriptor.providerId} attempt was started as ${payload.kind} but the connector is now ${descriptor.kind}; start a new connect attempt.`,
   );
 };
 
-// Refresh is served-credential maintenance: called by the provider-auth route
-// when a stored access token nears expiry. A thrown error is transient
-// (network); a returned error is the vendor's definitive rejection and means
-// the credential needs a reconnect.
+// Refresh prepares an OAuth credential source for a later claim. A thrown
+// error is transient (network); a returned error carries the vendor status so
+// callers can distinguish throttling from a definitive rejection.
 export const refreshOpencodeOauthAccess = async (
   descriptor: OpencodeConnectorDescriptor,
   input: { auth: OpencodeOauthAuth },
-): Promise<{ auth: OpencodeOauthAuth; accountLabel?: string } | { error: string }> => {
+): Promise<
+  { auth: OpencodeOauthAuth; accountLabel?: string } | { error: string; status?: number }
+> => {
   if (descriptor.kind === "github-device") {
     return { error: `Opencode provider ${descriptor.providerId} has no OAuth refresh flow.` };
   }
@@ -682,13 +791,16 @@ export const refreshOpencodeOauthAccess = async (
       refresh_token: input.auth.refresh,
       client_id: descriptor.refresh.clientId,
     }).toString(),
-    signal: AbortSignal.timeout(vendorFetchTimeoutMs),
+    signal: AbortSignal.timeout(10_000),
   });
   if (response.status >= 500) {
     throw new Error(`${descriptor.label} token refresh failed upstream (${response.status}).`);
   }
   if (!response.ok) {
-    return { error: `${descriptor.label} token refresh was rejected (${response.status}).` };
+    return {
+      error: `${descriptor.label} token refresh was rejected (${response.status}).`,
+      status: response.status,
+    };
   }
   const tokens = parsedVendorBody(
     TokenResponseSchema,
