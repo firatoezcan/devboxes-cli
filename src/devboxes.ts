@@ -933,12 +933,14 @@ export const addAccountCommands = (program: Command) => {
 
   const mcpCommand = program.command("mcp");
   mcpCommand
-    .description("serve task dispatch, continuation, status, and results as MCP tools over stdio")
+    .description("bridge the authenticated Devboxes MCP server over stdio")
+    .option("--project <projectId>", "fix Run and Agent Session operations to this Project ID")
     .action(async () => {
       const context = await loadContext(cliOptions(mcpCommand));
+      const options = mcpCommand.opts<{ project?: string }>();
       // Deferred so account commands never pay the MCP SDK import, and
       // so devboxes.ts and mcp.ts avoid a static import cycle.
       const { runDevboxesMcpServer } = await import("./mcp");
-      await runDevboxesMcpServer(context);
+      await runDevboxesMcpServer(context, { projectId: options.project });
     });
 };

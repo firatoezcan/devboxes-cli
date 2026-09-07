@@ -52,7 +52,7 @@ Keep the listener running to accept work. It defaults to one concurrent task; us
 devboxes mcp
 ```
 
-This serves `dispatch_task`, `continue_session`, `get_session_status`, and `get_session_result` over stdio. The [automation reference](https://docs.devboxes.ai/reference/automation) defines inputs and result handling. Terminal commands also support `--json` where listed by `--help`.
+This bridges the authenticated, API-owned Devboxes MCP catalog over stdio. Pass `--project <projectId>` to admit Run dispatch for one fixed Project. The [automation reference](https://docs.devboxes.ai/reference/automation) defines inputs and result handling. Terminal commands also support `--json` where listed by `--help`.
 
 ## Error telemetry
 
