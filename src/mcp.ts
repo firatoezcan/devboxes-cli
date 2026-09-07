@@ -27,24 +27,30 @@ export const createDevboxesMcpServer = (context: DevboxesContext) => {
     "dispatch_task",
     {
       description:
-        "Dispatch a task to Devboxes as a new run. The task is free-form text, a GitHub issue URL, or owner/repo#123. Returns the agentSessionId used by get_session_status and get_session_result.",
+        "Start a Devboxes run from task instructions or a GitHub issue reference. Returns agentSessionId for subsequent status, result, and continuation calls. Choose a blueprint suited to the task; the default is Implement GitHub Issue.",
       inputSchema: {
-        task: z.string().describe("Task text, a GitHub issue URL, or owner/repo#123"),
+        task: z.string().describe("Task instructions, a GitHub issue URL, or owner/repo#123"),
         repo: z
           .string()
           .optional()
           .describe(
-            "Repository full name (owner/name) selecting the target project. When omitted, the project is inferred from the git origin remote of the MCP server's working directory if it matches exactly one connected repository; without a match, an organization with a single project falls back to it. The result reports the choice as projectSelection and inferredFromGitRemote.",
+            "Repository in owner/name format. When omitted, Devboxes uses the MCP working directory's Git origin if it matches one project, or the organization's only project if there is no match. Check projectSelection and inferredFromGitRemote in the result to confirm the choice.",
           ),
-        project: z.string().optional().describe("Project id (overrides repo)"),
-        model: z.string().optional().describe("Model id (uses the server default when omitted)"),
-        branch: z.string().optional().describe("Base branch and PR destination (default main)"),
+        project: z.string().optional().describe("Project ID; overrides repo"),
+        model: z
+          .string()
+          .optional()
+          .describe("Provider/model ID; uses the server default when omitted"),
+        branch: z
+          .string()
+          .optional()
+          .describe("Starting branch and pull request destination; defaults to main"),
         title: z.string().optional().describe("Run title"),
         blueprintVersionId: z
           .string()
           .optional()
           .describe(
-            "Exact Blueprint Version id (defaults to the current Implement GitHub Issue version)",
+            "Exact blueprint version ID; defaults to the current Implement GitHub Issue version",
           ),
       },
     },
@@ -55,13 +61,13 @@ export const createDevboxesMcpServer = (context: DevboxesContext) => {
     "continue_session",
     {
       description:
-        "Continue an existing durable Devboxes Session with a fresh Run. Preserves the Session identity and returns the fresh Run ID and current Session status.",
+        "Start another run in an existing session. Preserves the session ID and returns the new run ID and current session status.",
       inputSchema: {
         agentSessionId: z.uuid().describe("Session ID returned by dispatch_task"),
         task: z
           .string()
           .refine((value) => value.trim().length > 0, "Task text is required")
-          .describe("Free-form task for the fresh Run"),
+          .describe("Instructions for the next run"),
       },
     },
     async (input) => jsonResult(await continueDevboxesSession(context, input)),
@@ -71,9 +77,9 @@ export const createDevboxesMcpServer = (context: DevboxesContext) => {
     "get_session_status",
     {
       description:
-        "Read the current status of a dispatched Devboxes session. Poll this until `terminal` is true, then call get_session_result.",
+        "Read the current run status for a session. Poll until terminal is true, then read the result. Terminal includes succeeded, failed, and cancelled; inspect runStatus rather than treating terminal as success.",
       inputSchema: {
-        agentSessionId: z.string().describe("Agent session id returned by dispatch_task"),
+        agentSessionId: z.string().describe("Session ID returned by dispatch_task"),
       },
     },
     async (input) => {
@@ -96,9 +102,9 @@ export const createDevboxesMcpServer = (context: DevboxesContext) => {
     "get_session_result",
     {
       description:
-        "Read the structured outcome of a Devboxes Session. Meaningful once get_session_status reports terminal: true.",
+        "Read the current run outcome, including its summary, published results, and publication failures. Check terminal and runStatus; unfinished work or terminal failure must not be reported as success.",
       inputSchema: {
-        agentSessionId: z.string().describe("Agent session id returned by dispatch_task"),
+        agentSessionId: z.string().describe("Session ID returned by dispatch_task"),
       },
     },
     async (input) => {

@@ -668,12 +668,12 @@ const interactiveCredentialSetup = async (
   );
   if (neededProviderIds.size > 0) {
     log.warn(
-      `Queued runs are waiting for a provider nobody serves yet: ${[...neededProviderIds].join(", ")}.`,
+      `Queued runs need a provider that no connected runner can currently serve: ${[...neededProviderIds].join(", ")}.`,
     );
   }
   if (codexSubscription && !store.entries["openai"]) {
     log.info(
-      "codex is signed in with a ChatGPT subscription; its tokens stay with codex — connect ChatGPT Pro/Plus below to use the subscription here.",
+      "Codex has a ChatGPT subscription login. Its tokens stay with Codex. Connect ChatGPT Pro/Plus below to authorize Devboxes separately.",
     );
   }
 
@@ -719,7 +719,7 @@ const interactiveCredentialSetup = async (
   ];
   if (actions.length === 0) {
     outro(
-      "Nothing to configure yet. Sign in to a local coding agent or run `devboxes connect`, then re-run `devboxes credentials setup`.",
+      "No credentials are available to configure. Run `devboxes connect`, then `devboxes credentials setup` to connect a subscription or add an API key.",
     );
     return saved;
   }
@@ -749,7 +749,9 @@ const interactiveCredentialSetup = async (
   } catch (error) {
     log.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
-    outro("The selected action failed; re-run `devboxes credentials setup` to try again.");
+    outro(
+      "Credential setup failed. Review the error, then run `devboxes credentials setup` again.",
+    );
     return saved;
   }
   outro("Restart `devboxes listen` to advertise newly configured providers.");
@@ -842,7 +844,7 @@ export const syncOpencodeProviderCredentials = async (
     // An error, not a warning: a provisioning script that syncs nothing must
     // not report success.
     throw new Error(
-      "No local Opencode provider credentials are configured. Run `devboxes credentials setup` before syncing credentials.",
+      "No local model credentials are configured. Run `devboxes credentials setup` before syncing.",
     );
   }
   const requestedProviders = options.provider
@@ -856,7 +858,7 @@ export const syncOpencodeProviderCredentials = async (
   if (requestedProviders) {
     providerIds = providerIds.filter((providerId) => requestedProviders.has(providerId));
     if (providerIds.length === 0) {
-      throw new Error("No configured local Opencode provider credentials match --provider.");
+      throw new Error("No saved local credentials match --provider.");
     }
   }
 
@@ -915,12 +917,12 @@ export const syncOpencodeProviderCredentials = async (
   }
   if (syncable.length === 0) {
     throw new Error(
-      "Nothing to sync: every requested credential was skipped. Connect the subscription on this device with `devboxes credentials setup --connect <provider>`, then sync again.",
+      "No requested credentials could be synced. For a subscription, run `devboxes credentials setup --connect <provider>` on this device, then sync again.",
     );
   }
 
   log.step(
-    "Sync copies local Opencode credentials — connected subscriptions included — to encrypted Devboxes organization storage.",
+    "Sync uploads supported local credentials, including connected subscriptions, to encrypted organization storage. Eligible organization runners can use that access.",
   );
   // Credential sync always requires a fresh runner-scoped approval. A saved
   // terminal session is deliberately not reused for exporting local secrets.
@@ -1014,7 +1016,7 @@ export const showOpencodeProviderCredentialStatus = async (
 
   if (references.length === 0 && Object.keys(storeEntries).length === 0) {
     if (!storeError) {
-      log.warn("No local Opencode provider credentials are configured.");
+      log.warn("No local model credentials are configured.");
       log.info(
         "Run `devboxes credentials setup` to connect a subscription, store an API key, or save auth-file references.",
       );
@@ -1101,15 +1103,15 @@ export const removeOpencodeProviderCredentials = async (
     }
     if (removedLegacyOpencodeReference) {
       log.success("Removed ambiguous legacy OpenCode credentials for opencode-go.");
-      log.info("Source credential files remain in their configured locations.");
+      log.info("Original credential files have not been deleted.");
       return;
     }
     // Removal is idempotent: "already absent" is the desired state, so a
     // re-run in a provisioning script succeeds instead of failing.
     log.warn(
       configuredProviderIds.length === 0
-        ? "No local Opencode provider credentials are configured."
-        : "No configured local Opencode provider credentials match --provider.",
+        ? "No local model credentials are configured."
+        : "No saved local credentials match --provider.",
     );
     return;
   }
@@ -1124,7 +1126,7 @@ export const removeOpencodeProviderCredentials = async (
   }
 
   log.success(`Removed local Opencode provider credentials for ${removedProviderIds.join(", ")}.`);
-  log.info("Source credential files remain in their configured locations.");
+  log.info("Original credential files have not been deleted.");
 };
 
 export const runRunnerDoctor = async (
@@ -2147,7 +2149,7 @@ export const addRunnerCommands = (program: Command) => {
 
   const connectCommand = program.command("connect");
   connectCommand
-    .description("register this machine as a Devboxes runner")
+    .description("register this machine to run Devboxes tasks")
     .option("--name <name>", "runner machine name")
     .action(async () => {
       const options = runnerOptions(connectCommand);
@@ -2212,9 +2214,9 @@ export const addRunnerCommands = (program: Command) => {
 
   const doctorCommand = program.command("doctor");
   doctorCommand
-    .description("check runner registration, container runtime, and credential readiness")
-    .option("--live", "prove stored subscriptions with a real vendor refresh", false)
-    .option("--json", "print machine-readable runner health on stdout", false)
+    .description("check machine registration, Docker access, and credential readiness")
+    .option("--live", "check stored subscriptions by refreshing them with their providers", false)
+    .option("--json", "write runner health as JSON to stdout", false)
     .action(async () => {
       const options = runnerOptions(doctorCommand);
       if (
@@ -2229,10 +2231,10 @@ export const addRunnerCommands = (program: Command) => {
 
   const listenCommand = program.command("listen");
   listenCommand
-    .description("poll Devboxes and run queued tasks in containers on your machine")
+    .description("listen for queued tasks and run them in Docker on this machine")
     .option(
       "--max-concurrent <count>",
-      "maximum concurrently running tasks",
+      "maximum number of tasks to run at the same time",
       positiveIntegerOption,
       1,
     )
@@ -2241,24 +2243,24 @@ export const addRunnerCommands = (program: Command) => {
       await listen(await loadContext(options), options);
     });
 
-  const credentialsCommand = program.command("credentials").description("manage local credentials");
+  const credentialsCommand = program
+    .command("credentials")
+    .description("set up, inspect, share, or remove local model credentials");
 
   const setupCommand = credentialsCommand.command("setup");
   setupCommand
-    .description(
-      "configure provider credentials: connect subscriptions, store API keys, save auth-file references",
-    )
-    .option("--provider <providers>", "comma-separated provider ids")
-    .option("--all", "save every discovered provider credential", false)
+    .description("connect a subscription, store an API key, or reference a local auth file")
+    .option("--provider <providers>", "comma-separated provider IDs")
+    .option("--all", "save references to every discovered provider credential", false)
     .option(
       "--connect <provider>",
       // The connectable set is served by the dashboard, not compiled in; the
       // error path and the interactive menu enumerate the live list.
-      "connect a subscription via device OAuth (run `devboxes credentials setup` to list providers)",
+      "connect a subscription through browser approval; run setup without flags to list providers",
     )
     .option(
       "--api-key <provider>",
-      "store a provider API key on this device (the key is read from stdin when piped)",
+      "store a provider API key on this device; read the key from stdin when piped",
     )
     .action(async () => {
       const options = runnerOptions(setupCommand);
@@ -2272,8 +2274,8 @@ export const addRunnerCommands = (program: Command) => {
 
   const syncCommand = credentialsCommand.command("sync");
   syncCommand
-    .description("upload local credentials to encrypted organization storage")
-    .option("--provider <providers>", "comma-separated provider ids")
+    .description("share supported local credentials through encrypted organization storage")
+    .option("--provider <providers>", "comma-separated provider IDs")
     .action(async () => {
       const options = runnerOptions(syncCommand);
       await syncOpencodeProviderCredentials(await loadContext(options), {
@@ -2283,8 +2285,8 @@ export const addRunnerCommands = (program: Command) => {
 
   const statusCredentialsCommand = credentialsCommand.command("status");
   statusCredentialsCommand
-    .description("show saved local credential references")
-    .option("--json", "print machine-readable credential status on stdout", false)
+    .description("show local model credential status")
+    .option("--json", "write credential status as JSON to stdout", false)
     .action(async () => {
       const options = runnerOptions(statusCredentialsCommand);
       await showOpencodeProviderCredentialStatus(await loadContext(options), {
@@ -2294,9 +2296,9 @@ export const addRunnerCommands = (program: Command) => {
 
   const removeCommand = credentialsCommand.command("remove");
   removeCommand
-    .description("remove saved local credential references")
-    .option("--provider <providers>", "comma-separated provider ids")
-    .option("--all", "remove every saved provider credential reference", false)
+    .description("remove local credentials or auth-file references")
+    .option("--provider <providers>", "comma-separated provider IDs")
+    .option("--all", "remove all saved local provider credentials and references", false)
     .action(async () => {
       const options = runnerOptions(removeCommand);
       await removeOpencodeProviderCredentials(await loadContext(options), {

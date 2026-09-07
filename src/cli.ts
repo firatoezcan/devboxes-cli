@@ -9,13 +9,13 @@ import { addTelemetryCommands, captureCliTelemetryError } from "./telemetry";
 export const createDevboxesCommand = () => {
   const program = new Command()
     .name("devboxes")
-    .description("Sign in, run local agents, and dispatch Devboxes tasks")
+    .description("Run coding tasks, follow sessions, and connect execution machines")
     .version(cliVersion)
     .showHelpAfterError()
-    .option("--config <path>", "Devboxes config file")
+    .option("--config <path>", "Path to the Devboxes configuration file")
     .addOption(new Option("--api <url>", "Devboxes API base URL").hideHelp())
     .addOption(new Option("--auth <url>", "Devboxes auth base URL").hideHelp())
-    .option("--organization <id>", "Devboxes organization id");
+    .option("--organization <id>", "Organization ID to use for this command");
 
   addAccountCommands(program);
   addRunnerCommands(program);
