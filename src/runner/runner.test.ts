@@ -906,7 +906,7 @@ describe("runner Opencode credentials", () => {
         },
         {},
       ),
-      /Nothing to sync/,
+      /No requested credentials could be synced/,
     );
   });
 
