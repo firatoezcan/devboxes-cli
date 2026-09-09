@@ -12,6 +12,24 @@ devboxes login
 
 Approve the terminal in your browser. You need an active Devboxes organization; owners and admins can start runs. See the [installation guide](https://docs.devboxes.ai/guide/installation) for native downloads and checksum verification.
 
+To use the native installer on macOS or glibc-based Linux, download it before running it:
+
+```sh
+curl --fail --location https://devboxes.ai/install -o devboxes-install
+```
+
+On macOS, verify the download with:
+
+```sh
+echo "35f4c98f35cbb7b1e1773ea523acccf0e4c5472d297195e0fe01dd965910ba32  devboxes-install" | shasum -a 256 --check
+```
+
+On Linux, use `sha256sum --check` in place of `shasum -a 256 --check`. Continue only if the check reports `devboxes-install: OK`:
+
+```sh
+sh devboxes-install
+```
+
 ## Start a task
 
 Use an existing project and a branch that exists in its repository:
