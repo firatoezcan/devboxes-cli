@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { eq } from "drizzle-orm";
 import Type from "typebox";
 import Value from "typebox/value";
@@ -26,7 +26,6 @@ import {
   readDevboxesSessionResult,
   type DevboxesContext,
 } from "./devboxes";
-import { createDevboxesMcpServer } from "./mcp";
 
 const ownerUserId = "devboxes-cli-owner";
 const ownerEmail = "devboxes-cli-owner@example.com";
@@ -87,6 +86,7 @@ describe("devboxes CLI", () => {
         { meRoutes },
         { createOrganizationRoutes },
         { orgAgentSessionRoutes },
+        { orgMcpRoutes },
         { orgProjectRoutes },
         { orgRunRoutes },
       ] = await Promise.all([
@@ -95,13 +95,21 @@ describe("devboxes CLI", () => {
         import("@/routes/me"),
         import("@/routes/org.$organizationId"),
         import("@/routes/org.$organizationId/agent-sessions"),
+        import("@/routes/org.$organizationId/mcp"),
         import("@/routes/org.$organizationId/projects"),
         import("@/routes/org.$organizationId/runs"),
       ]);
       return createApp()
         .use(internalRunnerMachineRoutes)
         .use(meRoutes)
-        .use(createOrganizationRoutes(orgAgentSessionRoutes, orgProjectRoutes, orgRunRoutes));
+        .use(
+          createOrganizationRoutes(
+            orgAgentSessionRoutes,
+            orgMcpRoutes,
+            orgProjectRoutes,
+            orgRunRoutes,
+          ),
+        );
     },
     {
       DEVBOX_WORKSPACE_IMAGE_BUILDER_URL: "https://image-builder.test",
@@ -977,48 +985,95 @@ describe("devboxes CLI", () => {
     );
   });
 
-  it("serves dispatch/continue/status/result as MCP tools over the stored credentials", async () => {
-    const server = createDevboxesMcpServer(context);
+  it("forwards the API-owned MCP catalog and calls over authenticated stdio", async () => {
+    const unauthorized = await fetch(`${context.config.apiBaseUrl}/org/${organizationId}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "unauthorized", version: "0" },
+        },
+      }),
+    });
+    expect(unauthorized.status).toBe(401);
+
     const client = new Client({ name: "devboxes-cli-test", version: "0.0.0" });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [
+        join(import.meta.dir, "cli.ts"),
+        "--config",
+        context.configPath,
+        "mcp",
+        "--project",
+        secondFixture.projectId,
+      ],
+      cwd: join(import.meta.dir, ".."),
+      stderr: "ignore",
+    });
+    await client.connect(transport);
+    let firstProjectClient: Client | undefined;
 
     try {
       const tools = await client.listTools();
       expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
         "continue_session",
-        "dispatch_task",
-        "get_session_result",
-        "get_session_status",
+        "devboxes_describe",
+        "devboxes_request",
+        "dispatch_run",
+        "get_agent_session",
+        "get_run",
       ]);
-      // dispatch_task mirrors the CLI dispatch flags, including exact Blueprint Version selection.
-      const dispatchTool = tools.tools.find((tool) => tool.name === "dispatch_task");
-      expect(Object.keys(dispatchTool?.inputSchema.properties ?? {}).sort()).toEqual(
-        ["blueprintVersionId", "branch", "model", "project", "repo", "task", "title"].sort(),
-      );
-      expect(dispatchTool?.inputSchema.properties?.model).toMatchObject({ type: "string" });
-      expect(dispatchTool?.inputSchema.properties?.model).not.toHaveProperty("const");
+      const dispatchTool = tools.tools.find((tool) => tool.name === "dispatch_run");
+      expect(dispatchTool?.inputSchema.required).toContain("operationId");
+      expect(dispatchTool?.inputSchema.properties).not.toHaveProperty("projectId");
+      expect(dispatchTool?.inputSchema.properties).not.toHaveProperty("providerCredentialId");
 
+      const dispatchOperationId = randomUUID();
+      const dispatchArguments = {
+        operationId: dispatchOperationId,
+        task: "Add MCP blueprint parity coverage.",
+        branch: "main",
+        blueprintVersionId: secondFixture.blueprintVersionId,
+      };
       const mcpDispatch = await client.callTool({
-        name: "dispatch_task",
-        arguments: {
-          task: "Add MCP blueprint parity coverage.",
-          repo: "acme/other-service",
-          blueprintVersionId: secondFixture.blueprintVersionId,
-        },
+        name: "dispatch_run",
+        arguments: dispatchArguments,
       });
       expect(mcpDispatch.isError).toBeFalsy();
       const mcpDispatchContent = mcpDispatch.content as Array<{ type: string; text: string }>;
       const mcpDispatched = JSON.parse(mcpDispatchContent[0]!.text) as {
         agentSessionId: string;
         runId: string;
-        projectId: string;
       };
-      expect(mcpDispatched.projectId).toBe(secondFixture.projectId);
+      const dispatchReplay = await client.callTool({
+        name: "devboxes_request",
+        arguments: { operationId: "dispatchOpencodeRun", input: dispatchArguments },
+      });
+      const replayContent = dispatchReplay.content as Array<{ type: string; text: string }>;
+      expect(JSON.parse(replayContent[0]!.text)).toMatchObject({
+        agentSessionId: mcpDispatched.agentSessionId,
+        runId: mcpDispatched.runId,
+      });
       const mcpRun = await dbClient.db.query.runs.findFirst({
         where: { id: mcpDispatched.runId, organizationId },
       });
       expect(mcpRun?.blueprintVersionId).toBe(secondFixture.blueprintVersionId);
+      const fixedProjectRun = await client.callTool({
+        name: "get_run",
+        arguments: { runId: mcpDispatched.runId },
+      });
+      expect(fixedProjectRun.isError).toBeFalsy();
+      const fixedProjectSession = await client.callTool({
+        name: "get_agent_session",
+        arguments: { agentSessionId: mcpDispatched.agentSessionId },
+      });
+      expect(fixedProjectSession.isError).toBeFalsy();
 
       const activeContinuationTask = "Do not add this task to the active Run.";
       const activeContinuation = await client.callTool({
@@ -1026,6 +1081,7 @@ describe("devboxes CLI", () => {
         arguments: {
           agentSessionId: mcpDispatched.agentSessionId,
           task: activeContinuationTask,
+          clientMessageId: randomUUID(),
         },
       });
       expect(activeContinuation.isError).toBe(true);
@@ -1040,60 +1096,96 @@ describe("devboxes CLI", () => {
       ).toBeUndefined();
 
       const statusResult = await client.callTool({
-        name: "get_session_status",
+        name: "get_run",
+        arguments: { runId: dispatchedRunId },
+      });
+      expect(statusResult.isError).toBe(true);
+      const crossProjectSession = await client.callTool({
+        name: "get_agent_session",
         arguments: { agentSessionId: dispatchedSessionId },
       });
-      const statusContent = statusResult.content as Array<{ type: string; text: string }>;
-      const status = JSON.parse(statusContent[0]!.text) as {
-        runStatus: string;
-        terminal: boolean;
-        outcome: { summary: { text: string } };
-        usage: { monetaryBasis: string };
-      };
-      expect(status.runStatus).toBe("succeeded");
-      expect(status.terminal).toBe(true);
-      expect(status.outcome.summary.text).toBe(
-        "Retry handling now backs off exponentially; opened a pull request.",
-      );
-      expect(status.usage.monetaryBasis).toBe("unavailable");
+      expect(crossProjectSession.isError).toBe(true);
 
-      const resultCall = await client.callTool({
-        name: "get_session_result",
-        arguments: { agentSessionId: dispatchedSessionId },
+      const describeCall = await client.callTool({
+        name: "devboxes_describe",
+        arguments: { query: "continue Session" },
       });
-      const resultContent = resultCall.content as Array<{ type: string; text: string }>;
-      const sessionResult = JSON.parse(resultContent[0]!.text) as {
-        outcome: { summary: { text: string } };
-        usage: { monetaryBasis: string };
-      };
-      expect(sessionResult.outcome.summary.text).toBe(
-        "Retry handling now backs off exponentially; opened a pull request.",
-      );
-      expect(sessionResult.usage.monetaryBasis).toBe("unavailable");
+      const describeContent = describeCall.content as Array<{ type: string; text: string }>;
+      const described = JSON.parse(describeContent[0]!.text) as Array<{ operationId: string }>;
+      expect(described.map((operation) => operation.operationId)).toEqual(["continueSession"]);
 
       const continuationTask =
         "  Continue the durable Session with this exact task.\nKeep the spacing intact.  ";
+      const continuationClientMessageId = randomUUID();
+      const continuationArguments = {
+        agentSessionId: dispatchedSessionId,
+        task: continuationTask,
+        clientMessageId: continuationClientMessageId,
+      };
       const continuationCall = await client.callTool({
         name: "continue_session",
-        arguments: { agentSessionId: dispatchedSessionId, task: continuationTask },
+        arguments: continuationArguments,
       });
-      expect(continuationCall.isError).toBeFalsy();
-      const continuationContent = continuationCall.content as Array<{
+      expect(continuationCall.isError).toBe(true);
+      expect(
+        await dbClient.db.query.sessionInputs.findFirst({
+          where: {
+            clientMessageId: continuationClientMessageId,
+            organizationId,
+            sessionId: dispatchedSessionId,
+          },
+        }),
+      ).toBeUndefined();
+
+      firstProjectClient = new Client({
+        name: "devboxes-cli-first-project-test",
+        version: "0",
+      });
+      const firstProjectTransport = new StdioClientTransport({
+        command: process.execPath,
+        args: [
+          join(import.meta.dir, "cli.ts"),
+          "--config",
+          context.configPath,
+          "mcp",
+          "--project",
+          fixture.projectId,
+        ],
+        cwd: join(import.meta.dir, ".."),
+        stderr: "ignore",
+      });
+      await firstProjectClient.connect(firstProjectTransport);
+      const allowedContinuationCall = await firstProjectClient.callTool({
+        name: "continue_session",
+        arguments: continuationArguments,
+      });
+      expect(allowedContinuationCall.isError).toBeFalsy();
+      const continuationContent = allowedContinuationCall.content as Array<{
         type: string;
         text: string;
       }>;
       const continuation = JSON.parse(continuationContent[0]!.text) as {
-        agentSessionId: string;
-        runId: string;
-        status: string;
+        id: string;
+        continuationRunId: string;
+        currentTask: { status: string };
       };
-      expect(continuation).toMatchObject({
-        agentSessionId: dispatchedSessionId,
-        status: "queued",
+      expect(continuation.id).toBe(dispatchedSessionId);
+      expect(continuation.currentTask.status).toBe("queued");
+      const continuationReplay = await firstProjectClient.callTool({
+        name: "devboxes_request",
+        arguments: { operationId: "continueSession", input: continuationArguments },
+      });
+      const continuationReplayContent = continuationReplay.content as Array<{
+        type: string;
+        text: string;
+      }>;
+      expect(JSON.parse(continuationReplayContent[0]!.text)).toMatchObject({
+        id: dispatchedSessionId,
+        continuationRunId: continuation.continuationRunId,
       });
 
       const runB = await dbClient.db.query.runs.findFirst({
-        where: { id: continuation.runId, organizationId },
+        where: { id: continuation.continuationRunId, organizationId },
       });
       expect(runB).toMatchObject({
         sessionId: dispatchedSessionId,
@@ -1110,11 +1202,11 @@ describe("devboxes CLI", () => {
       });
       expect(admittedInput).toMatchObject({
         content: continuationTask,
-        pendingRunId: continuation.runId,
+        pendingRunId: continuation.continuationRunId,
       });
 
-      const continuedStatusResult = await client.callTool({
-        name: "get_session_status",
+      const continuedStatusResult = await firstProjectClient.callTool({
+        name: "get_agent_session",
         arguments: { agentSessionId: dispatchedSessionId },
       });
       const continuedStatusContent = continuedStatusResult.content as Array<{
@@ -1122,26 +1214,21 @@ describe("devboxes CLI", () => {
         text: string;
       }>;
       const continuedStatus = JSON.parse(continuedStatusContent[0]!.text) as {
-        runId: string;
-        runStatus: string;
-        sessionStatus: string;
-        terminal: boolean;
+        currentTask: { runId: string; status: string };
       };
-      expect(continuedStatus).toMatchObject({
-        runId: continuation.runId,
-        runStatus: "queued",
-        sessionStatus: "queued",
-        terminal: false,
+      expect(continuedStatus.currentTask).toMatchObject({
+        runId: continuation.continuationRunId,
+        status: "queued",
       });
 
-      const missing = await client.callTool({
-        name: "get_session_status",
+      const missing = await firstProjectClient.callTool({
+        name: "get_agent_session",
         arguments: { agentSessionId: "00000000-0000-7000-8000-00000000dead" },
       });
       expect(missing.isError).toBe(true);
     } finally {
+      await firstProjectClient?.close();
       await client.close();
-      await server.close();
     }
   });
 });

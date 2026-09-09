@@ -1,5 +1,11 @@
 # devboxes
 
+## 0.3.6
+
+### Patch Changes
+
+- Allow repository authentication helpers to execute in Docker task containers while keeping credential storage non-executable.
+
 ## 0.3.5
 
 ### Patch Changes

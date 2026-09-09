@@ -207,7 +207,7 @@ beforeAll(async () => {
   if (exitCode !== 0) {
     throw new Error(`Compiled CLI build failed.\n${await stdout}\n${await stderr}`);
   }
-  const sourceMapPath = join(packageRoot, "dist", "cli.js.map");
+  const sourceMapPath = `${compiledCliPath}.map`;
   expect(await Bun.file(sourceMapPath).exists()).toBe(true);
   await rm(sourceMapPath);
 });

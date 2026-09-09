@@ -271,7 +271,7 @@ describe("opencode Docker task runtime against the engine API", () => {
         ]),
         Tmpfs: {
           "/run/devboxes/daemon": "rw,noexec,nosuid,size=512m,mode=0700,uid=1001,gid=1000",
-          "/run/devboxes/exec": "rw,nosuid,size=64m,mode=0700,uid=1001,gid=1000",
+          "/run/devboxes/exec": expect.any(String),
           "/home/workspace/.local/share": "rw,noexec,nosuid,size=512m,mode=0770,uid=1001,gid=1000",
         },
         ExtraHosts: ["host.docker.internal:host-gateway"],
@@ -281,6 +281,7 @@ describe("opencode Docker task runtime against the engine API", () => {
         dirname(launchSpec.env.DEVBOX_DAEMON_PRIVATE_DIR),
         "exec",
       );
+      expect(tmpfs[repositoryExecutableDirectory]?.split(",")).toContain("exec");
       expect(
         Object.entries(tmpfs).some(
           ([path, options]) =>

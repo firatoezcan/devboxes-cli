@@ -1,60 +1,76 @@
 # Devboxes CLI
 
-Sign in, dispatch coding tasks, follow sessions, and run a local Devboxes runner.
+Start coding tasks, check their results, and run a Docker-based Devboxes runner from your terminal. The CLI can also expose task commands to an agent through MCP.
 
-## Install
+## Install and sign in
 
 ```sh
 pnpm add --global devboxes
-```
-
-### macOS
-
-```sh
-curl -L \
-  https://devboxes.ai/install \
-  -o devboxes-install
-
-echo "35f4c98f35cbb7b1e1773ea523acccf0e4c5472d297195e0fe01dd965910ba32  devboxes-install" \
-  | shasum -a 256 --check
-
-sh devboxes-install
-```
-
-### Linux
-
-```sh
-curl -L \
-  https://devboxes.ai/install \
-  -o devboxes-install
-
-echo "35f4c98f35cbb7b1e1773ea523acccf0e4c5472d297195e0fe01dd965910ba32  devboxes-install" \
-  | sha256sum --check
-
-sh devboxes-install
-```
-
-[Windows and other downloads](https://github.com/firatoezcan/devboxes-cli/releases/latest)
-
-## Use
-
-```sh
+devboxes --version
 devboxes login
+```
+
+Approve the terminal in your browser. You need an active Devboxes organization; owners and admins can start runs. See the [installation guide](https://docs.devboxes.ai/guide/installation) for native downloads and checksum verification.
+
+To use the native installer on macOS or glibc-based Linux, download it before running it:
+
+```sh
+curl --fail --location https://devboxes.ai/install -o devboxes-install
+```
+
+On macOS, verify the download with:
+
+```sh
+echo "35f4c98f35cbb7b1e1773ea523acccf0e4c5472d297195e0fe01dd965910ba32  devboxes-install" | shasum -a 256 --check
+```
+
+On Linux, use `sha256sum --check` in place of `shasum -a 256 --check`. Continue only if the check reports `devboxes-install: OK`:
+
+```sh
+sh devboxes-install
+```
+
+## Start a task
+
+Use an existing project and a branch that exists in its repository:
+
+```sh
+devboxes dispatch --repo your-team/your-repository --branch main \
+  https://github.com/your-team/your-repository/issues/123
+```
+
+The default blueprint is **Implement GitHub Issue**. The CLI recognizes issue URLs and `owner/repo#123` references and supplies their issue instructions. For another workflow, pass its exact `--blueprint-version` ID. Set `--project` to choose a project directly; it overrides `--repo`.
+
+The response includes a session ID. Use that ID, not the run ID, for these commands:
+
+```sh
+devboxes status <agentSessionId>
+devboxes result <agentSessionId>
+devboxes continue <agentSessionId> "Address the review feedback and rerun the relevant tests."
+```
+
+`status` reads once. `result` exits with status 1 while work is unfinished. A terminal run can succeed, fail, or be cancelled; inspect `runStatus` and the outcome. A successful execution is not merge approval.
+
+## Run tasks on this machine
+
+With Docker running:
+
+```sh
 devboxes connect
 devboxes credentials setup
 devboxes doctor
 devboxes listen
 ```
 
-Dispatch and follow work:
+Keep the listener running to accept work. It defaults to one concurrent task; use `--max-concurrent` to change the limit. Local credentials remain local unless you explicitly run `devboxes credentials sync`, which shares supported credentials through encrypted organization storage.
+
+## Use with an agent
 
 ```sh
-devboxes dispatch "Fix the retry backoff" --repo owner/name
-devboxes status <agentSessionId>
-devboxes continue <agentSessionId> "Address the review feedback"
-devboxes result <agentSessionId>
 devboxes mcp
 ```
+
+This bridges the authenticated, API-owned Devboxes MCP catalog over stdio. Pass `--project <projectId>` to admit Run dispatch for one fixed Project. The [automation reference](https://docs.devboxes.ai/reference/automation) defines inputs and result handling. Terminal commands also support `--json` where listed by `--help`.
 
 ## Error telemetry
 

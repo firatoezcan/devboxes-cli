@@ -448,7 +448,7 @@ export const loginDevboxes = async (context: DevboxesContext) => {
   const organization = me.data?.organization;
   if (!me.data || !organization) {
     throw new Error(
-      "This account has no active organization. Finish onboarding in the Devboxes dashboard, then log in again.",
+      "This account has no active organization. Accept an invitation in the dashboard, then run `devboxes login` again.",
     );
   }
   // A registered runner config already binds its machine identity, key, and
@@ -565,15 +565,13 @@ export type DispatchInput = {
 export const dispatchDevboxesTask = async (context: DevboxesContext, input: DispatchInput) => {
   const { backend, organizationId } = connectedBackend(context);
   const task = input.task.trim();
-  if (!task) throw new Error("Dispatch requires task text or a GitHub issue reference.");
+  if (!task) throw new Error("Enter a task or a GitHub issue URL, or use owner/repo#123.");
 
   const projectsResponse = await backend.api.org({ organizationId }).projects.get();
   if (projectsResponse.error) throw apiRequestError("Project list", projectsResponse.error);
   const projects = projectsResponse.data ?? [];
   if (projects.length === 0) {
-    throw new Error(
-      "The organization has no projects. Create one in the Devboxes dashboard first.",
-    );
+    throw new Error("Create a project in the Devboxes dashboard before starting a run.");
   }
 
   const issue = parseGitHubIssueReference(task);
@@ -657,7 +655,10 @@ export const dispatchDevboxesTask = async (context: DevboxesContext, input: Disp
     blueprintVersionId,
   });
   if (dispatched.error) throw apiRequestError("Dispatch", dispatched.error);
-  if (!dispatched.data) throw new Error("Dispatch returned no session.");
+  if (!dispatched.data)
+    throw new Error(
+      "Devboxes did not return a session. Check Sessions in the dashboard before submitting again.",
+    );
 
   return {
     agentSessionId: dispatched.data.agentSessionId,
@@ -678,7 +679,7 @@ export type ContinueInput = {
 
 export const continueDevboxesSession = async (context: DevboxesContext, input: ContinueInput) => {
   const { backend, organizationId } = connectedBackend(context);
-  if (!input.task.trim()) throw new Error("Continuation requires task text.");
+  if (!input.task.trim()) throw new Error("Enter the task for the next run.");
 
   const continuation = await backend.api
     .org({ organizationId })
@@ -798,7 +799,7 @@ export const addAccountCommands = (program: Command) => {
 
   const loginCommand = program.command("login");
   loginCommand
-    .description("sign this terminal in to Devboxes via browser approval")
+    .description("sign in to Devboxes by approving this terminal in your browser")
     .action(async () => {
       const context = await loadContext(cliOptions(loginCommand));
       const connected = await loginDevboxes(context);
@@ -809,21 +810,21 @@ export const addAccountCommands = (program: Command) => {
 
   const dispatchCommand = program.command("dispatch");
   dispatchCommand
-    .description("dispatch a task or GitHub issue as a new Devboxes run")
-    .argument("<task...>", "task text, a GitHub issue URL, or owner/repo#123")
+    .description("start a run from a task or GitHub issue")
+    .argument("<task...>", "task instructions, a GitHub issue URL, or owner/repo#123")
     .option(
       "--repo <owner/name>",
-      "repository of the target project (default: inferred from the cwd git origin remote)",
+      "project repository; inferred from this directory's Git origin when omitted",
     )
-    .option("--project <id>", "target project id (overrides --repo)")
-    .option("--model <provider/model>", "model id (uses the server default when omitted)")
-    .option("--branch <branch>", "base branch and PR destination", "main")
+    .option("--project <id>", "project ID; overrides --repo")
+    .option("--model <provider/model>", "provider/model ID; uses the server default when omitted")
+    .option("--branch <branch>", "starting branch and pull request destination", "main")
     .option("--title <title>", "run title")
     .option(
       "--blueprint-version <id>",
-      "Blueprint Version id (defaults to the current Implement GitHub Issue version)",
+      "blueprint version ID; defaults to the current Implement GitHub Issue version",
     )
-    .option("--json", "print the dispatch result as JSON on stdout", false)
+    .option("--json", "write the dispatch result as JSON to stdout", false)
     .action(async (taskWords: string[]) => {
       const options = dispatchCommand.opts<{
         repo?: string;
@@ -867,10 +868,10 @@ export const addAccountCommands = (program: Command) => {
 
   const continueCommand = program.command("continue");
   continueCommand
-    .description("continue an existing Devboxes Session with a fresh Run")
-    .argument("<agentSessionId>", "Session ID returned by dispatch", agentSessionIdArgument)
-    .argument("<task...>", "free-form task for the fresh Run")
-    .option("--json", "print the continuation result as JSON on stdout", false)
+    .description("start another run in an existing session")
+    .argument("<agentSessionId>", "session ID returned by dispatch", agentSessionIdArgument)
+    .argument("<task...>", "instructions for the next run")
+    .option("--json", "write the continuation result as JSON to stdout", false)
     .action(async (agentSessionId: string, taskWords: string[]) => {
       const options = continueCommand.opts<{ json: boolean }>();
       const context = await loadContext(cliOptions(continueCommand));
@@ -892,9 +893,9 @@ export const addAccountCommands = (program: Command) => {
 
   const statusCommand = program.command("status");
   statusCommand
-    .description("show the current status of a dispatched session")
-    .argument("<agentSessionId>", "agent session id returned by dispatch")
-    .option("--json", "print machine-readable status on stdout", false)
+    .description("read the current run status for a session")
+    .argument("<agentSessionId>", "session ID returned by dispatch")
+    .option("--json", "write status as JSON to stdout", false)
     .action(async (agentSessionId: string) => {
       const options = statusCommand.opts<{ json: boolean }>();
       const context = await loadContext(cliOptions(statusCommand));
@@ -908,9 +909,9 @@ export const addAccountCommands = (program: Command) => {
 
   const resultCommand = program.command("result");
   resultCommand
-    .description("show the outcome of a finished session")
-    .argument("<agentSessionId>", "agent session id returned by dispatch")
-    .option("--json", "print the machine-readable result on stdout", false)
+    .description("read the current run outcome; exits with status 1 while work is unfinished")
+    .argument("<agentSessionId>", "session ID returned by dispatch")
+    .option("--json", "write the result as JSON to stdout", false)
     .action(async (agentSessionId: string) => {
       const options = resultCommand.opts<{ json: boolean }>();
       const context = await loadContext(cliOptions(resultCommand));
@@ -932,12 +933,14 @@ export const addAccountCommands = (program: Command) => {
 
   const mcpCommand = program.command("mcp");
   mcpCommand
-    .description("serve dispatch/continue/status/result as MCP tools over stdio")
+    .description("bridge the authenticated Devboxes MCP server over stdio")
+    .option("--project <projectId>", "fix Run and Agent Session operations to this Project ID")
     .action(async () => {
       const context = await loadContext(cliOptions(mcpCommand));
+      const options = mcpCommand.opts<{ project?: string }>();
       // Deferred so account commands never pay the MCP SDK import, and
       // so devboxes.ts and mcp.ts avoid a static import cycle.
       const { runDevboxesMcpServer } = await import("./mcp");
-      await runDevboxesMcpServer(context);
+      await runDevboxesMcpServer(context, { projectId: options.project });
     });
 };

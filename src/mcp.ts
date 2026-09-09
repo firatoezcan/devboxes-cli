@@ -1,133 +1,67 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { z } from "zod";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
-import {
-  cliVersion,
-  continueDevboxesSession,
-  dispatchDevboxesTask,
-  readDevboxesSession,
-  readDevboxesSessionResult,
-  sessionReachedTerminalState,
-  type DevboxesContext,
-} from "./devboxes";
+import { cliVersion, type DevboxesContext } from "./devboxes";
 
-const jsonResult = (value: z.infer<ReturnType<typeof z.json>>) => ({
-  content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
-});
-
-// A thin stdio wrapper over the exact same API calls the CLI commands make.
-// The context (API base URL, session token, organization) comes from the
-// stored `devboxes login` credentials; stdout stays reserved for the MCP
-// protocol, so nothing here logs.
-export const createDevboxesMcpServer = (context: DevboxesContext) => {
-  const server = new McpServer({ name: "devboxes", version: cliVersion });
-
-  server.registerTool(
-    "dispatch_task",
-    {
-      description:
-        "Dispatch a task to Devboxes as a new run. The task is free-form text, a GitHub issue URL, or owner/repo#123. Returns the agentSessionId used by get_session_status and get_session_result.",
-      inputSchema: {
-        task: z.string().describe("Task text, a GitHub issue URL, or owner/repo#123"),
-        repo: z
-          .string()
-          .optional()
-          .describe(
-            "Repository full name (owner/name) selecting the target project. When omitted, the project is inferred from the git origin remote of the MCP server's working directory if it matches exactly one connected repository; without a match, an organization with a single project falls back to it. The result reports the choice as projectSelection and inferredFromGitRemote.",
-          ),
-        project: z.string().optional().describe("Project id (overrides repo)"),
-        model: z.string().optional().describe("Model id (uses the server default when omitted)"),
-        branch: z.string().optional().describe("Base branch and PR destination (default main)"),
-        title: z.string().optional().describe("Run title"),
-        blueprintVersionId: z
-          .string()
-          .optional()
-          .describe(
-            "Exact Blueprint Version id (defaults to the current Implement GitHub Issue version)",
-          ),
-      },
-    },
-    async (input) => jsonResult(await dispatchDevboxesTask(context, input)),
-  );
-
-  server.registerTool(
-    "continue_session",
-    {
-      description:
-        "Continue an existing durable Devboxes Session with a fresh Run. Preserves the Session identity and returns the fresh Run ID and current Session status.",
-      inputSchema: {
-        agentSessionId: z.uuid().describe("Session ID returned by dispatch_task"),
-        task: z
-          .string()
-          .refine((value) => value.trim().length > 0, "Task text is required")
-          .describe("Free-form task for the fresh Run"),
-      },
-    },
-    async (input) => jsonResult(await continueDevboxesSession(context, input)),
-  );
-
-  server.registerTool(
-    "get_session_status",
-    {
-      description:
-        "Read the current status of a dispatched Devboxes session. Poll this until `terminal` is true, then call get_session_result.",
-      inputSchema: {
-        agentSessionId: z.string().describe("Agent session id returned by dispatch_task"),
-      },
-    },
-    async (input) => {
-      const current = await readDevboxesSession(context, input.agentSessionId);
-      return jsonResult({
-        agentSessionId: current.session.id,
-        sessionStatus: current.currentTask.status,
-        runId: current.run.id,
-        runStatus: current.run.status,
-        currentStep: current.run.currentStep,
-        terminal: sessionReachedTerminalState(current),
-        outcome: current.run.outcome,
-        errorMessage: current.run.errorMessage ?? current.currentTask.errorMessage ?? null,
-        usage: current.run.usage,
-      });
-    },
-  );
-
-  server.registerTool(
-    "get_session_result",
-    {
-      description:
-        "Read the structured outcome of a Devboxes Session. Meaningful once get_session_status reports terminal: true.",
-      inputSchema: {
-        agentSessionId: z.string().describe("Agent session id returned by dispatch_task"),
-      },
-    },
-    async (input) => {
-      const result = await readDevboxesSessionResult(context, input.agentSessionId);
-      return jsonResult({
-        agentSessionId: result.session.id,
-        sessionStatus: result.currentTask.status,
-        runStatus: result.run.status,
-        terminal: result.terminal,
-        outcome: result.run.outcome,
-        errorMessage: result.run.errorMessage ?? result.currentTask.errorMessage ?? null,
-        usage: result.run.usage,
-      });
-    },
-  );
-
-  return server;
+const connectedMcpEndpoint = (context: DevboxesContext) => {
+  const { apiBaseUrl, organizationId, sessionToken } = context.config;
+  if (!organizationId || !sessionToken) {
+    throw new Error("This command requires a signed-in account. Run `devboxes login` first.");
+  }
+  return {
+    endpoint: new URL(`${apiBaseUrl}/org/${encodeURIComponent(organizationId)}/mcp`),
+    sessionToken,
+  };
 };
 
-export const runDevboxesMcpServer = async (context: DevboxesContext) => {
-  const server = createDevboxesMcpServer(context);
-  await server.connect(new StdioServerTransport());
-  // Serve until the parent closes the session or stdin. The SDK transport
-  // only ever reads data, so a vanished client's stdin EOF must end the
-  // process here instead of leaving an orphaned server behind.
+export const runDevboxesMcpServer = async (
+  context: DevboxesContext,
+  options: { projectId?: string } = {},
+) => {
+  let remote: Client | undefined;
+  const connectedRemote = async () => {
+    if (remote) return remote;
+    const { endpoint, sessionToken } = connectedMcpEndpoint(context);
+    const headers = new Headers({
+      Authorization: `Bearer ${sessionToken}`,
+      "User-Agent": `devboxes/${cliVersion}`,
+    });
+    if (options.projectId) headers.set("X-Devboxes-Project-Id", options.projectId);
+    remote = new Client({ name: "devboxes-cli", version: cliVersion });
+    await remote.connect(
+      new StreamableHTTPClientTransport(endpoint, {
+        requestInit: { headers },
+      }),
+    );
+    return remote;
+  };
+
+  const local = new Server(
+    { name: "devboxes", version: cliVersion },
+    { capabilities: { tools: {} } },
+  );
+  local.setRequestHandler(ListToolsRequestSchema, async () =>
+    (await connectedRemote()).listTools(),
+  );
+  local.setRequestHandler(CallToolRequestSchema, async ({ params }) =>
+    (await connectedRemote()).callTool(params),
+  );
+
+  local.onclose = () => {
+    void remote?.close();
+  };
+  await local.connect(new StdioServerTransport());
   await new Promise<void>((resolve) => {
-    server.server.onclose = resolve;
+    const closeRemote = local.onclose;
+    local.onclose = () => {
+      closeRemote?.();
+      resolve();
+    };
     process.stdin.once("end", resolve);
     process.stdin.once("close", resolve);
   });
-  await server.close();
+  await local.close();
 };

@@ -194,11 +194,11 @@ export const captureCliTelemetryError = async (cause: unknown) => {
 export const addTelemetryCommands = (program: Command) => {
   const telemetryCommand = program
     .command("telemetry")
-    .description("manage opt-in CLI error telemetry");
+    .description("manage optional CLI error reporting");
 
   const enableCommand = telemetryCommand.command("enable");
   enableCommand
-    .description("enable error telemetry through a self-hosted Sentry DSN")
+    .description("send CLI error reports to your self-hosted Sentry instance")
     .requiredOption("--dsn <dsn>", "self-hosted Sentry DSN")
     .requiredOption("--environment <name>", "Sentry environment name")
     .action(async () => {
@@ -215,9 +215,9 @@ export const addTelemetryCommands = (program: Command) => {
     });
 
   const disableCommand = telemetryCommand.command("disable");
-  disableCommand.description("disable CLI error telemetry").action(async () => {
+  disableCommand.description("stop sending CLI error reports").action(async () => {
     await persistTelemetrySetting(disableCommand.optsWithGlobals<DevboxesCliOptions>(), undefined);
-    log.success("CLI error telemetry is disabled.");
+    log.success("CLI error reporting is disabled.");
   });
 
   telemetryCommand.action(() => telemetryCommand.outputHelp());

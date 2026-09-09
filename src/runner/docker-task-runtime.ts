@@ -399,7 +399,7 @@ export class DockerOpencodeTaskRuntime {
             ],
             [
               containerDaemonExecutableDir,
-              `rw,nosuid,size=64m,mode=0700,uid=${containerAgentUid},gid=${containerSharedGid}`,
+              `rw,exec,nosuid,size=64m,mode=0700,uid=${containerAgentUid},gid=${containerSharedGid}`,
             ],
             ...input.launchSpec.memoryBackedPaths.map((path) => [
               path,
