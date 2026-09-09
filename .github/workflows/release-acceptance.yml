@@ -1,6 +1,6 @@
 name: Release acceptance
 
-run-name: Accept Devboxes ${{ inputs.version }}
+run-name: ${{ inputs.operation == 'windows-launcher-diagnostic' && format('Diagnose Devboxes {0} Windows launcher cleanup', inputs.version) || format('Accept Devboxes {0}', inputs.version) }}
 
 on:
   workflow_dispatch:
@@ -9,12 +9,25 @@ on:
         description: Published Devboxes version in X.Y.Z form
         required: true
         type: string
+      operation:
+        description: Full release acceptance or the bounded Windows launcher diagnostic
+        required: true
+        default: release-acceptance
+        type: choice
+        options:
+          - release-acceptance
+          - windows-launcher-diagnostic
+      launcher_test_patch:
+        description: Reviewed test-only patch for the Windows launcher diagnostic
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   accept:
+    if: ${{ inputs.operation != 'windows-launcher-diagnostic' }}
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
@@ -364,5 +377,138 @@ jobs:
         with:
           name: devboxes-acceptance-${{ inputs.version }}-${{ matrix.target }}
           path: ${{ runner.temp }}/devboxes-acceptance-${{ inputs.version }}-${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 90
+
+  windows-launcher-diagnostic:
+    if: ${{ inputs.operation == 'windows-launcher-diagnostic' }}
+    name: Diagnose Windows launcher cleanup, not release acceptance
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - name: Require the reviewed diagnostic
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+          LAUNCHER_TEST_PATCH: ${{ inputs.launcher_test_patch }}
+        run: |
+          if ($env:VERSION -ne "0.3.6") { throw "This diagnostic is bound to public v0.3.6." }
+          if (-not $env:LAUNCHER_TEST_PATCH) { throw "The reviewed launcher test patch is required." }
+          git config --global core.autocrlf false
+
+      - name: Check out immutable public product source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: firatoezcan/devboxes-cli
+          ref: v0.3.6
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.23.2
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.4.0
+
+      - name: Compare original and corrected terminal cleanup
+        shell: pwsh
+        env:
+          LAUNCHER_TEST_PATCH: ${{ inputs.launcher_test_patch }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $false
+          Set-StrictMode -Version Latest
+          Remove-Item Env:GH_TOKEN, Env:GITHUB_TOKEN, Env:NODE_AUTH_TOKEN, Env:NPM_TOKEN -ErrorAction SilentlyContinue
+          $DiagnosticRoot = Join-Path $env:RUNNER_TEMP "windows-launcher-diagnostic"
+          New-Item -ItemType Directory -Path $DiagnosticRoot | Out-Null
+          $Patch = Join-Path $DiagnosticRoot "launcher-test.patch"
+          [IO.File]::WriteAllText($Patch, $env:LAUNCHER_TEST_PATCH)
+          Remove-Item Env:LAUNCHER_TEST_PATCH
+          $NodeVersion = (node --version).Trim()
+          $BunVersion = (bun --version).Trim()
+          if ($NodeVersion -ne "v22.23.2" -or $BunVersion -ne "1.4.0") { throw "The diagnostic toolchain does not match acceptance." }
+          if ((node -p 'process.platform + "-" + process.arch').Trim() -ne "win32-x64") { throw "The diagnostic requires native Windows x64." }
+          if ((git describe --tags --exact-match).Trim() -ne "v0.3.6") { throw "The public source is not v0.3.6." }
+          git diff --exit-code HEAD
+          if ($LASTEXITCODE -ne 0) { throw "The original tagged source changed before the diagnostic." }
+          $PatchStat = @(git apply --numstat $Patch)
+          if ($LASTEXITCODE -ne 0 -or $PatchStat.Count -ne 1 -or $PatchStat[0].Split("`t")[-1] -ne "bin/devboxes.test.ts") {
+            throw "The diagnostic patch must change only bin/devboxes.test.ts."
+          }
+          git apply --check --index --whitespace=error-all $Patch
+          if ($LASTEXITCODE -ne 0) { throw "The diagnostic patch does not apply to the tagged test." }
+
+          $Results = @()
+          foreach ($Variant in @("original", "corrected")) {
+            if ($Variant -eq "corrected") {
+              git apply --index --whitespace=error-all $Patch
+              if ($LASTEXITCODE -ne 0) { throw "The diagnostic patch could not be applied." }
+              $ChangedPaths = @(git diff --cached --name-only)
+              if ($LASTEXITCODE -ne 0 -or $ChangedPaths.Count -ne 1 -or $ChangedPaths[0] -ne "bin/devboxes.test.ts") {
+                throw "The diagnostic changed a path outside the launcher test."
+              }
+              if (git diff --cached --summary) { throw "The diagnostic changed file metadata." }
+              if ((git rev-parse :bin/devboxes.test.ts).Trim() -ne "ecc06ca3b0d8d4f58860bca6938a858ff3c61d78") {
+                throw "The corrected test does not equal the reviewed candidate."
+              }
+            }
+            $VariantRoot = Join-Path $DiagnosticRoot $Variant
+            New-Item -ItemType Directory -Path $VariantRoot | Out-Null
+            $env:TEMP = $VariantRoot
+            $env:TMP = $VariantRoot
+            $env:TMPDIR = $VariantRoot
+            $StartedAt = [DateTime]::UtcNow.ToString("o")
+            Write-Host "$Variant started at $StartedAt"
+            & bun test bin/devboxes.test.ts --test-name-pattern "delivers one terminal Ctrl-C to the native command" 2>&1 |
+              Tee-Object -FilePath (Join-Path $DiagnosticRoot "$Variant.log")
+            $TestExitCode = $LASTEXITCODE
+            $EndedAt = [DateTime]::UtcNow.ToString("o")
+            Write-Host "$Variant exited with $TestExitCode at $EndedAt"
+            $Results += [pscustomobject]@{
+              variant = $Variant
+              startedAt = $StartedAt
+              endedAt = $EndedAt
+              exitCode = $TestExitCode
+            }
+            [pscustomobject]@{
+              diagnosticOnly = $true
+              releaseAcceptance = $false
+              sourceTag = "v0.3.6"
+              target = "windows-x64"
+              node = $NodeVersion
+              bun = $BunVersion
+              results = $Results
+            } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $DiagnosticRoot "results.json")
+            if ($TestExitCode -ne 0) {
+              try {
+                Get-CimInstance Win32_Process |
+                  Where-Object { $_.ExecutablePath -like "$VariantRoot*" -or $_.CommandLine -like "*$VariantRoot*" } |
+                  Select-Object Name, ProcessId, ParentProcessId, ExecutablePath |
+                  ConvertTo-Json -Depth 3 | Set-Content (Join-Path $DiagnosticRoot "$Variant-processes.json")
+              } catch {
+                $_ | Out-String | Set-Content (Join-Path $DiagnosticRoot "$Variant-process-observation-error.txt")
+              }
+            }
+          }
+          if ($Results[1].exitCode -ne 0) { throw "The corrected Windows launcher diagnostic failed." }
+          if ($Results[0].exitCode -eq 0) {
+            Write-Host "Inconclusive. Both launcher cases passed, so the original cleanup failure was not reproduced. This diagnostic is not release acceptance."
+          } else {
+            Write-Host "The original launcher case failed and the corrected case passed. This diagnostic is not release acceptance."
+          }
+
+      - name: Retain original and corrected diagnostic evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: devboxes-windows-launcher-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/windows-launcher-diagnostic/*.log
+            ${{ runner.temp }}/windows-launcher-diagnostic/*.json
+            ${{ runner.temp }}/windows-launcher-diagnostic/*.txt
+            ${{ runner.temp }}/windows-launcher-diagnostic/*.patch
           if-no-files-found: error
           retention-days: 90
