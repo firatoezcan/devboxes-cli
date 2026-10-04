@@ -1,5 +1,16 @@
 # devboxes
 
+## 0.4.0
+
+### Minor Changes
+
+- Discover and invoke the API's application commands with `devboxes commands`, `devboxes describe`, and `devboxes invoke`, and expose the same commands to agents through `devboxes mcp`. Create an account with `devboxes signup`, manage account security with `devboxes auth`, and run registered execution capacity with `devboxes runner listen`. This release removes `dispatch`, `continue`, `status`, `result`, `connect`, `doctor`, `listen`, `credentials`, and `telemetry`.
+- a0405c6: Sign up or sign in with GitHub, Vercel, or email and password, complete two-factor sign-in at the prompt, and connect released binaries to https://api.devboxes.ai by default.
+
+### Patch Changes
+
+- 9b409d6: Print the warning that a command result carries, such as the warning for a delegation token without an expiry, on stderr; with `--json`, the warning stays in the result.
+
 ## 0.3.6
 
 ### Patch Changes

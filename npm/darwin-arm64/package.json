@@ -1,6 +1,6 @@
 {
   "name": "@devboxes/cli-darwin-arm64",
-  "version": "0.3.6",
+  "version": "0.4.0",
   "description": "Devboxes CLI native binary for macOS arm64.",
   "license": "MIT",
   "repository": {
