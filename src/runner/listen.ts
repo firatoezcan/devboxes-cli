@@ -89,6 +89,19 @@ export const listen = async (options: {
       console.info(`Started Task ${task.id} in ${executorId}.`);
     }
   };
+  // Image pulls and executor downloads can outlast the API's heartbeat window, so
+  // one start runs beside the poll loop and its failure surfaces on the next cycle.
+  const starting = new Map<string, Promise<void>>();
+  let startFailure: CommandError | null = null;
+  const startClaimed = async (task: Static<typeof taskSchema>) => {
+    const existing = await runtime.inspect(task.executorId ?? `devboxes-task-${task.id}`);
+    if (!existing) {
+      const container = await runtime.create(task);
+      await startCreated(task, container.id);
+    } else if (existing.State.Status === "created") {
+      await startCreated(task, existing.Id);
+    }
+  };
   process.once("SIGINT", interrupt);
   process.once("SIGTERM", interrupt);
   let connected = false;
@@ -101,6 +114,7 @@ export const listen = async (options: {
       connected = true;
       for (const task of assignments.tasks) {
         if (stopping) break;
+        if (starting.has(task.id)) continue;
         const executorId = task.executorId ?? `devboxes-task-${task.id}`;
         const executor = await runtime.inspect(task.containerId ?? executorId);
         if (!executor) {
@@ -145,16 +159,29 @@ export const listen = async (options: {
         }
       }
       if (stopping) return null;
-      const { task } = await api("claim", claimSchema, {});
-      if (task && !stopping && task.containerId === null) {
-        const executorId = task.executorId ?? `devboxes-task-${task.id}`;
-        const existing = await runtime.inspect(executorId);
-        if (!existing) {
-          const container = await runtime.create(task);
-          await startCreated(task, container.id);
-        } else if (existing.State.Status === "created") {
-          await startCreated(task, existing.Id);
-        }
+      if (startFailure !== null) {
+        const failure = startFailure;
+        startFailure = null;
+        throw failure;
+      }
+      if (starting.size === 0) {
+        const { task } = await api("claim", claimSchema, {});
+        if (task && !stopping && task.containerId === null)
+          starting.set(
+            task.id,
+            startClaimed(task)
+              .then(
+                () => {
+                  failures = 0;
+                },
+                (error) => {
+                  startFailure = CommandError.from(error);
+                },
+              )
+              .finally(() => {
+                starting.delete(task.id);
+              }),
+          );
       }
       return null;
     } catch (error) {
@@ -165,7 +192,7 @@ export const listen = async (options: {
   try {
     while (!stopping) {
       const failure = await poll();
-      failures = failure ? failures + 1 : 0;
+      failures = failure ? failures + 1 : starting.size > 0 ? failures : 0;
       const delay = failure
         ? Math.min(60_000, 5_000 * 2 ** failures) * (0.5 + Math.random() / 2)
         : 5_000;
@@ -174,6 +201,7 @@ export const listen = async (options: {
       for (let waited = 0; waited < delay && !stopping; waited += 250) await Bun.sleep(250);
     }
   } finally {
+    await Promise.all(starting.values());
     process.removeListener("SIGINT", interrupt);
     process.removeListener("SIGTERM", interrupt);
   }

@@ -14,7 +14,8 @@ boundaries, not compatibility guarantees for retired protocols.
 - `packages/platform/src/protocol/runner-payload.ts` defines the native Task
   payload, execution snapshot, inputs, and Review results.
 - `apps/firops-api/src/execution/runners.ts` owns
-  `/api/internal/execution/runners` claims, assignments, and stop reports.
+  `/api/internal/execution/runners` claims, assignments, stop reports, and
+  Runner heartbeat expiry.
 - `apps/firops-api/src/execution/callbacks.ts` owns Task callbacks.
   `execution/authority.ts` validates the signed Run token against the Task,
   Run, Organization, and current actor authority.
