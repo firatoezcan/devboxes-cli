@@ -14,6 +14,7 @@ import {
   CommandError,
   credentialSafeJson,
   failureSchema,
+  invocationTrace,
   readCommandInput,
 } from "./commands";
 import { loadAccountContext, type AccountContext } from "./connection";
@@ -80,6 +81,7 @@ const requestAuthentication = async (
     ? CookieJar.deserializeSync(context.config.cookieJar)
     : new CookieJar();
   const secrets = [context.config.sessionToken];
+  const commandTrace = invocationTrace();
   let result: { status: number; data: unknown } | undefined;
   const client = createAuthClient({
     baseURL: origin,
@@ -98,6 +100,7 @@ const requestAuthentication = async (
         }
         const cookie = cookies.getCookieStringSync(String(url));
         if (cookie) headers.set("Cookie", cookie);
+        commandTrace.inject(headers);
       },
       onResponse: async ({ response, request }) => {
         const setCookies = response.headers.getSetCookie();
@@ -131,8 +134,7 @@ const requestAuthentication = async (
   throw new CommandError(
     failure.success ? failure.data.code : "HTTP_ERROR",
     failure.success ? failure.data.message : `Authentication returned HTTP ${error.status}.`,
-    error.status,
-    failure.success ? failure.data.details : undefined,
+    { status: error.status, details: failure.success ? failure.data.details : undefined },
   );
 };
 
@@ -210,7 +212,7 @@ export const addAuthenticationCommands = (program: Command) => {
         throw new CommandError(
           "INVALID_AUTH_RESPONSE",
           "Authentication did not return the expected user and session contract.",
-          response.status,
+          { status: response.status },
         );
       const result = { user: parsed.data.user, signedIn: parsed.data.token !== null };
       if (options.json) {
@@ -256,7 +258,7 @@ export const addAuthenticationCommands = (program: Command) => {
       throw new CommandError(
         "SIGN_OUT_FAILED",
         `Sign-out returned HTTP ${error.status}. The saved credential was retained.`,
-        error.status,
+        { status: error.status },
       );
     }
     delete context.config.cookieJar;

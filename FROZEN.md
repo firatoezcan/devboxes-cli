@@ -8,7 +8,9 @@ boundaries, not compatibility guarantees for retired protocols.
 ## Contract owners
 
 - `packages/platform/src/protocol/launch-spec.ts` defines
-  `devboxes-native-launch` and the required Task identity environment.
+  `devboxes-native-launch` and the required Task environment: the Task
+  identity and the Run's `TRACEPARENT`, which the Runner claim returns and the
+  executor sends on every callback and Git request.
 - `packages/platform/src/protocol/runner-payload.ts` defines the native Task
   payload, execution snapshot, inputs, and Review results.
 - `apps/firops-api/src/execution/runners.ts` owns

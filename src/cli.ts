@@ -60,7 +60,7 @@ if (import.meta.main) {
         ? error
         : new CommandError("COMMAND_FAILED", "The command failed unexpectedly.");
     const qualifiers = [
-      ...(failure.status === undefined ? [] : [`HTTP ${failure.status}`]),
+      ...(failure.options.status === undefined ? [] : [`HTTP ${failure.options.status}`]),
       ...(failure.retryable ? ["retryable"] : []),
     ];
     console.error(

@@ -16,6 +16,7 @@ const taskSchema = Type.Object({
   image: Type.String(),
   platform: Type.Union([Type.Literal("linux/amd64"), Type.Literal("linux/arm64")]),
   daemon: Type.Object({ sha256: Type.String(), version: Type.String(), url: Type.String() }),
+  traceparent: Type.String({ minLength: 1 }),
   status: Type.String(),
 });
 const assignmentSchema = Type.Object({

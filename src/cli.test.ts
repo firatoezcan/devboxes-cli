@@ -122,11 +122,13 @@ describe("devboxes entrypoint", () => {
 });
 
 describe("devboxes invoke", () => {
+  const traceparents: (string | null)[] = [];
   const api = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     fetch: (request) => {
       const { pathname } = new URL(request.url);
+      traceparents.push(request.headers.get("traceparent"));
       if (pathname === "/api/openapi/json")
         return Response.json({
           openapi: "3.0.3",
@@ -138,8 +140,17 @@ describe("devboxes invoke", () => {
                 responses: {},
               },
             },
+            "/api/commands/sessions/list": {
+              post: {
+                operationId: "sessions.list",
+                "x-devboxes": { effect: "read", authority: "Organization member" },
+                responses: {},
+              },
+            },
           },
         });
+      if (pathname === "/api/commands/sessions/list")
+        return Response.json([], { headers: { "x-request-id": "request-list" } });
       return Response.json(
         {
           error: {
@@ -168,6 +179,31 @@ describe("devboxes invoke", () => {
       error: { code: "CONCURRENT_MODIFICATION", retryable: true },
       status: 409,
     });
+  });
+
+  it("sends a traceparent that joins TRACEPARENT or starts a trace, and reports it", async () => {
+    await writeFile(dispatchInput, "{}");
+    const list = ["--json", "invoke", "sessions.list", "--input", `@${dispatchInput}`];
+    const callerTraceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    traceparents.length = 0;
+    const joined = await runCli(list, { ...connection, TRACEPARENT: callerTraceparent });
+    const joinedTraceparents = traceparents.splice(0);
+    const started = await runCli(list, { ...connection, TRACEPARENT: undefined });
+
+    expect(joinedTraceparents.length).toBeGreaterThan(0);
+    expect(new Set(joinedTraceparents)).toEqual(new Set([callerTraceparent]));
+    expect(JSON.parse(joined.stdout)).toEqual({
+      status: 200,
+      data: [],
+      traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
+      requestId: "request-list",
+    });
+    const { traceId } = JSON.parse(started.stdout);
+    expect(traceId).toMatch(/^[0-9a-f]{32}$/);
+    expect(traceId).not.toBe("4bf92f3577b34da6a3ce929d0e0e4736");
+    expect(traceparents.length).toBeGreaterThan(0);
+    for (const traceparent of traceparents)
+      expect(traceparent).toMatch(new RegExp(`^00-${traceId}-[0-9a-f]{16}-00$`));
   });
 });
 
