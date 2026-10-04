@@ -49,8 +49,12 @@ semantics. Enrollment results contain authenticator secrets and backup codes;
 store them privately.
 
 The CLI redacts session tokens from its output. To revoke one session, submit
-`{"id":"<session id>"}` from `/list-sessions` to `/revoke-session`. The CLI
-resolves that session's token itself.
+`{"id":"<session id>"}` from `/list-sessions` to `/revoke-session`. An
+administrator revokes another user's session by submitting
+`{"userId":"<user id>","id":"<session id>"}` from `/admin/list-user-sessions` to
+`/admin/revoke-user-session`. The CLI resolves that session's token itself and
+fails with `SESSION_NOT_FOUND` when the listing has no session with that id.
+Describing either operation shows this id input.
 
 ## Discover and invoke application commands
 

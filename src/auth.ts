@@ -28,6 +28,20 @@ const authenticationSchema = z.object({
   }),
 });
 const submittedSecretSchema = z.string();
+const ownSessionSelectionSchema = z.strictObject({
+  id: z.string().min(1).meta({ description: "The session id that /list-sessions returns" }),
+});
+const userSessionSelectionSchema = z.strictObject({
+  userId: z.string().min(1).meta({ description: "The user whose session is revoked" }),
+  id: z
+    .string()
+    .min(1)
+    .meta({ description: "The session id that /admin/list-user-sessions returns" }),
+});
+const sessionSelectionSchemas = new Map<string, z.ZodType>([
+  ["/revoke-session", ownSessionSelectionSchema],
+  ["/admin/revoke-user-session", userSessionSelectionSchema],
+]);
 const authenticationFailureSchema = z
   .union([
     failureSchema,
@@ -294,7 +308,25 @@ export const addAuthenticationCommands = (program: Command) => {
       for (const [method, schema] of Object.entries(methods)) {
         if (method !== "get" && method !== "post") continue;
         const operation = z.record(z.string(), z.unknown()).safeParse(schema);
-        if (operation.success) operations.push({ schema: operation.data, path, method });
+        if (!operation.success) continue;
+        const selection = sessionSelectionSchemas.get(path);
+        operations.push({
+          schema: selection
+            ? {
+                ...operation.data,
+                requestBody: {
+                  required: true,
+                  content: {
+                    "application/json": {
+                      schema: z.toJSONSchema(selection, { target: "openapi-3.0" }),
+                    },
+                  },
+                },
+              }
+            : operation.data,
+          path,
+          method,
+        });
       }
     }
     if (!endpoint) {
@@ -339,7 +371,7 @@ export const addAuthenticationCommands = (program: Command) => {
     if (!input.success)
       throw new CommandError("INVALID_INPUT", "Authentication input must be a JSON object.");
     if (operation.path === "/revoke-session") {
-      const selection = z.strictObject({ id: z.string().min(1) }).safeParse(input.data);
+      const selection = ownSessionSelectionSchema.safeParse(input.data);
       if (!selection.success)
         throw new CommandError(
           "INVALID_INPUT",
@@ -356,6 +388,27 @@ export const addAuthenticationCommands = (program: Command) => {
           "No active session of this account has that id.",
         );
       input.data = { token };
+    }
+    if (operation.path === "/admin/revoke-user-session") {
+      const selection = userSessionSelectionSchema.safeParse(input.data);
+      if (!selection.success)
+        throw new CommandError(
+          "INVALID_INPUT",
+          "Select the session to revoke by its userId and the id that /admin/list-user-sessions returns.",
+        );
+      const listed = await requestAuthentication(
+        context,
+        "/admin/list-user-sessions",
+        { method: "POST", body: { userId: selection.data.userId } },
+        false,
+      );
+      const sessionToken = z
+        .object({ sessions: z.array(z.object({ id: z.string(), token: z.string() })) })
+        .parse(listed.data)
+        .sessions.find((listedSession) => listedSession.id === selection.data.id)?.token;
+      if (!sessionToken)
+        throw new CommandError("SESSION_NOT_FOUND", "No session of this user has that id.");
+      input.data = { sessionToken };
     }
     if (
       !operation.path.startsWith("/") ||
