@@ -1,4 +1,5 @@
 import type { Command } from "commander";
+import { z } from "zod";
 
 import { describeCommands, invokeCommand, readCommandInput } from "./commands";
 import { loadCommandConnection } from "./connection";
@@ -67,6 +68,8 @@ export const addAccountCommands = (program: Command) => {
       input,
     });
     await Bun.write(Bun.stdout, `${JSON.stringify(result, null, options.json ? undefined : 2)}\n`);
+    const warned = z.object({ warning: z.string() }).safeParse(result.data);
+    if (!options.json && warned.success) process.stderr.write(`Warning: ${warned.data.warning}\n`);
   });
 
   const mcp = program

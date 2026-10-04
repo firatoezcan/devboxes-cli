@@ -79,7 +79,7 @@ const promptText = async (message: string) => {
   return entered.trim();
 };
 
-const requestAuthentication = async (
+const authenticationResponse = async (
   context: AccountContext,
   path: string,
   options: Pick<
@@ -148,11 +148,19 @@ const requestAuthentication = async (
   if (result) return result;
   if (!error) throw new CommandError("INVALID_AUTH_RESPONSE", "Authentication returned no result.");
   const failure = authenticationFailureSchema.safeParse(error);
-  throw new CommandError(
-    failure.success ? failure.data.code : "HTTP_ERROR",
-    failure.success ? failure.data.message : `Authentication returned HTTP ${error.status}.`,
-    { status: error.status, details: failure.success ? failure.data.details : undefined },
-  );
+  return {
+    failure: new CommandError(
+      failure.success ? failure.data.code : "HTTP_ERROR",
+      failure.success ? failure.data.message : `Authentication returned HTTP ${error.status}.`,
+      { status: error.status, details: failure.success ? failure.data.details : undefined },
+    ),
+  };
+};
+
+const requestAuthentication = async (...request: Parameters<typeof authenticationResponse>) => {
+  const response = await authenticationResponse(...request);
+  if ("failure" in response) throw response.failure;
+  return response;
 };
 
 export const addAuthenticationCommands = (program: Command) => {
@@ -294,9 +302,9 @@ export const addAuthenticationCommands = (program: Command) => {
             );
           }
           await Bun.sleep(wait * 1000);
-          let granted: Awaited<ReturnType<typeof requestAuthentication>>;
+          let granted: Awaited<ReturnType<typeof authenticationResponse>> | null = null;
           try {
-            granted = await requestAuthentication(
+            granted = await authenticationResponse(
               context,
               "/device/token",
               {
@@ -310,21 +318,22 @@ export const addAuthenticationCommands = (program: Command) => {
               false,
             );
           } catch (error) {
-            if (error instanceof CommandError && error.code === "slow_down") {
-              interval += 5;
-              wait = interval;
-            } else if (error instanceof CommandError && error.code === "authorization_pending") {
-              wait = interval;
-            } else if (!(error instanceof CommandError) || (error.options.status ?? 0) >= 500) {
-              wait = Math.min(Math.max(wait * 2, 1), 60);
-            } else {
-              throw error;
-            }
-            continue;
+            if (!(error instanceof TypeError && "code" in error)) throw error;
           }
-          accessToken = z
-            .object({ access_token: z.string().min(1) })
-            .parse(granted.data).access_token;
+          if (granted && !("failure" in granted)) {
+            accessToken = z
+              .object({ access_token: z.string().min(1) })
+              .parse(granted.data).access_token;
+          } else if (granted?.failure.code === "slow_down") {
+            interval += 5;
+            wait = interval;
+          } else if (granted?.failure.code === "authorization_pending") {
+            wait = interval;
+          } else if (!granted || (granted.failure.options.status ?? 0) >= 500) {
+            wait = Math.min(Math.max(wait * 2, 1), 60);
+          } else {
+            throw granted.failure;
+          }
         }
         delete context.config.cookieJar;
         context.config.sessionToken = accessToken;

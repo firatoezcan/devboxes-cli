@@ -147,10 +147,22 @@ describe("devboxes invoke", () => {
                 responses: {},
               },
             },
+            "/api/commands/delegations/create": {
+              post: {
+                operationId: "delegations.create",
+                "x-devboxes": { effect: "write", authority: "Current account session" },
+                responses: {},
+              },
+            },
           },
         });
       if (pathname === "/api/commands/sessions/list")
         return Response.json([], { headers: { "x-request-id": "request-list" } });
+      if (pathname === "/api/commands/delegations/create")
+        return Response.json(
+          { delegation: { expiresAt: null }, token: "devboxes_delegate_ci", warning },
+          { status: 201 },
+        );
       return Response.json(
         {
           error: {
@@ -166,6 +178,7 @@ describe("devboxes invoke", () => {
   const dispatchInput = join(fixtureDirectory, "dispatch.json");
   const connection = { DEVBOXES_API_URL: api.url.origin, DEVBOXES_TOKEN: "scoped" };
   const dispatch = ["invoke", "sessions.dispatch", "--input", `@${dispatchInput}`];
+  const warning = "This token never expires. Revoke it when you no longer need it.";
 
   it("reports a concurrent modification as retryable", async () => {
     await writeFile(dispatchInput, "{}");
@@ -179,6 +192,20 @@ describe("devboxes invoke", () => {
       error: { code: "CONCURRENT_MODIFICATION", retryable: true },
       status: 409,
     });
+  });
+
+  it("prints the warning of a result on stderr and keeps it in the result", async () => {
+    await writeFile(dispatchInput, "{}");
+    const create = ["invoke", "delegations.create", "--input", `@${dispatchInput}`];
+    const human = await runCli(create, connection);
+    const json = await runCli(["--json", ...create], connection);
+
+    expect(human.exitCode).toBe(0);
+    expect(human.stderr).toBe(`Warning: ${warning}\n`);
+    expect(JSON.parse(human.stdout).data.warning).toBe(warning);
+    expect(json.exitCode).toBe(0);
+    expect(json.stderr).toBe("");
+    expect(JSON.parse(json.stdout).data.warning).toBe(warning);
   });
 
   it("sends a traceparent that joins TRACEPARENT or starts a trace, and reports it", async () => {
@@ -531,6 +558,39 @@ describe("devboxes signup and login", () => {
         user: { email: "device@example.com" },
       });
       expect(tokenResponses).toEqual([]);
+    } finally {
+      await api.stop(true);
+    }
+  });
+  it("stops waiting for browser approval with the error of an unreadable token response", async () => {
+    const api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request) => {
+        if (new URL(request.url).pathname === "/api/auth/device/code")
+          return Response.json({
+            device_code: "device-code",
+            user_code: "ABCDEFGH",
+            verification_uri_complete: new URL("/api/device?user_code=ABCDEFGH", request.url).href,
+            expires_in: 60,
+            interval: 0,
+          });
+        return new Response("{ not json", { headers: { "content-type": "application/json" } });
+      },
+    });
+    try {
+      const result = await runCli([
+        "--json",
+        "--config",
+        join(fixtureDirectory, "device-unreadable.json"),
+        "--api",
+        api.url.origin,
+        "login",
+        "--github",
+      ]);
+
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).not.toContain("expired_token");
     } finally {
       await api.stop(true);
     }
