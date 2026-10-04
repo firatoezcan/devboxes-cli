@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { z } from "zod";
 
-import { cliVersion } from "./devboxes";
+import { cliVersion } from "./api";
 
 type CliResult = {
   durationMs: number;

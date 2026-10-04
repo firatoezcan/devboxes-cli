@@ -11,10 +11,12 @@ import type {
   ActiveOpencodeCredentialTask,
   OpencodeCredentialBrokerApi,
 } from "@firops/connections/local/credential-broker";
+import { startCredentialBroker } from "@firops/connections/local/credential-broker";
 import {
   readCredentialStore,
   writeCredentialStore,
 } from "@firops/connections/local/credential-store";
+import { taskContainerApiBaseUrl } from "@firops/devbox/runner/docker-socket";
 import { opencodeProviderCredentials } from "@firops/platform/database/schema";
 import { credentialStoreFileName } from "@firops/platform/protocol/frozen";
 import { opencodeProviderAuthFingerprint } from "@firops/platform/protocol/provider-auth";
@@ -24,17 +26,15 @@ import { z } from "zod";
 
 import { createApiIntegrationHarness } from "@/test/api-integration";
 
+import { cliVersion } from "../api";
 import { createDevboxesCommand } from "../cli";
-import { cliVersion } from "../devboxes";
 import {
   connectOpencodeProviderSubscription,
   removeOpencodeProviderCredentials,
   runRunnerDoctor,
   setupOpencodeProviderCredentials,
   showOpencodeProviderCredentialStatus,
-  startCredentialBroker,
   syncOpencodeProviderCredentials,
-  taskContainerApiBaseUrl,
 } from "./runner";
 
 const credentialSyncHarness = createApiIntegrationHarness(

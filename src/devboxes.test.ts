@@ -4,6 +4,11 @@ import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { loadContext, type DevboxesContext } from "@firops/connections/local/config";
+import {
+  normalizeGitRemoteUrl,
+  parseGitHubIssueReference,
+} from "@firops/devbox/workspace/dispatch-project";
 import { serializedJsonb } from "@firops/platform/database/jsonb";
 import * as schema from "@firops/platform/database/schema";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -16,16 +21,7 @@ import { createApiIntegrationHarness } from "@/test/api-integration";
 import { installWorkspaceImageBuilderStub } from "@/test/workspace-image-builder";
 
 import { createDevboxesCommand } from "./cli";
-import {
-  dispatchDevboxesTask,
-  loginDevboxes,
-  loadContext,
-  normalizeGitRemoteUrl,
-  parseGitHubIssueReference,
-  readDevboxesSession,
-  readDevboxesSessionResult,
-  type DevboxesContext,
-} from "./devboxes";
+import { dispatchDevboxesTask, loginDevboxes, readDevboxesSession } from "./devboxes";
 
 const ownerUserId = "devboxes-cli-owner";
 const ownerEmail = "devboxes-cli-owner@example.com";
@@ -99,11 +95,14 @@ describe("devboxes CLI", () => {
         import("@firops/devbox/server/routes/org.$organizationId/projects"),
         import("@/routes/org.$organizationId/runs"),
       ]);
+      const { orgAgentSessionLifecycleRoutes } =
+        await import("@firops/devbox/server/routes/org.$organizationId/agent-sessions");
       return createApp()
         .use(internalRunnerMachineRoutes)
         .use(meRoutes)
         .use(
           createOrganizationRoutes(
+            orgAgentSessionLifecycleRoutes,
             orgAgentSessionRoutes,
             orgMcpRoutes,
             orgProjectRoutes,
@@ -960,8 +959,7 @@ describe("devboxes CLI", () => {
       })
       .where(eq(schema.runs.id, dispatchedRunId));
 
-    const result = await readDevboxesSessionResult(context, dispatchedSessionId);
-    expect(result.terminal).toBe(true);
+    const result = await readDevboxesSession(context, dispatchedSessionId);
     expect(result.run.outcome?.summary?.text).toBe(
       "Retry handling now backs off exponentially; opened a pull request.",
     );
@@ -980,7 +978,7 @@ describe("devboxes CLI", () => {
   it("serves the full result from a suffix-less --api base URL", async () => {
     // The result route works with the same normalized base as every command.
     const suffixless = await loadContext({ config: context.configPath, api: origin });
-    const result = await readDevboxesSessionResult(suffixless, dispatchedSessionId);
+    const result = await readDevboxesSession(suffixless, dispatchedSessionId);
     expect(result.run.outcome?.summary?.text).toBe(
       "Retry handling now backs off exponentially; opened a pull request.",
     );

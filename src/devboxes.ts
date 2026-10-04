@@ -1,338 +1,34 @@
 import { randomUUID } from "node:crypto";
-import { chmod, readFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { log, note, spinner } from "@clack/prompts";
-import { treaty } from "@elysiajs/eden";
-import { writeSecretFile } from "@firops/connections/local/secret-file";
+import {
+  loadContext,
+  writeConfig,
+  type DevboxesCliOptions,
+  type DevboxesConfig,
+  type DevboxesContext,
+} from "@firops/connections/local/config";
+import { resolveDispatchProject } from "@firops/devbox/workspace/dispatch-project";
 import { createAuthClient } from "better-auth/client";
 import { deviceAuthorizationClient } from "better-auth/client/plugins";
 import { Command, InvalidArgumentError } from "commander";
 import open from "open";
-import Type, { type Static } from "typebox";
+import Type from "typebox";
 import Value from "typebox/value";
 
-// Type-only wiring against the private monorepo this CLI is developed in,
-// resolved through tsconfig "paths" there and fully erased at runtime
-// (`import type`). The registry package contains no source; in the public
-// source mirror this specifier stays unresolved on purpose.
-import type { ApiType } from "#monorepo/api";
+import { apiRequestError, bearerBackend } from "./api";
 
-import packageJson from "../package.json";
-
-export type DevboxesCliOptions = {
-  config?: string;
-  api?: string;
-  auth?: string;
-  organization?: string;
-  name?: string;
-};
-
-export type DevboxesConfig = {
-  apiBaseUrl: string;
-  authBaseUrl: string;
-  telemetry?: {
-    dsn: string;
-    environment: string;
-  };
-  organizationId?: string;
-  sessionToken?: string;
-  machineId?: string;
-  name?: string;
-  apiKey?: string;
-  opencodeProviderCredentials?: Array<{
-    providerId: string;
-    authFile: string;
-    source: "opencode-auth-file" | "codex-auth-file";
-    providerIdFormat?: "exact";
-  }>;
-};
-
-type ConfigJsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | ConfigJsonValue[]
-  | { [key: string]: ConfigJsonValue };
-
-export type DevboxesContext = {
-  config: DevboxesConfig;
-  configPath: string;
-  // Unknown config.json keys from a newer binary, preserved on write.
-  configExtras?: Record<string, ConfigJsonValue>;
-};
-
-const LocalCredentialReferenceSchema = Type.Object(
-  {
-    providerId: Type.String({ minLength: 1 }),
-    authFile: Type.String({ minLength: 1 }),
-    source: Type.Union([Type.Literal("opencode-auth-file"), Type.Literal("codex-auth-file")]),
-    providerIdFormat: Type.Optional(Type.Literal("exact")),
-  },
-  { additionalProperties: false },
-);
-
-const ConfigFileSchema = Type.Object({
-  apiBaseUrl: Type.Optional(Type.String({ minLength: 1 })),
-  authBaseUrl: Type.Optional(Type.String({ minLength: 1 })),
-  telemetry: Type.Optional(
-    Type.Object(
-      {
-        dsn: Type.String(),
-        environment: Type.String(),
-      },
-      { additionalProperties: false },
-    ),
-  ),
-  organizationId: Type.Optional(Type.String({ minLength: 1 })),
-  sessionToken: Type.Optional(Type.String({ minLength: 1 })),
-  machineId: Type.Optional(Type.String({ format: "uuid" })),
-  name: Type.Optional(Type.String({ minLength: 1 })),
-  apiKey: Type.Optional(Type.String({ minLength: 1 })),
-  opencodeProviderCredentials: Type.Optional(Type.Array(LocalCredentialReferenceSchema)),
-});
 const AgentSessionIdSchema = Type.String({ format: "uuid" });
 
-type ConfigFile = Static<typeof ConfigFileSchema>;
-
 const cliCommandName = "devboxes";
-// The workspace package version is the single source of truth for the native
-// build and staged npm wrapper.
-export const cliVersion: string = packageJson.version;
-export const cliUserAgent = `devboxes/${cliVersion} (${process.platform}/${process.arch})`;
 // Must stay in the validateClient allowlist of the API's deviceAuthorization
 // auth plugin. Public identifier, not a secret: it only names which client
 // asked for the browser approval.
 const cliDeviceClientId = "devboxes-cli";
-const windowsApplicationDataHome = process.env.APPDATA ?? join(homedir(), "AppData", "Roaming");
-
-export const platformConfigHome = () => {
-  if (process.env.XDG_CONFIG_HOME) return process.env.XDG_CONFIG_HOME;
-  if (process.platform === "win32") return windowsApplicationDataHome;
-  if (process.platform === "darwin") return join(homedir(), "Library", "Application Support");
-  return join(homedir(), ".config");
-};
-
-export const platformDataHome = () => {
-  if (process.env.XDG_DATA_HOME) return process.env.XDG_DATA_HOME;
-  if (process.platform === "win32") return windowsApplicationDataHome;
-  if (process.platform === "darwin") return join(homedir(), "Library", "Application Support");
-  return join(homedir(), ".local", "share");
-};
-
-const defaultConfigPath = () => join(platformConfigHome(), "devboxes", "config.json");
-
-// The config can carry the terminal session and runner API key, so every write
-// uses the same atomic fsync'd tmp+rename boundary and 0600 file mode.
-const writeConfigFile = async (configPath: string, config: ConfigFile) => {
-  await writeSecretFile({
-    path: configPath,
-    contents: `${JSON.stringify(config, null, 2)}\n`,
-    tmpPrefix: ".config.",
-  });
-  if (configPath === defaultConfigPath()) {
-    await chmod(dirname(configPath), 0o700);
-  }
-};
-
-const readConfigFile = async (configPath: string, customConfigPath: boolean) => {
-  let fileConfig: ConfigFile = {};
-  let rawConfigText: string | null = null;
-  try {
-    rawConfigText = await readFile(configPath, "utf8");
-  } catch (error) {
-    const missing = error instanceof Error && "code" in error && error.code === "ENOENT";
-    if (!missing) throw error;
-  }
-  if (rawConfigText !== null) {
-    if (!customConfigPath) {
-      await chmod(dirname(configPath), 0o700);
-      await chmod(configPath, 0o600);
-    }
-    try {
-      fileConfig = Value.Parse(ConfigFileSchema, JSON.parse(rawConfigText));
-    } catch (error) {
-      throw new Error(
-        `Devboxes CLI config at ${configPath} is invalid: ${
-          error instanceof Error ? error.message : String(error)
-        }. Fix or delete the file, then run \`${cliCommandName} login\`.`,
-      );
-    }
-  }
-  return fileConfig;
-};
-
-export const writeConfig = async (context: DevboxesContext) =>
-  writeConfigFile(context.configPath, { ...context.configExtras, ...context.config });
-
-export const persistTelemetrySetting = async (
-  options: Pick<DevboxesCliOptions, "config">,
-  telemetry: DevboxesConfig["telemetry"],
-) => {
-  const configPath = options.config ?? defaultConfigPath();
-  const fileConfig = await readConfigFile(configPath, options.config !== undefined);
-  if (telemetry) {
-    fileConfig.telemetry = telemetry;
-    await writeConfigFile(configPath, fileConfig);
-  } else if (fileConfig.telemetry) {
-    delete fileConfig.telemetry;
-    await writeConfigFile(configPath, fileConfig);
-  }
-  return configPath;
-};
-
-export const loadContext = async (options: DevboxesCliOptions): Promise<DevboxesContext> => {
-  const configPath = options.config ?? defaultConfigPath();
-  const fileConfig = await readConfigFile(configPath, options.config !== undefined);
-  // Unknown keys written by a newer CLI round-trip through writeConfig.
-  const knownConfigKeys = new Set(Object.keys(ConfigFileSchema.properties));
-  const configExtras = Object.fromEntries(
-    Object.entries(fileConfig).filter(([key]) => !knownConfigKeys.has(key)),
-  );
-  // Hosted Devboxes is the default. Local-development settings can override it.
-  const configuredApiBaseUrl =
-    options.api ??
-    process.env.DEVBOX_API_BASE_URL ??
-    fileConfig.apiBaseUrl ??
-    "https://api.devboxes.ai/api";
-  // Normalized exactly once, here: no trailing slash and always ending in
-  // /api. Every consumer relies on that shape — the Eden client strips the
-  // suffix back off before its typed routes re-add it, and the SSE reader
-  // string-concatenates paths onto it. Parse before looking at the suffix:
-  // a raw-string check mistakes a host-only URL like https://api for an
-  // already-suffixed one, and the API always mounts at lowercase /api.
-  let parsedApiBaseUrl: URL;
-  try {
-    parsedApiBaseUrl = new URL(configuredApiBaseUrl);
-  } catch {
-    throw new Error(`Devboxes API base URL is not a valid URL: ${configuredApiBaseUrl}`);
-  }
-  // A scheme-less "host:3000/api" parses as scheme "host:", and non-special
-  // schemes (file:, git:, ssh:) have no origin at all — both would rebuild
-  // into a garbage base URL; fail naming the input instead.
-  if (parsedApiBaseUrl.origin === "null") {
-    throw new Error(
-      `Devboxes API base URL must be an absolute http(s) URL (e.g. https://api.devboxes.ai/api): ${configuredApiBaseUrl}`,
-    );
-  }
-  // The origin+pathname rebuild below would silently drop these; refuse loudly
-  // instead. The message deliberately does not echo the input — it may carry
-  // the very credentials being rejected.
-  if (
-    parsedApiBaseUrl.username ||
-    parsedApiBaseUrl.password ||
-    parsedApiBaseUrl.search ||
-    parsedApiBaseUrl.hash
-  ) {
-    throw new Error(
-      "Devboxes API base URL must not contain credentials, a query string, or a fragment.",
-    );
-  }
-  const apiBasePath = parsedApiBaseUrl.pathname.replace(/\/+$/, "");
-  const apiBaseUrl = `${parsedApiBaseUrl.origin}${
-    apiBasePath.toLowerCase().endsWith("/api")
-      ? `${apiBasePath.slice(0, -"/api".length)}/api`
-      : `${apiBasePath}/api`
-  }`;
-  const authBaseUrl = (
-    options.auth ??
-    process.env.DEVBOX_AUTH_BASE_URL ??
-    fileConfig.authBaseUrl ??
-    `${apiBaseUrl}/auth`
-  ).replace(/\/+$/, "");
-
-  // The session token travels over these base URLs, so require HTTPS everywhere
-  // except loopback HTTP for local development.
-  for (const [label, value] of [
-    ["API base URL", apiBaseUrl],
-    ["auth base URL", authBaseUrl],
-  ] as const) {
-    let url: URL;
-    try {
-      url = new URL(value);
-    } catch {
-      throw new Error(`Devboxes ${label} is not a valid URL: ${value}`);
-    }
-    const loopbackHttp =
-      url.protocol === "http:" &&
-      // URL.hostname keeps the brackets around an IPv6 literal.
-      (url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]");
-    if (url.protocol !== "https:" && !loopbackHttp) {
-      throw new Error(
-        `Devboxes ${label} must use HTTPS (or loopback HTTP for local development): ${value}`,
-      );
-    }
-  }
-
-  return {
-    configPath,
-    configExtras,
-    config: {
-      apiBaseUrl,
-      authBaseUrl,
-      telemetry: fileConfig.telemetry,
-      organizationId:
-        options.organization ?? process.env.DEVBOX_ORGANIZATION_ID ?? fileConfig.organizationId,
-      sessionToken: process.env.DEVBOX_CLI_SESSION_TOKEN ?? fileConfig.sessionToken,
-      machineId: fileConfig.machineId,
-      name:
-        options.name ??
-        process.env.DEVBOX_RUNNER_NAME ??
-        fileConfig.name ??
-        `docker-${process.platform}/${process.arch}`,
-      apiKey: process.env.DEVBOX_RUNNER_API_KEY ?? fileConfig.apiKey,
-      opencodeProviderCredentials: fileConfig.opencodeProviderCredentials,
-    },
-  };
-};
 
 // An abandoned browser approval must not hang the CLI forever.
 const deviceFlowTimeoutMs = 5 * 60_000;
-
-export class ApiRequestError extends Error {
-  readonly status: number;
-  readonly code: string | null;
-
-  constructor(message: string, status: number, code: string | null = null) {
-    super(message);
-    this.status = status;
-    this.code = code;
-  }
-}
-
-const ApiErrorStatusSchema = Type.Number();
-const ApiErrorValueSchema = Type.Object(
-  {
-    code: Type.Optional(Type.String()),
-    error: Type.Optional(Type.String()),
-  },
-  { additionalProperties: true },
-);
-
-// Translates an Eden treaty error into one readable line. The raw response
-// body is never serialized into the message — a validation error echoes the
-// request body back, and dispatch bodies carry task text that must stay out
-// of captured logs verbatim.
-export const apiRequestError = (
-  operation: string,
-  error: { status: unknown; value: unknown },
-  reauthenticateWith: "login" | "connect" = "login",
-) => {
-  const value = Value.Check(ApiErrorValueSchema, error.value) ? error.value : null;
-  const code = value?.code ?? null;
-  const detail = value?.error ?? "The API answered without an error description.";
-  const status = Value.Check(ApiErrorStatusSchema, error.status) ? error.status : 0;
-  const hint =
-    status === 401 ? ` Run \`${cliCommandName} ${reauthenticateWith}\` and try again.` : "";
-  return new ApiRequestError(
-    `${operation} failed with HTTP ${String(error.status)}: ${detail}${hint}`,
-    status,
-    code,
-  );
-};
 
 export const openBrowser = async (url: string) => {
   // BROWSER=none is the conventional opt-out for headless machines, CI, and
@@ -407,19 +103,6 @@ export const deviceSessionToken = async (
   }
 };
 
-// One bearer-authorized Eden client policy for every API call the CLI makes.
-// loadContext guarantees the base URL ends in /api; Eden's typed routes re-add
-// that segment (backend.api...), so the treaty origin is the URL without it.
-export const bearerBackend = (apiBaseUrl: string, sessionToken: string) =>
-  treaty<ApiType>(apiBaseUrl.replace(/\/api$/, ""), {
-    onRequest(_path, requestOptions) {
-      const headers = new Headers(requestOptions.headers);
-      headers.set("Authorization", `Bearer ${sessionToken}`);
-      headers.set("User-Agent", cliUserAgent);
-      return { ...requestOptions, headers };
-    },
-  });
-
 const connectedBackend = (context: DevboxesContext) => {
   const { sessionToken, organizationId } = context.config;
   if (!sessionToken || !organizationId) {
@@ -430,7 +113,6 @@ const connectedBackend = (context: DevboxesContext) => {
   return {
     backend: bearerBackend(context.config.apiBaseUrl, sessionToken),
     organizationId,
-    sessionToken,
   };
 };
 
@@ -462,92 +144,6 @@ export const loginDevboxes = async (context: DevboxesContext) => {
   return { user: me.data.user, organization };
 };
 
-// Accepts a full GitHub issue URL or the short owner/repo#123 form. Anything
-// else is free-form task text.
-export const parseGitHubIssueReference = (task: string) => {
-  const trimmed = task.trim();
-  const urlMatch = /^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/issues\/(\d+)$/.exec(trimmed);
-  if (urlMatch) {
-    return {
-      url: trimmed,
-      repositoryFullName: `${urlMatch[1]}/${urlMatch[2]}`,
-    };
-  }
-  const shortMatch = /^([\w.-]+)\/([\w.-]+)#(\d+)$/.exec(trimmed);
-  if (shortMatch) {
-    return {
-      url: `https://github.com/${shortMatch[1]}/${shortMatch[2]}/issues/${shortMatch[3]}`,
-      repositoryFullName: `${shortMatch[1]}/${shortMatch[2]}`,
-    };
-  }
-  return null;
-};
-
-// Git remotes name the same repository as https ("https://github.com/acme/api.git"),
-// ssh ("ssh://git@github.com:22/acme/api"), or scp-like ("git@github.com:acme/api")
-// URLs. All collapse to one lowercase "host[:port]/path" key with credentials,
-// scheme-default ports, ".git", and slashes stripped. Project inference compares
-// these keys with exact string equality only — never fuzzy — so a remote that
-// does not normalize to exactly one project repository selects nothing.
-const schemeDefaultPorts = new Map([
-  ["http:", "80"],
-  ["https:", "443"],
-  ["ssh:", "22"],
-  ["git:", "9418"],
-]);
-
-export const normalizeGitRemoteUrl = (remote: string) => {
-  const trimmed = remote.trim();
-  if (!trimmed) return null;
-  let host: string;
-  let path: string;
-  const scpLike = trimmed.includes("://") ? null : /^(?:[^@/]+@)?([^:/]+):(.+)$/.exec(trimmed);
-  if (scpLike?.[1] && scpLike[2]) {
-    host = scpLike[1];
-    path = scpLike[2];
-  } else {
-    let url: URL;
-    try {
-      url = new URL(trimmed);
-    } catch {
-      return null;
-    }
-    // Local paths and file:// remotes have no host to match a hosted project.
-    if (!url.hostname) return null;
-    const port =
-      url.port && url.port !== schemeDefaultPorts.get(url.protocol) ? `:${url.port}` : "";
-    host = `${url.hostname}${port}`;
-    path = url.pathname;
-  }
-  const normalizedPath = path
-    .replace(/\/+$/, "")
-    // Case-insensitive: the key is lowercased below, so ".GIT" must strip
-    // exactly like ".git".
-    .replace(/\.git$/i, "")
-    .replace(/^\/+/, "");
-  if (!normalizedPath) return null;
-  return `${host}/${normalizedPath}`.toLowerCase();
-};
-
-// The origin remote of the dispatch working directory. Anything that keeps it
-// from resolving — not a git repository, no origin remote, git not installed —
-// means "no inference", never an error.
-const gitRemoteOriginUrl = async (cwd: string) => {
-  try {
-    const git = Bun.spawn(["git", "remote", "get-url", "origin"], {
-      cwd,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "ignore",
-    });
-    const [output, exitCode] = await Promise.all([new Response(git.stdout).text(), git.exited]);
-    if (exitCode !== 0) return null;
-    return output.trim() || null;
-  } catch {
-    return null;
-  }
-};
-
 export type DispatchInput = {
   task: string;
   repo?: string;
@@ -570,68 +166,13 @@ export const dispatchDevboxesTask = async (context: DevboxesContext, input: Disp
   const projectsResponse = await backend.api.org({ organizationId }).projects.get();
   if (projectsResponse.error) throw apiRequestError("Project list", projectsResponse.error);
   const projects = projectsResponse.data ?? [];
-  if (projects.length === 0) {
-    throw new Error("Create a project in the Devboxes dashboard before starting a run.");
-  }
-
-  const issue = parseGitHubIssueReference(task);
-  const requestedRepo = (input.repo ?? issue?.repositoryFullName)?.toLowerCase();
-  let project: (typeof projects)[number] | undefined;
-  // How the project was picked, so callers can display an implicit choice;
-  // explicit --project/--repo/issue selection always wins.
-  let projectSelection: "explicit" | "git-remote" | "single-project" = "explicit";
-  // Set only when the cwd git remote picked the project. Carries the
-  // credential-free normalized comparison key, never the raw remote URL — a
-  // token-embedded remote (https://user:ghp_…@host/…) must not leak into
-  // --json output or MCP results, which get persisted into transcripts.
-  let inferredFromGitRemote: string | null = null;
-  if (input.project) {
-    project = projects.find((candidate) => candidate.id === input.project);
-    if (!project) throw new Error(`No project has id ${input.project}.`);
-  } else if (requestedRepo) {
-    const matches = projects.filter((candidate) => {
-      const fullName = candidate.repository.name.toLowerCase();
-      return fullName === requestedRepo || fullName.endsWith(`/${requestedRepo}`);
-    });
-    if (matches.length !== 1) {
-      const available = projects.map((candidate) => candidate.repository.name).join(", ");
-      throw new Error(
-        matches.length === 0
-          ? `No project matches repository ${requestedRepo}. Connected repositories: ${available}.`
-          : `Repository ${requestedRepo} matches more than one project. Pass --project <id>.`,
-      );
-    }
-    project = matches[0];
-  } else {
-    const remote = await gitRemoteOriginUrl(input.cwd ?? process.cwd());
-    const normalizedRemote = remote ? normalizeGitRemoteUrl(remote) : null;
-    const remoteMatches = normalizedRemote
-      ? projects.filter(
-          (candidate) => normalizeGitRemoteUrl(candidate.repository.url) === normalizedRemote,
-        )
-      : [];
-    if (normalizedRemote && remoteMatches.length === 1) {
-      project = remoteMatches[0];
-      projectSelection = "git-remote";
-      inferredFromGitRemote = normalizedRemote;
-    } else if (remoteMatches.length > 1) {
-      // Projects sharing a remote share the repository name, so "--repo"
-      // would be dead-end advice here; only --project disambiguates.
-      const matching = remoteMatches.map((candidate) => candidate.repository.name).join(", ");
-      throw new Error(
-        `The git remote matches more than one project (${matching}). Pass --project <id>.`,
-      );
-    } else if (projects.length === 1) {
-      project = projects[0];
-      projectSelection = "single-project";
-    } else {
-      const available = projects.map((candidate) => candidate.repository.name).join(", ");
-      throw new Error(
-        `Pass --repo <owner/name> to pick a project. Connected repositories: ${available}.`,
-      );
-    }
-  }
-  if (!project) throw new Error("Dispatch requires a project.");
+  const { project, issue, projectSelection, inferredFromGitRemote } = await resolveDispatchProject({
+    projects,
+    task,
+    project: input.project,
+    repo: input.repo,
+    cwd: input.cwd ?? process.cwd(),
+  });
 
   // The dashboard's dispatch dialog defaults the base branch to main; keep
   // the CLI on the same product default.
@@ -734,19 +275,6 @@ const terminalRunStatuses = new Set(["succeeded", "failed", "cancelled"]);
 export const sessionReachedTerminalState = (input: { run: { status: string } }) =>
   terminalRunStatuses.has(input.run.status);
 
-export const readDevboxesSessionResult = async (
-  context: DevboxesContext,
-  agentSessionId: string,
-) => {
-  const { session, currentTask, run } = await readDevboxesSession(context, agentSessionId);
-  return {
-    session,
-    currentTask,
-    run,
-    terminal: sessionReachedTerminalState({ run }),
-  };
-};
-
 const sessionStatusJson = (input: Awaited<ReturnType<typeof readDevboxesSession>>) => ({
   agentSessionId: input.session.id,
   sessionStatus: input.currentTask.status,
@@ -764,28 +292,6 @@ const sessionStatusJson = (input: Awaited<ReturnType<typeof readDevboxesSession>
   completedAt: input.run.completedAt,
   usage: input.run.usage,
 });
-
-const printSessionStatus = (input: Awaited<ReturnType<typeof readDevboxesSession>>) => {
-  const status = sessionStatusJson(input);
-  note(
-    [
-      `Session: ${status.agentSessionId} (${status.sessionStatus})`,
-      `Run: ${status.runId} (${status.runStatus})`,
-      ...(status.currentStep ? [`Step: ${status.currentStep}`] : []),
-      `Repository: ${status.repository} → ${status.branch}`,
-      `Model: ${status.model}`,
-      ...(status.outcome?.summary ? [`Outcome: ${status.outcome.summary.text}`] : []),
-      ...(status.outcome?.externalResults.flatMap((result) =>
-        result.canonicalUrl ? [`${result.type}: ${result.canonicalUrl}`] : [],
-      ) ?? []),
-      ...(status.outcome?.publicationFailures.map(
-        (failure) => `${failure.type} publication failed: ${failure.error}`,
-      ) ?? []),
-      ...(status.errorMessage ? [`Error: ${status.errorMessage}`] : []),
-    ].join("\n"),
-    "Devboxes session",
-  );
-};
 
 export const addAccountCommands = (program: Command) => {
   const cliOptions = (command: Command): DevboxesCliOptions =>
@@ -891,45 +397,56 @@ export const addAccountCommands = (program: Command) => {
       );
     });
 
-  const statusCommand = program.command("status");
-  statusCommand
-    .description("read the current run status for a session")
-    .argument("<agentSessionId>", "session ID returned by dispatch")
-    .option("--json", "write status as JSON to stdout", false)
-    .action(async (agentSessionId: string) => {
-      const options = statusCommand.opts<{ json: boolean }>();
-      const context = await loadContext(cliOptions(statusCommand));
-      const current = await readDevboxesSession(context, agentSessionId);
-      if (options.json) {
-        process.stdout.write(`${JSON.stringify(sessionStatusJson(current), null, 2)}\n`);
-        return;
-      }
-      printSessionStatus(current);
-    });
-
-  const resultCommand = program.command("result");
-  resultCommand
-    .description("read the current run outcome; exits with status 1 while work is unfinished")
-    .argument("<agentSessionId>", "session ID returned by dispatch")
-    .option("--json", "write the result as JSON to stdout", false)
-    .action(async (agentSessionId: string) => {
-      const options = resultCommand.opts<{ json: boolean }>();
-      const context = await loadContext(cliOptions(resultCommand));
-      const result = await readDevboxesSessionResult(context, agentSessionId);
-      const status = sessionStatusJson(result);
-      if (options.json) {
-        process.stdout.write(`${JSON.stringify(status, null, 2)}\n`);
-      } else {
-        printSessionStatus(result);
-        if (!result.terminal) {
-          log.warn(
-            `The Run is still ${status.runStatus}; poll \`${cliCommandName} status ${agentSessionId}\` until it finishes.`,
+  for (const name of ["status", "result"] as const) {
+    const command = program.command(name);
+    command
+      .description(
+        name === "result"
+          ? "read the current run outcome; exits with status 1 while work is unfinished"
+          : "read the current run status for a session",
+      )
+      .argument("<agentSessionId>", "session ID returned by dispatch")
+      .option(
+        "--json",
+        `write ${name === "result" ? "the result" : "status"} as JSON to stdout`,
+        false,
+      )
+      .action(async (agentSessionId: string) => {
+        const options = command.opts<{ json: boolean }>();
+        const context = await loadContext(cliOptions(command));
+        const status = sessionStatusJson(await readDevboxesSession(context, agentSessionId));
+        if (options.json) {
+          process.stdout.write(`${JSON.stringify(status, null, 2)}\n`);
+        } else {
+          note(
+            [
+              `Session: ${status.agentSessionId} (${status.sessionStatus})`,
+              `Run: ${status.runId} (${status.runStatus})`,
+              ...(status.currentStep ? [`Step: ${status.currentStep}`] : []),
+              `Repository: ${status.repository} → ${status.branch}`,
+              `Model: ${status.model}`,
+              ...(status.outcome?.summary ? [`Outcome: ${status.outcome.summary.text}`] : []),
+              ...(status.outcome?.externalResults.flatMap((result) =>
+                result.canonicalUrl ? [`${result.type}: ${result.canonicalUrl}`] : [],
+              ) ?? []),
+              ...(status.outcome?.publicationFailures.map(
+                (failure) => `${failure.type} publication failed: ${failure.error}`,
+              ) ?? []),
+              ...(status.errorMessage ? [`Error: ${status.errorMessage}`] : []),
+            ].join("\n"),
+            "Devboxes session",
           );
         }
-      }
-      // A not-yet-finished result must not read as success to chaining scripts.
-      if (!result.terminal) process.exitCode = 1;
-    });
+        if (name === "result" && !status.terminal) {
+          if (!options.json) {
+            log.warn(
+              `The Run is still ${status.runStatus}; poll \`${cliCommandName} status ${agentSessionId}\` until it finishes.`,
+            );
+          }
+          process.exitCode = 1;
+        }
+      });
+  }
 
   const mcpCommand = program.command("mcp");
   mcpCommand

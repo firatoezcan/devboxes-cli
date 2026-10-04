@@ -1,10 +1,12 @@
 #!/usr/bin/env bun
 
+import { captureCliTelemetryError } from "@firops/platform/observability/cli-telemetry";
 import { Command, Option } from "commander";
 
-import { addAccountCommands, cliVersion } from "./devboxes";
+import { cliVersion } from "./api";
+import { addAccountCommands } from "./devboxes";
 import { addRunnerCommands } from "./runner/runner";
-import { addTelemetryCommands, captureCliTelemetryError } from "./telemetry";
+import { addTelemetryCommands } from "./telemetry";
 
 export const createDevboxesCommand = () => {
   const program = new Command()
