@@ -1,7 +1,7 @@
 import { readFile, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-import { DockerOpencodeTaskRuntime } from "@firops/devbox/runner/docker-task-runtime";
+import { DockerOpencodeTaskRuntime } from "./docker-task-runtime";
 import Type, { type Static, type TSchema } from "typebox";
 import Value from "typebox/value";
 import type { z } from "zod";

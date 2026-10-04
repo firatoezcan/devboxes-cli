@@ -1,0 +1,76 @@
+diff --git a/dist/protocols/shared.d.ts b/dist/protocols/shared.d.ts
+index ec577fc679875fb672d47215e89a25adf23f0978..2a7a3341b14e93ba3d420e8f08dc065c78594c28 100644
+--- a/dist/protocols/shared.d.ts
++++ b/dist/protocols/shared.d.ts
+@@ -25,8 +25,8 @@ export interface ToolAccumulator {
+ /**
+  * `Usage.totalTokens` policy shared by every route. Honors a provider-
+  * supplied total; otherwise falls back to `inputTokens + outputTokens` only
+- * when at least one is defined. Returns `undefined` when neither input nor
+- * output is known so routes don't publish a misleading `0`.
++ * when both are defined. Returns `undefined` when either component is unknown
++ * so routes don't publish a partial count as the inclusive total.
+  *
+  * Under the inclusive `AI.Usage` contract, `inputTokens` includes cached input
+  * and `outputTokens` includes reasoning. Protocol mappers normalize those
+diff --git a/dist/protocols/shared.js b/dist/protocols/shared.js
+index dd9ff08109ca0ef96a5a4245243e1bcb99345ddd..5f33eb3978564e866e931e19937caa1e7c0069bd 100644
+--- a/dist/protocols/shared.js
++++ b/dist/protocols/shared.js
+@@ -27,8 +27,8 @@ export const promptCacheKey = (request) => {
+ /**
+  * `Usage.totalTokens` policy shared by every route. Honors a provider-
+  * supplied total; otherwise falls back to `inputTokens + outputTokens` only
+- * when at least one is defined. Returns `undefined` when neither input nor
+- * output is known so routes don't publish a misleading `0`.
++ * when both are defined. Returns `undefined` when either component is unknown
++ * so routes don't publish a partial count as the inclusive total.
+  *
+  * Under the inclusive `AI.Usage` contract, `inputTokens` includes cached input
+  * and `outputTokens` includes reasoning. Protocol mappers normalize those
+@@ -38,9 +38,9 @@ export const promptCacheKey = (request) => {
+ export const totalTokens = (inputTokens, outputTokens, total) => {
+     if (total !== undefined)
+         return total;
+-    if (inputTokens === undefined && outputTokens === undefined)
++    if (inputTokens === undefined || outputTokens === undefined)
+         return undefined;
+-    return (inputTokens ?? 0) + (outputTokens ?? 0);
++    return inputTokens + outputTokens;
+ };
+ /**
+  * Subtract `subtrahend` from `total`, clamping to zero if the provider
+diff --git a/dist/protocols/anthropic-messages.js b/dist/protocols/anthropic-messages.js
+--- a/dist/protocols/anthropic-messages.js
++++ b/dist/protocols/anthropic-messages.js
+@@ -904,7 +904,7 @@ const mapUsage = (usage, providerMetadataKey) => {
+     const nonCached = usage.input_tokens ?? undefined;
+     const cacheRead = usage.cache_read_input_tokens ?? undefined;
+     const cacheWrite = usage.cache_creation_input_tokens ?? undefined;
+-    const inputTokens = ProviderShared.sumTokens(nonCached, cacheRead, cacheWrite);
++    const inputTokens = nonCached === undefined ? undefined : ProviderShared.sumTokens(nonCached, cacheRead, cacheWrite);
+     return new Usage({
+         inputTokens,
+         outputTokens: usage.output_tokens,
+@@ -929,7 +929,7 @@ const mergeUsage = (left, right, providerMetadataKey) => {
+     const nonCachedInputTokens = right.nonCachedInputTokens ?? left.nonCachedInputTokens;
+     const cacheReadInputTokens = right.cacheReadInputTokens ?? left.cacheReadInputTokens;
+     const cacheWriteInputTokens = right.cacheWriteInputTokens ?? left.cacheWriteInputTokens;
+-    const inputTokens = ProviderShared.sumTokens(nonCachedInputTokens, cacheReadInputTokens, cacheWriteInputTokens);
++    const inputTokens = nonCachedInputTokens === undefined ? undefined : ProviderShared.sumTokens(nonCachedInputTokens, cacheReadInputTokens, cacheWriteInputTokens);
+     const outputTokens = right.outputTokens ?? left.outputTokens;
+     const reasoningTokens = right.reasoningTokens ?? left.reasoningTokens;
+     return new Usage({
+diff --git a/dist/protocols/bedrock-converse.js b/dist/protocols/bedrock-converse.js
+--- a/dist/protocols/bedrock-converse.js
++++ b/dist/protocols/bedrock-converse.js
+@@ -386,6 +386,8 @@ const mapUsage = (usage, providerMetadataKey) => {
+     if (!usage)
+         return undefined;
+-    const inputTokens = ProviderShared.sumTokens(usage.inputTokens, usage.cacheReadInputTokens, usage.cacheWriteInputTokens);
++    const inputTokens = usage.inputTokens === undefined
++        ? undefined
++        : ProviderShared.sumTokens(usage.inputTokens, usage.cacheReadInputTokens, usage.cacheWriteInputTokens);
+     return new Usage({
+         inputTokens,
+         outputTokens: usage.outputTokens,

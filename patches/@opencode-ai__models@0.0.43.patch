@@ -1,0 +1,10 @@
+diff --git a/dist/snapshot.js b/dist/snapshot.js
+index eae22f38c9db90939000a57b2cdc692835f6b958..21ca015b7c1f20b3daa5a46804d3cd7da78b4313 100644
+--- a/dist/snapshot.js
++++ b/dist/snapshot.js
+@@ -4,3 +4,5 @@ export const providers = data.providers
+ export const models = data.models
+ export const generatedAt = "2026-08-14T05:51:08.896Z"
+ export default data
++
++providers.xai.api = "https://api.x.ai/v1"

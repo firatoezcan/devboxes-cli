@@ -1,7 +1,7 @@
 import { join } from "node:path";
 
-import { platformConfigHome } from "@firops/connections/local/config";
-import { dockerSocketPath } from "@firops/devbox/runner/docker-socket";
+import { platformConfigHome } from "../connections/config";
+import { dockerSocketPath } from "./docker-socket";
 import type { Command } from "commander";
 
 import { apiOrigin } from "../commands";

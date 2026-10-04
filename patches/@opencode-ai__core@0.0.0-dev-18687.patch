@@ -1,0 +1,1405 @@
+diff --git a/dist/chunks/ripgrep-468dmn7s.js b/dist/chunks/ripgrep-468dmn7s.js
+index 82a5f232516b9b71be3bb6d5b0b80b2b354af3c3..b981d49ce09eb3d2f7d32f53e1c88fab8472417f 100644
+--- a/dist/chunks/ripgrep-468dmn7s.js
++++ b/dist/chunks/ripgrep-468dmn7s.js
+@@ -61,8 +61,12 @@ function toSessionError(cause) {
+     return { type: "aborted", message: cause.message };
+   if (cause instanceof exports_model.ModelNotSelectedError || cause instanceof exports_model.ModelUnavailableError || cause instanceof exports_model.VariantUnavailableError || cause instanceof exports_model.UnsupportedPackageError || cause instanceof exports_model.UnresolvedProviderVariablesError)
+     return { type: "provider.no-route", message: cause.message };
+-  if (cause instanceof exports_integration.AuthorizationError)
+-    return { type: "provider.auth", message: cause.message };
++  if (cause instanceof exports_integration.AuthorizationError) {
++    return {
++      ...toSessionError(cause.cause),
++      type: "provider.auth"
++    };
++  }
+   return { type: "unknown", message: cause instanceof Error ? cause.message : String(cause) };
+ }
+ function providerError(type, reason) {
+diff --git a/dist/chunks/ripgrep-5r4gp9nd.js b/dist/chunks/ripgrep-5r4gp9nd.js
+index 618022c3fe2519a07e18cf40912550fef42abd40..6d7447e7a4345a145a41e9709d6463956df3b465 100644
+--- a/dist/chunks/ripgrep-5r4gp9nd.js
++++ b/dist/chunks/ripgrep-5r4gp9nd.js
+@@ -60,20 +60,16 @@ var resolved = (model, options) => ({
+ var layer = Layer.effect(Service, Effect.gen(function* () {
+   const resolver = yield* exports_model_resolver.Service;
+   return Service.of({
+-    resolve: Effect.fn("SessionRunnerModel.resolve")(function* (session, available) {
+-      if (!session.model) {
+-        const resolved2 = yield* resolver.resolve();
+-        if (resolved2)
+-          return resolved2;
++    resolve: Effect.fn("SessionRunnerModel.resolve")(function* (session) {
++      const selected = yield* resolver.resolve(session.model);
++      if (selected)
++        return selected;
++      if (!session.model)
+         return yield* new ModelNotSelectedError({ sessionID: session.id });
+-      }
+-      const selected = (yield* available()).find((model) => model.providerID === session.model?.providerID && model.id === session.model.id);
+-      if (!selected)
+-        return yield* new ModelUnavailableError({
+-          providerID: session.model.providerID,
+-          modelID: session.model.id
+-        });
+-      return yield* resolver.resolveModel(selected, session.model.variant);
++      return yield* new ModelUnavailableError({
++        providerID: session.model.providerID,
++        modelID: session.model.id
++      });
+     })
+   });
+ }));
+diff --git a/dist/chunks/ripgrep-cpqd33tw.js b/dist/chunks/ripgrep-cpqd33tw.js
+index debf4b1179f56477a02152d42e26441f5a37144a..3f35f782ec908d6f358b316d904bb3d908bdae7d 100644
+--- a/dist/chunks/ripgrep-cpqd33tw.js
++++ b/dist/chunks/ripgrep-cpqd33tw.js
+@@ -414,7 +414,8 @@ var createLLMEventPublisher = (bus, input) => {
+           finish: event.reason.normalized,
+           rawFinish: event.reason.raw,
+           providerState: providerState(event.providerMetadata),
+-          tokens: exports_usage.tokens(event.usage)
++          tokens: exports_usage.tokens(event.usage),
++          reportedUsage: exports_usage.reported(event.usage)
+         };
+         if (event.reason.normalized === "content-filter") {
+           providerFailed = true;
+diff --git a/dist/chunks/ripgrep-dd64dez9.js b/dist/chunks/ripgrep-dd64dez9.js
+index 293eb40920744ff4eb2e0b53b2a5542022f540e2..d58a172eeea3aa07af97b8f05d89f5bf94bf9bac 100644
+--- a/dist/chunks/ripgrep-dd64dez9.js
++++ b/dist/chunks/ripgrep-dd64dez9.js
+@@ -447,7 +447,7 @@ var layer = Layer.effect(Service, Effect.gen(function* () {
+         if (credential.value.expires > now + Duration.toMillis(Duration.minutes(5)))
+           return credential.value;
+         const value = yield* authorize(implementation.refresh(credential.value));
+-        yield* credentials.update(credential.id, { value });
++        yield* credentials.update(credential.id, { value }, credential);
+         return value;
+       }),
+       key: Effect.fn("Integration.connection.key")(function* (input) {
+diff --git a/dist/chunks/ripgrep-dqpyhfc5.js b/dist/chunks/ripgrep-dqpyhfc5.js
+index 51a6c15405af152d3103d04409095522ce412367..931fad48ecd05f836f4b98e73bdbce7d95f10ffa 100644
+--- a/dist/chunks/ripgrep-dqpyhfc5.js
++++ b/dist/chunks/ripgrep-dqpyhfc5.js
+@@ -91,7 +91,7 @@ var layer = Layer.effect(Service, Effect.gen(function* () {
+   const skillInstructions = yield* exports_instructions5.Service;
+   const store = yield* exports_store.Service;
+   const registry = yield* exports_tool.Service;
+-  const resolveModel = (session) => models.resolve(session, catalog.model.available);
++  const resolveModel = (session) => models.resolve(session);
+   const selectTitle = Effect.fn("SessionContext.selectTitle")(function* (session) {
+     const agent = yield* agents.get(exports_agent.ID.make("title"));
+     if (!agent)
+diff --git a/dist/chunks/ripgrep-ednaacmw.js b/dist/chunks/ripgrep-ednaacmw.js
+index fac00be298e3bc4fd0ae655a804fb465617650fe..c29ceb032a7dc69830a3afef0afc4588b0bab601 100644
+--- a/dist/chunks/ripgrep-ednaacmw.js
++++ b/dist/chunks/ripgrep-ednaacmw.js
+@@ -14,15 +14,15 @@ import {
+   exports_provider
+ } from "./ripgrep-krsqcmnj.js";
+ import {
+-  exports_bus
+-} from "./ripgrep-7ma0cb5g.js";
++  exports_catalog
++} from "./ripgrep-g1pg755n.js";
+ import {
+   __require
+ } from "./ripgrep-rvfvac9x.js";
+ 
+ // src/plugin/provider/openai.ts
+ import { define } from "@opencode-ai/plugin/effect/plugin";
+-import { Deferred, Effect, Option, Schema, Semaphore, Stream } from "effect";
++import { Deferred, Effect, Option, Schema } from "effect";
+ var clientID = "app_EMoamEEZ73f0CkXaXp7hrann";
+ var issuer = "https://auth.openai.com";
+ var callbackPort = 1455;
+@@ -160,25 +160,22 @@ var headless = (app) => ({
+ var OpenAIPlugin = define({
+   id: "opencode.provider.openai",
+   effect: Effect.fn(function* (ctx) {
+-    const bus = yield* exports_bus.Service;
+-    const loading = Semaphore.makeUnsafe(1);
+-    let chatgpt;
+-    const load = Effect.fn("OpenAIPlugin.load")(function* () {
+-      const connection = yield* ctx.integration.connection.active("openai");
+-      const credential = connection ? yield* ctx.integration.connection.resolve(connection).pipe(Effect.orElseSucceed(() => {
+-        return;
+-      })) : undefined;
+-      chatgpt = credential?.type === "oauth" && (credential.methodID === browserMethodID || credential.methodID === headlessMethodID) ? credential : undefined;
+-    });
++    const catalog = yield* exports_catalog.Service;
+     yield* ctx.integration.transform((draft) => {
+       draft.method.update(browser(ctx.app));
+       draft.method.update(headless(ctx.app));
+     });
+-    yield* load();
+-    yield* ctx.catalog.transform((evt) => {
++    yield* catalog.transform((draft) => draft.project(Effect.fn("OpenAIPlugin.project")(function* (evt, resolveCredential) {
+       const item = evt.provider.get(exports_provider.ID.openai);
+       if (!item)
+         return;
++      const credential = yield* resolveCredential(
++        item.provider.integrationID ?? exports_integration.ID.make(item.provider.id)
++      );
++      const chatgpt = credential?.type === "oauth"
++        && (credential.methodID === browserMethodID || credential.methodID === headlessMethodID)
++        ? credential
++        : undefined;
+       for (const model of item.models.values()) {
+         evt.model.update(item.provider.id, model.id, (draft) => {
+           draft.capabilities.responsesWebsockets = true;
+@@ -208,17 +205,14 @@ var OpenAIPlugin = define({
+           draft.limit = { ...draft.limit, context: 400000, input: 272000 };
+         });
+       }
+-    });
++    })));
+     yield* ctx.session.hook("model.request", (evt) => Effect.sync(() => {
+-      if (!chatgpt)
++      if (evt.headers.originator !== "opencode")
+         return;
+       if (evt.baseURL && URL.canParse(evt.baseURL) && new URL(evt.baseURL).origin === "https://api.openai.com")
+         evt.baseURL = codexBaseURL;
+-      evt.headers.originator = "opencode";
+       evt.headers["session-id"] = evt.sessionID;
+     }), { providerID: exports_provider.ID.openai });
+-    const refresh = () => loading.withPermit(load().pipe(Effect.andThen(ctx.catalog.reload())));
+-    yield* bus.subscribe(exports_credential.Event.Switched).pipe(Stream.filter((event) => event.data.integrationID === exports_integration.ID.make("openai")), Stream.runForEach(refresh), Effect.forkScoped({ startImmediately: true }));
+   })
+ });
+ function headers(contentType, app) {
+diff --git a/dist/chunks/ripgrep-g1pg755n.js b/dist/chunks/ripgrep-g1pg755n.js
+index 067927fd0eb760c9b98071fbe51a0728ca89beec..7acb1304355e2b20253083feb2d197a818226f2b 100644
+--- a/dist/chunks/ripgrep-g1pg755n.js
++++ b/dist/chunks/ripgrep-g1pg755n.js
+@@ -35,150 +35,232 @@ class Service extends Context.Service()("@opencode/Catalog") {
+ var layer = Layer.effect(Service, Effect.gen(function* () {
+   const bus = yield* exports_bus.Service;
+   const integrations = yield* exports_integration.Service;
+-  const available = (provider, integration) => {
++  const available = (provider, authority) => {
+     if (provider.activation === "disabled")
+       return false;
+     if (provider.activation === "enabled")
+       return true;
+-    if (integration?.connections.length)
++    if (authority.credential !== undefined)
+       return true;
+-    return provider.integrationID === undefined && !integration;
++    return provider.integrationID === undefined && !authority.integration;
+   };
+-  const projectModel = (model, provider) => {
+-    return {
+-      ...model,
+-      package: model.package ?? provider.package,
+-      settings: exports_provider.mergeOverlay(provider.settings, model.settings),
+-      headers: exports_provider.mergeHeaders(provider.headers, model.headers),
+-      body: exports_provider.mergeOverlay(provider.body, model.body)
+-    };
+-  };
+-  const state = exports_state.create({
+-    name: "catalog",
+-    initial: () => ({ providers: new Map }),
+-    draft: (draft) => {
+-      const result2 = {
+-        provider: {
+-          list: () => Array.fromIterable(draft.providers.values()),
+-          get: (providerID) => draft.providers.get(providerID),
+-          update: (providerID, fn) => {
+-            let current = draft.providers.get(providerID);
+-            if (!current) {
+-              current = {
+-                provider: exports_provider.Info.empty(providerID),
+-                models: new Map
+-              };
+-              draft.providers.set(providerID, current);
+-            }
+-            fn(current.provider);
+-          },
+-          remove: (providerID) => {
+-            draft.providers.delete(providerID);
+-          }
+-        },
+-        model: {
+-          get: (providerID, modelID) => draft.providers.get(providerID)?.models.get(modelID),
+-          update: (providerID, modelID, fn) => {
+-            let record = draft.providers.get(providerID);
+-            if (!record) {
+-              record = {
+-                provider: exports_provider.Info.empty(providerID),
+-                models: new Map
+-              };
+-              draft.providers.set(providerID, record);
+-            }
+-            const model = record.models.get(modelID) ?? exports_model.Info.default(providerID, modelID);
+-            if (!record.models.has(modelID))
+-              record.models.set(modelID, model);
+-            fn(model);
+-            model.id = modelID;
+-            model.providerID = providerID;
+-          },
+-          remove: (providerID, modelID) => {
+-            draft.providers.get(providerID)?.models.delete(modelID);
+-          },
+-          default: {
+-            get: () => draft.defaultModel,
+-            set: (providerID, modelID) => {
+-              draft.defaultModel = { providerID, modelID };
+-            }
+-          }
++  const projectModel = (model, provider) => ({
++    ...model,
++    package: model.package ?? provider.package,
++    settings: exports_provider.mergeOverlay(provider.settings, model.settings),
++    headers: exports_provider.mergeHeaders(provider.headers, model.headers),
++    body: exports_provider.mergeOverlay(provider.body, model.body)
++  });
++  const draft = (data) => ({
++    project: (projection) => data.projections.push(projection),
++    provider: {
++      list: () => Array.fromIterable(data.providers.values()),
++      get: (providerID) => data.providers.get(providerID),
++      update: (providerID, fn) => {
++        let current = data.providers.get(providerID);
++        if (!current) {
++          current = {
++            provider: exports_provider.Info.empty(providerID),
++            models: new Map
++          };
++          data.providers.set(providerID, current);
+         }
+-      };
+-      return result2;
++        fn(current.provider);
++      },
++      remove: (providerID) => {
++        data.providers.delete(providerID);
++      }
+     },
++    model: {
++      get: (providerID, modelID) => data.providers.get(providerID)?.models.get(modelID),
++      update: (providerID, modelID, fn) => {
++        let record = data.providers.get(providerID);
++        if (!record) {
++          record = {
++            provider: exports_provider.Info.empty(providerID),
++            models: new Map
++          };
++          data.providers.set(providerID, record);
++        }
++        const model = record.models.get(modelID) ?? exports_model.Info.default(providerID, modelID);
++        if (!record.models.has(modelID))
++          record.models.set(modelID, model);
++        fn(model);
++        model.id = modelID;
++        model.providerID = providerID;
++      },
++      remove: (providerID, modelID) => {
++        data.providers.get(providerID)?.models.delete(modelID);
++      },
++      default: {
++        get: () => data.defaultModel,
++        set: (providerID, modelID) => {
++          data.defaultModel = { providerID, modelID };
++        }
++      }
++    }
++  });
++  const state = exports_state.create({
++    name: "catalog",
++    initial: () => ({ providers: new Map, projections: [] }),
++    draft,
+     finalize: Effect.fn("Catalog.finalize")(function* () {
+       yield* bus.publish(Catalog.Event.Updated, {});
+     })
+   });
+-  const result = {
++  const snapshot = Effect.fn("Catalog.snapshot")(function* (providerID) {
++    const current = state.get();
++    const selected = providerID === undefined ? undefined : current.providers.get(providerID);
++    const data = {
++      providers: providerID === undefined
++        ? structuredClone(current.providers)
++        : new Map(selected ? [[providerID, structuredClone(selected)]] : []),
++      defaultModel: current.defaultModel,
++      projections: []
++    };
++    const authorities = new Map;
++    const authority = Effect.fn("Catalog.authority")(function* (integrationID) {
++      if (authorities.has(integrationID))
++        return authorities.get(integrationID);
++      const integration = yield* integrations.get(integrationID);
++      const connection = integration
++        ? integration.connections[0]
++        : yield* integrations.connection.active(integrationID);
++      const credential = connection ? yield* integrations.connection.resolve(connection) : undefined;
++      const result = { integration, credential };
++      authorities.set(integrationID, result);
++      return result;
++    });
++    const credential = (integrationID) => authority(integrationID).pipe(
++      Effect.map((resolved) => resolved.credential)
++    );
++    const view = draft(data);
++    for (const project of current.projections)
++      yield* project(view, credential, providerID);
++    return { ...data, authority };
++  });
++  const models = (view) => pipe(
++    Array.fromIterable(view.providers.values()),
++    Array.flatMap((record) => Array.fromIterable(record.models.values()).map(
++      (model) => projectModel(model, record.provider)
++    )),
++    Array.sortWith((model) => model.time.released, Order.flip(Order.Number))
++  );
++  const select = Effect.fn("Catalog.select")(function* (view, providerID, modelID) {
++    const record = view.providers.get(providerID);
++    const model = record?.models.get(modelID);
++    if (!record || !model?.enabled)
++      return;
++    const authority = yield* view.authority(
++      record.provider.integrationID ?? exports_integration.ID.make(providerID)
++    );
++    if (!available(record.provider, authority))
++      return;
++    return {
++      provider: record.provider,
++      model: projectModel(model, record.provider),
++      credential: authority.credential
++    };
++  });
++  const defaultSelection = Effect.fn("Catalog.defaultSelection")(function* (view, requirePackage) {
++    if (view.defaultModel) {
++      const selected = yield* select(view, view.defaultModel.providerID, view.defaultModel.modelID);
++      if (selected && (!requirePackage || selected.model.package))
++        return selected;
++    }
++    for (const model of models(view)) {
++      if (requirePackage && !model.package)
++        continue;
++      const selected = yield* select(view, model.providerID, model.id);
++      if (selected)
++        return selected;
++    }
++  });
++  return Service.of({
+     transform: state.transform,
+     reload: state.reload,
+     provider: {
+       get: Effect.fn("Catalog.provider.get")(function* (providerID) {
+-        return state.get().providers.get(providerID)?.provider;
++        const view = yield* snapshot(providerID).pipe(Effect.orDie);
++        return view.providers.get(providerID)?.provider;
++      }),
++      resolve: Effect.fn("Catalog.provider.resolve")(function* (providerID) {
++        const view = yield* snapshot(providerID);
++        const provider = view.providers.get(providerID)?.provider;
++        const authority = yield* view.authority(
++          provider?.integrationID ?? exports_integration.ID.make(providerID)
++        );
++        return { provider, credential: authority.credential };
+       }),
+       all: Effect.fn("Catalog.provider.all")(function* () {
+-        return Array.fromIterable(state.get().providers.values()).map((record) => record.provider);
++        const view = yield* snapshot().pipe(Effect.orDie);
++        return Array.fromIterable(view.providers.values()).map((record) => record.provider);
+       }),
+       available: Effect.fn("Catalog.provider.available")(function* () {
+-        const active = new Map((yield* integrations.list()).map((integration) => [integration.id, integration]));
+-        return (yield* result.provider.all()).filter((provider) => available(provider, active.get(provider.integrationID ?? exports_integration.ID.make(provider.id))));
++        const view = yield* snapshot().pipe(Effect.orDie);
++        const providers = [];
++        for (const { provider } of view.providers.values()) {
++          const authority = yield* view.authority(
++            provider.integrationID ?? exports_integration.ID.make(provider.id)
++          ).pipe(Effect.orDie);
++          if (available(provider, authority))
++            providers.push(provider);
++        }
++        return providers;
+       })
+     },
+     model: {
+       get: Effect.fn("Catalog.model.get")(function* (providerID, modelID) {
+-        const record = state.get().providers.get(providerID);
+-        if (!record)
+-          return;
+-        const model = record.models.get(modelID);
++        const view = yield* snapshot(providerID).pipe(Effect.orDie);
++        const record = view.providers.get(providerID);
++        const model = record?.models.get(modelID);
+         return model && projectModel(model, record.provider);
+       }),
++      resolve: Effect.fn("Catalog.model.resolve")(function* (requested) {
++        const view = yield* snapshot(requested?.providerID);
++        return requested
++          ? yield* select(view, requested.providerID, requested.id)
++          : yield* defaultSelection(view, true);
++      }),
+       all: Effect.fn("Catalog.model.all")(function* () {
+-        return pipe(Array.fromIterable(state.get().providers.values()), Array.flatMap((record) => {
+-          return Array.fromIterable(record.models.values()).map((model) => projectModel(model, record.provider));
+-        }), Array.sortWith((item) => item.time.released, Order.flip(Order.Number)));
++        return models(yield* snapshot().pipe(Effect.orDie));
+       }),
+       available: Effect.fn("Catalog.model.available")(function* () {
+-        const providers = new Set((yield* result.provider.available()).map((provider) => provider.id));
+-        const models = [];
+-        for (const record of state.get().providers.values()) {
+-          if (!providers.has(record.provider.id))
++        const view = yield* snapshot().pipe(Effect.orDie);
++        const result = [];
++        for (const model of models(view)) {
++          if (!model.enabled)
+             continue;
+-          for (const model of record.models.values()) {
+-            if (!model.enabled)
+-              continue;
+-            models.push(projectModel(model, record.provider));
+-          }
++          const selected = yield* select(view, model.providerID, model.id).pipe(Effect.orDie);
++          if (selected)
++            result.push(selected.model);
+         }
+-        return pipe(models, Array.sortWith((item) => item.time.released, Order.flip(Order.Number)));
++        return result;
+       }),
+       default: Effect.fn("Catalog.model.default")(function* () {
+-        const defaultModel = state.get().defaultModel;
+-        if (defaultModel) {
+-          const provider = yield* result.provider.get(defaultModel.providerID);
+-          if (provider && (yield* result.provider.available()).some((item) => item.id === provider.id)) {
+-            const model = yield* result.model.get(defaultModel.providerID, defaultModel.modelID);
+-            if (model?.enabled)
+-              return model;
+-          }
+-        }
+-        return (yield* result.model.available())[0];
++        const view = yield* snapshot().pipe(Effect.orDie);
++        return (yield* defaultSelection(view, false).pipe(Effect.orDie))?.model;
+       }),
+       small: Effect.fn("Catalog.model.small")(function* (providerID) {
+-        const record = state.get().providers.get(providerID);
++        const view = yield* snapshot(providerID).pipe(Effect.orDie);
++        const record = view.providers.get(providerID);
+         if (!record)
+           return;
+-        const models = pipe(Array.fromIterable(record.models.values()), Array.filter((model) => model.providerID === providerID && model.enabled && model.status === "active" && model.capabilities.input.some((item) => item.startsWith("text")) && model.capabilities.output.some((item) => item.startsWith("text"))), Array.sortWith((model) => model.time.released, Order.flip(Order.Number)));
++        const candidates = pipe(
++          Array.fromIterable(record.models.values()),
++          Array.filter((model) => model.providerID === providerID && model.enabled && model.status === "active"
++            && model.capabilities.input.some((item) => item.startsWith("text"))
++            && model.capabilities.output.some((item) => item.startsWith("text"))),
++          Array.sortWith((model) => model.time.released, Order.flip(Order.Number))
++        );
+         for (const family of SMALL_MODEL_FAMILY_PRIORITY) {
+-          const selected = models.find((model) => model.family === family);
++          const selected = candidates.find((model) => model.family === family);
+           if (selected)
+             return projectModel(selected, record.provider);
+         }
+       })
+     }
+-  };
+-  return Service.of(result);
++  });
+ }));
+ var SMALL_MODEL_FAMILY_PRIORITY = ["gpt-luna", "gemini-flash-lite", "gemini-flash", "claude-haiku"];
+ var node = makeLocationNode({ service: Service, layer, deps: [exports_bus.node, exports_integration.node] });
+diff --git a/dist/chunks/ripgrep-g3t8qcfx.js b/dist/chunks/ripgrep-g3t8qcfx.js
+index c07f0885cb6ef7151348e60feb751b99c3e2cb7b..193ab21e3fa605ce0284236092ef194a54d8371c 100644
+--- a/dist/chunks/ripgrep-g3t8qcfx.js
++++ b/dist/chunks/ripgrep-g3t8qcfx.js
+@@ -54,7 +54,11 @@ var layer = Layer.effect(Service, Effect.gen(function* () {
+       message: error.message,
+       service: resolved.ref.providerID
+     })));
+-    return response.text;
++    const totalTokens = response.usage?.totalTokens;
++    return totalTokens === undefined ? { text: response.text } : {
++      text: response.text,
++      totalTokens
++    };
+   });
+   const text = (input) => runText(input).pipe(Effect.catchTag("Integration.Authorization", () => new UnavailableError({
+     message: "Generation credentials are unavailable"
+diff --git a/dist/chunks/ripgrep-gzpvq9eq.js b/dist/chunks/ripgrep-gzpvq9eq.js
+index 43baf890ac86d44bc8410f959862f597043fa720..160c9c2e8cb70f8305f08461353f628208570c9b 100644
+--- a/dist/chunks/ripgrep-gzpvq9eq.js
++++ b/dist/chunks/ripgrep-gzpvq9eq.js
+@@ -65,6 +65,7 @@ var layer = Layer.effect(Service, Effect.gen(function* () {
+     const recordUsage = Effect.suspend(() => usage ? bus.publish(SessionEvent.UsageRecorded, {
+       sessionID: input.session.id,
+       source: "title",
++      credentialType: input.model.credentialType,
+       ...usage
+     }) : Effect.void);
+     const prepared = yield* context.prepare({
+@@ -87,7 +88,7 @@ var layer = Layer.effect(Service, Effect.gen(function* () {
+       return Effect.void;
+     }), Effect.catchTag("AI.Error", () => Effect.sync(() => {
+       failed = true;
+-    })), Effect.onInterrupt(() => recordUsage.pipe(Effect.asVoid)));
++    })), Effect.onError(() => recordUsage.pipe(Effect.asVoid)));
+     yield* recordUsage;
+     if (failed)
+       return;
+diff --git a/dist/chunks/ripgrep-j54z7ct2.js b/dist/chunks/ripgrep-j54z7ct2.js
+index 2cf6f23551ca02cf8f230c7fa58cd627b72069bb..1d690ed10c9d8fb4c525b24335c934e26129dea1 100644
+--- a/dist/chunks/ripgrep-j54z7ct2.js
++++ b/dist/chunks/ripgrep-j54z7ct2.js
+@@ -17,11 +17,11 @@ import {
+   exports_provider
+ } from "./ripgrep-krsqcmnj.js";
+ import {
+-  exports_bus
+-} from "./ripgrep-7ma0cb5g.js";
++  exports_catalog
++} from "./ripgrep-g1pg755n.js";
+ 
+ // src/plugin/provider/opencode.ts
+-import { Duration, Effect, Schema, Semaphore, Stream } from "effect";
++import { Duration, Effect, Schema } from "effect";
+ import { define } from "@opencode-ai/plugin/effect/plugin";
+ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
+ import { Money } from "@opencode-ai/schema/money";
+@@ -88,19 +88,8 @@ function oauth(http) {
+ var OpencodePlugin = define({
+   id: "opencode.provider.opencode",
+   effect: Effect.fn(function* (ctx) {
+-    const bus = yield* exports_bus.Service;
++    const nativeCatalog = yield* exports_catalog.Service;
+     const http = yield* HttpClient.HttpClient;
+-    const loading = Semaphore.makeUnsafe(1);
+-    let connected = false;
+-    let providers;
+-    const load = Effect.fn("OpencodePlugin.load")(function* () {
+-      const connection = yield* ctx.integration.connection.active("opencode");
+-      const credential = connection ? yield* ctx.integration.connection.resolve(connection).pipe(Effect.orElseSucceed(() => {
+-        return;
+-      })) : undefined;
+-      connected = connection !== undefined;
+-      providers = credential ? yield* fetchProviders(http, credential).pipe(Effect.catch((cause) => Effect.logWarning("failed to load OpenCode provider config", { cause }).pipe(Effect.as(undefined)))) : undefined;
+-    });
+     yield* ctx.integration.transform((draft) => {
+       draft.update("opencode", (integration) => {
+         integration.name = "OpenCode";
+@@ -108,9 +97,14 @@ var OpencodePlugin = define({
+       draft.method.update(oauth(http));
+       draft.method.update({ integrationID: "opencode", method: { type: "key", label: "API key (service account)" } });
+     });
+-    yield* load();
+-    yield* ctx.catalog.transform((catalog) => {
++    yield* nativeCatalog.transform((draft) => draft.project(Effect.fn("OpencodePlugin.project")(function* (catalog, resolveCredential, requestedProviderID) {
++      const credential = yield* resolveCredential(exports_integration.ID.make("opencode"));
++      const providers = credential ? yield* fetchProviders(http, credential).pipe(
++        Effect.catch((cause) => Effect.logWarning("failed to load OpenCode provider config", { cause }).pipe(Effect.as(undefined)))
++      ) : undefined;
+       for (const [providerID, item2] of Object.entries(providers ?? {})) {
++        if (requestedProviderID !== undefined && providerID !== requestedProviderID)
++          continue;
+         catalog.provider.update(providerID, (provider) => {
+           provider.integrationID = exports_integration.ID.make("opencode");
+           if (item2.name !== undefined)
+@@ -178,7 +172,7 @@ var OpencodePlugin = define({
+       const item = catalog.provider.get(exports_provider.ID.opencode);
+       if (!item)
+         return;
+-      const hasKey = Boolean(process.env.OPENCODE_API_KEY || connected || item.provider.settings?.apiKey);
++      const hasKey = Boolean(process.env.OPENCODE_API_KEY || credential || item.provider.settings?.apiKey);
+       catalog.provider.update(item.provider.id, (provider) => {
+         if (!hasKey) {
+           provider.activation = "enabled";
+@@ -194,13 +188,11 @@ var OpencodePlugin = define({
+           draft.enabled = false;
+         });
+       }
+-    });
+-    const refresh = () => loading.withPermit(load().pipe(Effect.andThen(ctx.catalog.reload())));
+-    yield* bus.subscribe(exports_credential.Event.Switched).pipe(Stream.filter((event) => event.data.integrationID === exports_integration.ID.make("opencode")), Stream.runForEach(refresh), Effect.forkScoped({ startImmediately: true }));
++    })));
+   })
+ });
+ function fetchProviders(http, value) {
+-  const metadata = value.metadata;
++  const metadata = value.type === "key" ? value.configuration : value.metadata;
+   const server = typeof metadata?.server === "string" ? metadata.server : defaultServer;
+   const orgID = typeof metadata?.orgID === "string" ? metadata.orgID : undefined;
+   const token = value.type === "oauth" ? value.access : value.key;
+diff --git a/dist/chunks/ripgrep-ngz3v23c.js b/dist/chunks/ripgrep-ngz3v23c.js
+index 0c0a816bdedde2180f90fb65adad9922016102dc..231acf46ea97e0f285ae6cfd9dfaf8e8ee0d14cd 100644
+--- a/dist/chunks/ripgrep-ngz3v23c.js
++++ b/dist/chunks/ripgrep-ngz3v23c.js
+@@ -160,6 +160,7 @@ function update(adapter, event) {
+           draft.providerState = undefined;
+           draft.time.streamed = undefined;
+           draft.time.completed = undefined;
++          draft.reportedUsage = undefined;
+           if (event2.data.snapshot)
+             draft.snapshot = { ...draft.snapshot, start: event2.data.snapshot };
+         }));
+@@ -196,6 +197,7 @@ function update(adapter, event) {
+         draft.providerState = castDraft(event2.data.providerState);
+         draft.cost = event2.data.cost;
+         draft.tokens = event2.data.tokens;
++        draft.reportedUsage = castDraft(event2.data.reportedUsage);
+         projectTerminalSnapshot(draft, event2);
+       });
+     },
+@@ -211,6 +213,7 @@ function update(adapter, event) {
+           draft.cost = event2.data.cost;
+           draft.tokens = castDraft(event2.data.tokens);
+         }
++        draft.reportedUsage = castDraft(event2.data.reportedUsage);
+         projectTerminalSnapshot(draft, event2);
+       });
+     },
+diff --git a/dist/chunks/ripgrep-q18tbrss.js b/dist/chunks/ripgrep-q18tbrss.js
+index 6d47eee5969c1a8c99e6529fe698b9882aa280e0..cee5bd360addeb7e43aee70286a09bb0f37bf94f 100644
+--- a/dist/chunks/ripgrep-q18tbrss.js
++++ b/dist/chunks/ripgrep-q18tbrss.js
+@@ -100,12 +100,24 @@ var layer = Layer.effect(Service, Effect.gen(function* () {
+       }
+     });
+   })).pipe(Effect.forkScoped);
+-  const reconcile = lock.withPermit(Effect.gen(function* () {
+-    discovered = yield* mcp.tools();
++  let committed;
++  const reconcile = Fiber.join(initial).pipe(Effect.andThen(lock.withPermit(Effect.gen(function* () {
++    const next = yield* mcp.tools();
++    const previous = committed;
++    if (
++      previous !== undefined &&
++      next.length === previous.length &&
++      next.every((tool, index) => tool === previous[index])
++    ) {
++      return;
++    }
++    committed = undefined;
++    discovered = next;
+     yield* tools.reload();
+-  }));
++    committed = next;
++  }))));
+   yield* bus.subscribe(McpEvent.ToolsChanged).pipe(Stream.runForEachArray(() => reconcile), Effect.forkScoped({ startImmediately: true }));
+-  return Service.of({ flush: Effect.asVoid(Fiber.await(initial)) });
++  return Service.of({ flush: reconcile });
+ }));
+ var node = makeLocationNode({
+   service: Service,
+diff --git a/dist/chunks/ripgrep-srwbgxax.js b/dist/chunks/ripgrep-srwbgxax.js
+index bedd049f59b0d671d5eaea2f5fb4f91fe6c3442d..752635d26fdc5b7bddc74655b6f40ef8b3d7232f 100644
+--- a/dist/chunks/ripgrep-srwbgxax.js
++++ b/dist/chunks/ripgrep-srwbgxax.js
+@@ -36,7 +36,7 @@ __export(exports_compaction, {
+ });
+ import { LLMClient, LLMEvent, Message } from "@opencode-ai/ai";
+ import { Agent } from "@opencode-ai/schema/agent";
+-import { Context, Effect, Layer, Stream } from "effect";
++import { Cause, Context, Effect, Layer, Stream } from "effect";
+ import { makeLocationNode } from "@opencode-ai/util/effect/app-node";
+ var DEFAULT_BUFFER = 20000;
+ var DEFAULT_KEEP_TOKENS = 15000;
+@@ -225,6 +225,7 @@ var layer = Layer.effect(Service, Effect.gen(function* () {
+     const recordUsage = Effect.suspend(() => usage ? bus.publish(SessionEvent.UsageRecorded, {
+       sessionID: plan.session.id,
+       source: "compaction",
++      credentialType: plan.resolved.credentialType,
+       ...usage
+     }) : Effect.void);
+     const prepared = yield* plan.prepare({
+@@ -252,7 +253,7 @@ var layer = Layer.effect(Service, Effect.gen(function* () {
+       return Effect.void;
+     }), Effect.catchTag("AI.Error", (error) => Effect.sync(() => {
+       failure = toSessionError(error);
+-    })), Effect.onInterrupt(() => recordUsage.pipe(Effect.andThen(plan.reason === "auto" ? failed({
++    })), Effect.onError((cause) => recordUsage.pipe(Effect.ensuring(Cause.hasInterrupts(cause) && plan.reason === "auto" ? failed({
+       sessionID: plan.session.id,
+       reason: plan.reason,
+       error: { type: "compaction.interrupted", message: "Compaction was interrupted" },
+diff --git a/dist/chunks/ripgrep-sw84ckhj.js b/dist/chunks/ripgrep-sw84ckhj.js
+index 2982f899a69af26ee8fc820cd40122a43d1b6828..409065fee2055ce7db9a7746befb2f8f11791879 100644
+--- a/dist/chunks/ripgrep-sw84ckhj.js
++++ b/dist/chunks/ripgrep-sw84ckhj.js
+@@ -6,6 +6,7 @@ import {
+ var exports_usage = {};
+ __export(exports_usage, {
+   tokens: () => tokens,
++  reported: () => reported,
+   record: () => record,
+   calculateCost: () => calculateCost,
+   add: () => add,
+@@ -23,6 +24,35 @@ var tokens = (usage) => ({
+     write: safe(usage?.cacheWriteInputTokens)
+   }
+ });
++var reported = (usage) => {
++  if (!usage)
++    return;
++  const count = (value) => Number.isFinite(value) && value >= 0 ? value : undefined;
++  const result = {
++    inputTokens: count(usage.inputTokens),
++    outputTokens: count(usage.outputTokens),
++    nonCachedInputTokens: count(usage.nonCachedInputTokens),
++    cacheReadInputTokens: count(usage.cacheReadInputTokens),
++    cacheWriteInputTokens: count(usage.cacheWriteInputTokens),
++    reasoningTokens: count(usage.reasoningTokens),
++    totalTokens: count(usage.totalTokens)
++  };
++  return Object.values(result).some((value) => value !== undefined) ? result : undefined;
++};
++var addReported = (a, b) => {
++  if (!a || !b)
++    return;
++  const addKnown = (left, right) => left === undefined || right === undefined ? undefined : left + right;
++  return reported({
++    inputTokens: addKnown(a.inputTokens, b.inputTokens),
++    outputTokens: addKnown(a.outputTokens, b.outputTokens),
++    nonCachedInputTokens: addKnown(a.nonCachedInputTokens, b.nonCachedInputTokens),
++    cacheReadInputTokens: addKnown(a.cacheReadInputTokens, b.cacheReadInputTokens),
++    cacheWriteInputTokens: addKnown(a.cacheWriteInputTokens, b.cacheWriteInputTokens),
++    reasoningTokens: addKnown(a.reasoningTokens, b.reasoningTokens),
++    totalTokens: addKnown(a.totalTokens, b.totalTokens)
++  });
++};
+ function calculateCost(costs, usage) {
+   const context = usage.input + usage.cache.read + usage.cache.write;
+   const tier = costs.filter((cost2) => cost2.tier?.type === "context" && context > cost2.tier.size).toSorted((a, b) => (b.tier?.size ?? 0) - (a.tier?.size ?? 0))[0];
+@@ -33,19 +63,28 @@ function calculateCost(costs, usage) {
+ }
+ var record = (usage, costs) => {
+   const normalized = tokens(usage);
+-  return { tokens: normalized, cost: calculateCost(costs, normalized) };
++  const reportedUsage = reported(usage);
++  return {
++    tokens: normalized,
++    cost: calculateCost(costs, normalized),
++    ...reportedUsage ? { reportedUsage } : {}
++  };
++};
++var add = (a, b) => {
++  const reportedUsage = addReported(a.reportedUsage, b.reportedUsage);
++  return {
++    cost: Money.USD.make(a.cost + b.cost),
++    tokens: {
++      input: a.tokens.input + b.tokens.input,
++      output: a.tokens.output + b.tokens.output,
++      reasoning: a.tokens.reasoning + b.tokens.reasoning,
++      cache: {
++        read: a.tokens.cache.read + b.tokens.cache.read,
++        write: a.tokens.cache.write + b.tokens.cache.write
++      }
++    },
++    ...reportedUsage ? { reportedUsage } : {}
++  };
+ };
+-var add = (a, b) => ({
+-  cost: Money.USD.make(a.cost + b.cost),
+-  tokens: {
+-    input: a.tokens.input + b.tokens.input,
+-    output: a.tokens.output + b.tokens.output,
+-    reasoning: a.tokens.reasoning + b.tokens.reasoning,
+-    cache: {
+-      read: a.tokens.cache.read + b.tokens.cache.read,
+-      write: a.tokens.cache.write + b.tokens.cache.write
+-    }
+-  }
+-});
+ 
+-export { tokens, calculateCost, record, add, exports_usage };
++export { tokens, reported, calculateCost, record, add, exports_usage };
+diff --git a/dist/chunks/ripgrep-vq708s3p.js b/dist/chunks/ripgrep-vq708s3p.js
+index ddb6cc06eb46b5c0df58d009b4e8912f7c73b916..5b3c4437ecef1291c4c5bdd00ea16a84c5f2027f 100644
+--- a/dist/chunks/ripgrep-vq708s3p.js
++++ b/dist/chunks/ripgrep-vq708s3p.js
+@@ -23,8 +23,8 @@ import {
+   which
+ } from "./ripgrep-k3e42drn.js";
+ import {
+-  exports_bus
+-} from "./ripgrep-7ma0cb5g.js";
++  exports_catalog
++} from "./ripgrep-g1pg755n.js";
+ import {
+   __require
+ } from "./ripgrep-rvfvac9x.js";
+@@ -33,7 +33,7 @@ import {
+ import { readFile } from "node:fs/promises";
+ import { homedir } from "node:os";
+ import { join } from "node:path";
+-import { Clock, Effect, Schema, Semaphore, Stream } from "effect";
++import { Clock, Effect, Schema } from "effect";
+ import { ChildProcess } from "effect/unstable/process";
+ import { define } from "@opencode-ai/plugin/effect/plugin";
+ import { Form } from "@opencode-ai/schema/form";
+@@ -73,10 +73,8 @@ var AzurePlugin = define({
+   effect: Effect.fn(function* (ctx) {
+     const configured = yield* configuredSettings(exports_provider.ID.azure);
+     const processes = yield* AppProcess.Service;
+-    const bus = yield* exports_bus.Service;
++    const catalog = yield* exports_catalog.Service;
+     const tokens = new Map;
+-    const loading = Semaphore.makeUnsafe(1);
+-    const loaded = {};
+     const command = (args) => processes.run(ChildProcess.make("az", args, { extendEnv: true, stdin: "ignore" }), { timeout: "10 seconds" }).pipe(Effect.flatMap(AppProcess.requireSuccess), Effect.flatMap((result) => decodeJSON(result.stdout.toString("utf8"))));
+     const token = Effect.fn("AzurePlugin.token")(function* (scope) {
+       const now = yield* Clock.currentTimeMillis;
+@@ -139,9 +137,6 @@ var AzurePlugin = define({
+             if (!resourceName)
+               return yield* Effect.fail(new Error("Azure resource name is required"));
+             const current = yield* token(cognitiveScope);
+-            loaded.resource = resourceName;
+-            loaded.deployments = yield* discover(resourceName);
+-            yield* ctx.catalog.reload();
+             return exports_credential.OAuth.make({
+               type: "oauth",
+               methodID,
+@@ -179,26 +174,21 @@ var AzurePlugin = define({
+         error: error instanceof Error ? error.message : String(error)
+       }).pipe(Effect.as(undefined))));
+     });
+-    const load = Effect.fn("AzurePlugin.load")(function* () {
+-      const connection = yield* ctx.integration.connection.active(exports_provider.ID.azure);
+-      const credential = connection ? yield* ctx.integration.connection.resolve(connection).pipe(Effect.orElseSucceed(() => {
++    yield* catalog.transform((draft) => draft.project(Effect.fn("AzurePlugin.project")(function* (evt, resolveCredential) {
++      const items = evt.provider.list().filter((item) => item.provider.id === exports_provider.ID.azure
++        || exports_provider.packageName(item.provider.package) === "@ai-sdk/azure");
++      if (items.length === 0)
+         return;
+-      })) : undefined;
+-      if (credential?.type !== "oauth" || credential.methodID !== methodID) {
+-        loaded.resource = undefined;
+-        loaded.deployments = undefined;
+-        return;
+-      }
+-      const resource = typeof credential.metadata?.resourceName === "string" ? credential.metadata.resourceName : undefined;
+-      loaded.resource = resource;
+-      loaded.deployments = resource ? yield* discover(resource) : undefined;
+-    });
+-    yield* load();
+-    yield* ctx.catalog.transform((evt) => {
+-      for (const item of evt.provider.list()) {
+-        if (item.provider.id !== exports_provider.ID.azure && exports_provider.packageName(item.provider.package) !== "@ai-sdk/azure")
+-          continue;
+-        const resourceName = resolveResourceName(item.provider.settings, loaded.resource);
++      const azure = yield* resolveCredential(exports_integration.ID.make("azure"));
++      const resource = azure?.type === "oauth" && azure.methodID === methodID
++        && typeof azure.metadata?.resourceName === "string" ? azure.metadata.resourceName : undefined;
++      for (const item of items) {
++        const credential = yield* resolveCredential(
++          item.provider.integrationID ?? exports_integration.ID.make(item.provider.id)
++        );
++        const settings = credential?.type === "key" ? credential.configuration : credential?.metadata;
++        item.provider.settings = exports_provider.mergeOverlay(item.provider.settings, settings);
++        const resourceName = resolveResourceName(item.provider.settings, resource);
+         if (resourceName)
+           evt.provider.update(item.provider.id, (provider) => {
+             provider.settings = {
+@@ -207,10 +197,13 @@ var AzurePlugin = define({
+               ...typeof provider.settings?.baseURL === "string" ? { baseURL: expandResourceName(provider.settings.baseURL, resourceName) } : {}
+             };
+           });
+-        if (item.provider.id === exports_provider.ID.azure && loaded.deployments) {
++        const deployments = item.provider.id === exports_provider.ID.azure && resource
++          ? yield* discover(resource)
++          : undefined;
++        if (deployments) {
+           const existing = Array.from(item.models.values());
+           const found = new Map;
+-          loaded.deployments.forEach((deployment) => {
++          deployments.forEach((deployment) => {
+             if (deployment.properties.provisioningState !== "Succeeded")
+               return;
+             const model = existing.find((model2) => model2.id.toLowerCase() === deployment.properties.model.name.toLowerCase());
+@@ -232,34 +225,44 @@ var AzurePlugin = define({
+             evt.model.update(item.provider.id, id, (draft) => Object.assign(draft, structuredClone(model)));
+           }
+         }
++        const oauth = item.provider.id === exports_provider.ID.azure
++          && credential?.type === "oauth" && credential.methodID === methodID ? credential : undefined;
++        let foundry;
+         for (const model of item.models.values()) {
+           evt.model.update(item.provider.id, model.id, (draft) => {
+             if (resourceName && typeof draft.settings?.baseURL === "string")
+               draft.settings.baseURL = expandResourceName(draft.settings.baseURL, resolveResourceName(draft.settings, resourceName) ?? resourceName);
+             if (responsesWebSocketCapable(item.provider, draft))
+               draft.capabilities.responsesWebsockets = true;
++            if (oauth) {
++              draft.headers = exports_provider.mergeHeaders(draft.headers, {
++                authorization: `Bearer ${oauth.access}`,
++                "user-agent": exports_app.useragent(ctx.app)
++              });
++            }
+           });
++          const projected = item.models.get(model.id);
++          const baseURL = projected?.settings?.baseURL ?? item.provider.settings?.baseURL;
++          if (oauth && typeof baseURL === "string" && URL.canParse(baseURL)) {
++            const url = new URL(baseURL);
++            if (url.hostname.endsWith(".services.ai.azure.com") && !url.pathname.startsWith("/models")) {
++              foundry ??= yield* token(foundryScope).pipe(Effect.orDie);
++              evt.model.update(item.provider.id, model.id, (draft) => {
++                draft.headers = exports_provider.mergeHeaders(draft.headers, {
++                  authorization: `Bearer ${foundry.access}`
++                });
++              });
++            }
++          }
+         }
+       }
+-    });
+-    const reload = () => loading.withPermit(load().pipe(Effect.andThen(ctx.catalog.reload())));
+-    yield* bus.subscribe(exports_credential.Event.Switched).pipe(Stream.filter((event) => event.data.integrationID === exports_integration.ID.make("azure")), Stream.runForEach(reload), Effect.forkScoped({ startImmediately: true }));
+-    yield* ctx.session.hook("http.request", (evt) => Effect.gen(function* () {
+-      if (evt.model.providerID !== exports_provider.ID.azure)
+-        return;
+-      const connection = yield* ctx.integration.connection.active(exports_provider.ID.azure);
+-      const credential = connection ? yield* ctx.integration.connection.resolve(connection).pipe(Effect.orElseSucceed(() => {
+-        return;
+-      })) : undefined;
+-      if (credential?.type !== "oauth" || credential.methodID !== methodID)
++    })));
++    yield* ctx.session.hook("http.request", (evt) => Effect.sync(() => {
++      if (evt.model.providerID !== exports_provider.ID.azure
++        || !evt.request.headers.has("authorization"))
+         return;
+-      const url = new URL(evt.request.url);
+-      const scope = url.hostname.endsWith(".services.ai.azure.com") && !url.pathname.startsWith("/models") ? foundryScope : cognitiveScope;
+-      const current = yield* token(scope).pipe(Effect.orDie);
+       evt.request.headers.delete("api-key");
+       evt.request.headers.delete("x-api-key");
+-      evt.request.headers.set("authorization", `Bearer ${current.access}`);
+-      evt.request.headers.set("user-agent", exports_app.useragent(ctx.app));
+     }), { providerID: exports_provider.ID.azure });
+     yield* ctx.aisdk.hook("sdk", Effect.fn(function* (evt) {
+       if (evt.package !== "@ai-sdk/azure")
+diff --git a/dist/chunks/ripgrep-wxat52d7.js b/dist/chunks/ripgrep-wxat52d7.js
+index 3e88a075b11e2fa1f6637d0d042cbc352a502b85..3f388065fe9ab9d359ebb9c4694ab38803d17059 100644
+--- a/dist/chunks/ripgrep-wxat52d7.js
++++ b/dist/chunks/ripgrep-wxat52d7.js
+@@ -1,9 +1,6 @@
+ import {
+   exports_catalog
+ } from "./ripgrep-g1pg755n.js";
+-import {
+-  exports_integration
+-} from "./ripgrep-dd64dez9.js";
+ import {
+   exports_aisdk
+ } from "./ripgrep-zygzxh1b.js";
+@@ -203,13 +200,10 @@ var resolveModel = (model, variant, credential, dependencies) => withVariant(mod
+ var hasPackage = (model) => Boolean(model.package);
+ var layer = Layer.effect(Service, Effect.gen(function* () {
+   const catalog = yield* exports_catalog.Service;
+-  const integrations = yield* exports_integration.Service;
+   const npm = yield* Npm.Service;
+   const aisdk = yield* exports_aisdk.Service;
+-  const load = Effect.fn("ModelResolver.resolveModel")(function* (selected, variant) {
+-    const provider = yield* catalog.provider.get(selected.providerID);
+-    const connection = yield* integrations.connection.active(provider?.integrationID ?? exports_integration.ID.make(selected.providerID));
+-    const credential = connection ? yield* integrations.connection.resolve(connection) : undefined;
++  const load = Effect.fn("ModelResolver.resolveModel")(function* (selected, variant, authority) {
++    const { provider, credential } = authority;
+     const runtimeInfo = yield* withVariant(selected, variant);
+     const model = yield* fromCatalogModel(runtimeInfo, credential, {
+       loadPackage: (specifier) => exports_provider.loadPackage(specifier, npm),
+@@ -218,6 +212,7 @@ var layer = Layer.effect(Service, Effect.gen(function* () {
+     const runtime = provider?.activation === "enabled" && credential === undefined && !hasConfiguredAuth(runtimeInfo) && usesAPIKeyAuth(runtimeInfo.package) ? LanguageModel.update(model, { route: model.route.with({ auth: Auth.none }) }) : model;
+     return {
+       model: runtime,
++      credentialType: credential?.type ?? null,
+       ref: Ref.make({
+         id: selected.id,
+         providerID: selected.providerID,
+@@ -230,12 +225,15 @@ var layer = Layer.effect(Service, Effect.gen(function* () {
+   });
+   return Service.of({
+     resolve: Effect.fn("ModelResolver.resolve")(function* (requested) {
+-      const selected = requested ? yield* catalog.model.get(requested.providerID, requested.id) : yield* catalog.model.default().pipe(Effect.flatMap((model) => model && hasPackage(model) ? Effect.succeed(model) : Effect.map(catalog.model.available(), (models) => models.find(hasPackage))));
++      const selected = yield* catalog.model.resolve(requested);
+       if (!selected)
+         return;
+-      return yield* load(selected, requested?.variant);
++      return yield* load(selected.model, requested?.variant, selected);
+     }),
+-    resolveModel: load
++    resolveModel: Effect.fn("ModelResolver.resolveModel")(function* (selected, variant) {
++      const authority = yield* catalog.provider.resolve(selected.providerID);
++      return yield* load(selected, variant, authority);
++    })
+   });
+ }));
+ function hasConfiguredAuth(model) {
+@@ -248,7 +246,7 @@ function usesAPIKeyAuth(packageName) {
+ var node = makeLocationNode({
+   service: Service,
+   layer,
+-  deps: [exports_catalog.node, exports_integration.node, Npm.node, exports_aisdk.node]
++  deps: [exports_catalog.node, Npm.node, exports_aisdk.node]
+ });
+ 
+ export { VariantUnavailableError, UnsupportedPackageError, UnresolvedProviderVariablesError, Service, withVariant, fromCatalogModel, resolveModel, hasPackage, layer, node, exports_model_resolver };
+diff --git a/dist/chunks/ripgrep-xbg1srra.js b/dist/chunks/ripgrep-xbg1srra.js
+index 94579d8f7df951e45c4913414237f7f4b3d4e3c8..8a4665e7cf50575f1e3e0c02e9758038e10e5da8 100644
+--- a/dist/chunks/ripgrep-xbg1srra.js
++++ b/dist/chunks/ripgrep-xbg1srra.js
+@@ -218,7 +218,7 @@ var make = Effect.fn("PluginHost.make")(function* (plugin, pluginID = "test") {
+       }
+     },
+     generate: {
+-      text: (input) => generate.text(input).pipe(Effect.map((text) => ({ text })))
++      text: (input) => generate.text(input)
+     },
+     integration: {
+       list: () => response(integration.list()),
+diff --git a/dist/chunks/ripgrep-xgs8cdxp.js b/dist/chunks/ripgrep-xgs8cdxp.js
+index 5c7e0ebde5ab22dfc0018d7375927dc3eea9603f..b3bf4101613421a11dcc3123e3d16a9eccecbe97 100644
+--- a/dist/chunks/ripgrep-xgs8cdxp.js
++++ b/dist/chunks/ripgrep-xgs8cdxp.js
+@@ -151,9 +151,18 @@ var make = Effect.gen(function* () {
+         const files = startSnapshot && snapshot ? startSnapshot === snapshot ? [] : yield* snapshots.files({ from: startSnapshot, to: snapshot }).pipe(Effect.orElseSucceed(() => {
+           return;
+         })) : undefined;
+-        const usage = record.finish ? { cost: exports_usage.calculateCost(input.model.cost, record.finish.tokens), tokens: record.finish.tokens } : undefined;
++        const usage = record.finish ? {
++          cost: exports_usage.calculateCost(input.model.cost, record.finish.tokens),
++          tokens: record.finish.tokens,
++          ...record.finish.reportedUsage ? { reportedUsage: record.finish.reportedUsage } : {}
++        } : undefined;
+         if (record.failure)
+-          yield* publisher.publishStepFailure({ ...usage, snapshot, files });
++          yield* publisher.publishStepFailure({
++            credentialType: input.model.credentialType,
++            ...usage,
++            snapshot,
++            files
++          });
+         if (record.finish && usage && !record.failure)
+           yield* bus.publish(SessionEvent.Step.Ended, {
+             sessionID: input.sessionID,
+@@ -161,6 +170,7 @@ var make = Effect.gen(function* () {
+             finish: record.finish.finish,
+             rawFinish: record.finish.rawFinish,
+             providerState: record.finish.providerState,
++            credentialType: input.model.credentialType,
+             ...usage,
+             snapshot,
+             files
+diff --git a/dist/chunks/ripgrep-z6etgaf6.js b/dist/chunks/ripgrep-z6etgaf6.js
+index 100c8dd7002fd09c6e0a678008273d1bc586e27e..1e44b28dc1e578e19837965f669b27a385aefd5e 100644
+--- a/dist/chunks/ripgrep-z6etgaf6.js
++++ b/dist/chunks/ripgrep-z6etgaf6.js
+@@ -22,15 +22,12 @@ import {
+ import {
+   exports_provider
+ } from "./ripgrep-krsqcmnj.js";
+-import {
+-  exports_bus
+-} from "./ripgrep-7ma0cb5g.js";
+ import {
+   __require
+ } from "./ripgrep-rvfvac9x.js";
+ 
+ // src/plugin/provider/github-copilot.ts
+-import { Effect, Option, Schema, Semaphore, Stream } from "effect";
++import { Effect, Option, Schema } from "effect";
+ import { define } from "@opencode-ai/plugin/effect/plugin";
+ var clientID = "Ov23li8tweQw6odWQebz";
+ var apiVersion = "2026-06-01";
+@@ -150,54 +147,47 @@ var GithubCopilotPlugin = define({
+   id: "opencode.provider.github.copilot",
+   effect: Effect.fn(function* (ctx) {
+     const catalog = yield* exports_catalog.Service;
+-    const bus = yield* exports_bus.Service;
+-    const loading = Semaphore.makeUnsafe(1);
+-    const loaded = {};
+-    const load = Effect.fn("GithubCopilotPlugin.load")(function* () {
+-      const connection = yield* ctx.integration.connection.active("github-copilot");
+-      const credential = connection ? yield* ctx.integration.connection.resolve(connection).pipe(Effect.orElseSucceed(() => {
+-        return;
+-      })) : undefined;
+-      if (credential?.type !== "oauth") {
+-        loaded.baseURL = undefined;
+-        loaded.models = undefined;
+-        return;
+-      }
+-      loaded.baseURL = copilotBaseURL(credential.metadata);
+-      const provider = yield* catalog.provider.get(exports_provider.ID.githubCopilot);
+-      const existing = (yield* catalog.model.all()).filter((model) => model.providerID === exports_provider.ID.githubCopilot);
+-      loaded.models = yield* Effect.tryPromise({
+-        try: () => exports_models.get(loaded.baseURL ?? baseURL(), {
+-          ...provider?.headers,
+-          Authorization: `Bearer ${credential.refresh}`,
+-          "User-Agent": exports_app.useragent(ctx.app),
+-          "X-GitHub-Api-Version": apiVersion
+-        }, existing),
+-        catch: (cause) => cause
+-      }).pipe(Effect.catch((cause) => Effect.logWarning("failed to sync GitHub Copilot models", { cause }).pipe(Effect.as(undefined))));
+-    });
+     yield* ctx.integration.transform((draft) => {
+       draft.method.remove("github-copilot", { type: "key" });
+       draft.method.update(oauth(ctx.app));
+     });
+-    yield* ctx.catalog.transform((evt) => {
++    yield* catalog.transform((draft) => draft.project(Effect.fn("GithubCopilotPlugin.project")(function* (evt, resolveCredential) {
+       const item = evt.provider.get(exports_provider.ID.githubCopilot);
+       if (!item)
+         return;
+-      if (loaded.models) {
++      const credential = yield* resolveCredential(
++        item.provider.integrationID ?? exports_integration.ID.make(item.provider.id)
++      );
++      const endpoint = credential?.type === "oauth" ? copilotBaseURL(credential.metadata) : undefined;
++      const discovered = credential?.type === "oauth" ? yield* Effect.tryPromise({
++        try: () => exports_models.get(endpoint, {
++          ...item.provider.headers,
++          Authorization: `Bearer ${credential.refresh}`,
++          "User-Agent": exports_app.useragent(ctx.app),
++          "X-GitHub-Api-Version": apiVersion
++        }, Array.from(item.models.values(), (model) => ({
++          ...model,
++          package: model.package ?? item.provider.package,
++          settings: exports_provider.mergeOverlay(item.provider.settings, model.settings),
++          headers: exports_provider.mergeHeaders(item.provider.headers, model.headers),
++          body: exports_provider.mergeOverlay(item.provider.body, model.body)
++        }))),
++        catch: (cause) => cause
++      }).pipe(Effect.catch((cause) => Effect.logWarning("failed to sync GitHub Copilot models", { cause }).pipe(Effect.as(undefined)))) : undefined;
++      if (discovered) {
+         for (const id of item.models.keys()) {
+-          if (!loaded.models.has(exports_model.ID.make(id)))
++          if (!discovered.has(exports_model.ID.make(id)))
+             evt.model.remove(item.provider.id, id);
+         }
+-        for (const [id, model] of loaded.models) {
++        for (const [id, model] of discovered) {
+           evt.model.update(item.provider.id, id, (draft) => Object.assign(draft, structuredClone(model)));
+         }
+       } else {
+         for (const id of item.models.keys()) {
+           evt.model.update(item.provider.id, id, (model) => {
+             model.package = exports_provider.aisdk("@ai-sdk/github-copilot");
+-            if (loaded.baseURL)
+-              model.settings = exports_provider.mergeOverlay(model.settings, { baseURL: loaded.baseURL });
++            if (endpoint)
++              model.settings = exports_provider.mergeOverlay(model.settings, { baseURL: endpoint });
+           });
+         }
+       }
+@@ -206,10 +196,7 @@ var GithubCopilotPlugin = define({
+           model.enabled = false;
+         });
+       }
+-    });
+-    const refresh = () => loading.withPermit(load().pipe(Effect.andThen(ctx.catalog.reload())));
+-    yield* bus.subscribe(exports_credential.Event.Switched).pipe(Stream.filter((event) => event.data.integrationID === exports_integration.ID.make("github-copilot")), Stream.runForEach(refresh), Effect.forkScoped({ startImmediately: true }));
+-    yield* refresh().pipe(Effect.forkScoped);
++    })));
+     yield* ctx.aisdk.hook("sdk", Effect.fn(function* (evt) {
+       if (evt.model.providerID !== exports_provider.ID.githubCopilot)
+         return;
+diff --git a/dist/types/catalog.d.ts b/dist/types/catalog.d.ts
+index 6a004769b78b468963d09f4a8710f42ae44c62e5..96e885221e123431c1f883433bf12b3426c27a1e 100644
+--- a/dist/types/catalog.d.ts
++++ b/dist/types/catalog.d.ts
+@@ -1,5 +1,7 @@
+ export * as Catalog from "./catalog.js";
+ import { Context, Effect } from "effect";
++import { Credential } from "./credential.js";
++import { Integration } from "./integration.js";
+ import { Model } from "./model.js";
+ import { Provider } from "./provider.js";
+ import { State } from "./state.js";
+@@ -11,8 +13,23 @@ export type DefaultModel = {
+     providerID: Provider.ID;
+     modelID: Model.ID;
+ };
++export type Projection = (
++    draft: Draft,
++    credential: (integrationID: Integration.ID) => Effect.Effect<Credential.Value | undefined, Integration.AuthorizationError>,
++    providerID?: Provider.ID
++) => Effect.Effect<void, Integration.AuthorizationError>;
++export type ProviderAuthority = {
++    provider: Provider.Info | undefined;
++    credential: Credential.Value | undefined;
++};
++export type Selection = {
++    provider: Provider.Info;
++    model: Model.Info;
++    credential: Credential.Value | undefined;
++};
+ export { Event } from "@opencode-ai/schema/catalog";
+ export type Draft = {
++    project: (projection: Projection) => void;
+     provider: {
+         list: () => readonly ProviderRecord[];
+         get: (providerID: Provider.ID) => ProviderRecord | undefined;
+@@ -32,11 +49,13 @@ export type Draft = {
+ export interface Interface extends State.Transformable<Draft> {
+     readonly provider: {
+         readonly get: (providerID: Provider.ID) => Effect.Effect<Provider.Info | undefined>;
++        readonly resolve: (providerID: Provider.ID) => Effect.Effect<ProviderAuthority, Integration.AuthorizationError>;
+         readonly all: () => Effect.Effect<Provider.Info[]>;
+         readonly available: () => Effect.Effect<Provider.Info[]>;
+     };
+     readonly model: {
+         readonly get: (providerID: Provider.ID, modelID: Model.ID) => Effect.Effect<Model.Info | undefined>;
++        readonly resolve: (requested?: Model.Ref) => Effect.Effect<Selection | undefined, Integration.AuthorizationError>;
+         readonly all: () => Effect.Effect<Model.Info[]>;
+         readonly available: () => Effect.Effect<Model.Info[]>;
+         readonly default: () => Effect.Effect<Model.Info | undefined>;
+diff --git a/dist/types/credential.d.ts b/dist/types/credential.d.ts
+index d54656782df425fa1976147a0ecd59a51c928777..d11d9b577d2523d523e4fff72331d150dd58f512 100644
+--- a/dist/types/credential.d.ts
++++ b/dist/types/credential.d.ts
+@@ -226,8 +226,8 @@ export interface Interface {
+     }) => Effect.Effect<Info>;
+     /** Selects a stored credential for its integration. */
+     readonly activate: (id: ID) => Effect.Effect<void>;
+-    /** Updates the label or secret value of a stored credential. */
+-    readonly update: (id: ID, updates: Partial<Pick<Info, "label" | "value">>) => Effect.Effect<void>;
++    /** Updates a stored credential; native refresh supplies the exact record it refreshed. */
++    readonly update: (id: ID, updates: Partial<Pick<Info, "label" | "value">>, previous?: Info) => Effect.Effect<void>;
+     /** Removes a stored credential. */
+     readonly remove: (id: ID) => Effect.Effect<void>;
+ }
+diff --git a/dist/types/generate.d.ts b/dist/types/generate.d.ts
+index 2007943bd426265736b1f9dd5b0760c47cb8f11d..2f006bc74af7a99897fae01e4e01589f75b99d8f 100644
+--- a/dist/types/generate.d.ts
++++ b/dist/types/generate.d.ts
+@@ -6,6 +6,10 @@ export interface TextInput {
+     readonly prompt: string;
+     readonly model?: Model.Ref;
+ }
++export interface TextOutput {
++    readonly text: string;
++    readonly totalTokens?: number;
++}
+ declare const ModelSelectionError_base: Schema.Class<ModelSelectionError, Schema.TaggedStruct<"Generate.ModelSelectionError", {
+     readonly message: Schema.String;
+ }>, import("effect/Cause").YieldableError>;
+@@ -19,7 +23,7 @@ export declare class UnavailableError extends UnavailableError_base {
+ }
+ export type Error = ModelSelectionError | UnavailableError;
+ export interface Interface {
+-    readonly text: (input: TextInput) => Effect.Effect<string, Error>;
++    readonly text: (input: TextInput) => Effect.Effect<TextOutput, Error>;
+ }
+ declare const Service_base: Context.ServiceClass<Service, "@opencode/Generate", Interface>;
+ export declare class Service extends Service_base {
+diff --git a/dist/types/model-resolver.d.ts b/dist/types/model-resolver.d.ts
+index fff77a0594a5b48f47907a1b632ff79d67cfce67..f8bd62282a85884a7f46dee1947e2be76d69a412 100644
+--- a/dist/types/model-resolver.d.ts
++++ b/dist/types/model-resolver.d.ts
+@@ -72,6 +72,7 @@ export type Error = VariantUnavailableError | UnsupportedPackageError | Unresolv
+ export interface Resolved {
+     /** Route-level model for provider requests; its id is the provider API model id, which may differ from the catalog id. */
+     readonly model: LanguageModel;
++    readonly credentialType: Credential.Value["type"] | null;
+     /** Selected catalog identity. Durable records and displays must use this, never the API model id. */
+     readonly ref: Ref;
+     /** Catalog capabilities used to shape requests before provider lowering. */
+@@ -99,5 +100,5 @@ export declare const resolveModel: (model: Info, variant: VariantID | undefined,
+ }>, VariantUnavailableError | UnsupportedPackageError | UnresolvedProviderVariablesError, never>;
+ export declare const hasPackage: (model: Info) => boolean;
+ /** Resolves catalog selections into runtime models for the current Location. */
+-export declare const layer: Layer.Layer<Service, never, Npm.Service | AISDK.Service | Integration.Service | Catalog.Service>;
++export declare const layer: Layer.Layer<Service, never, Npm.Service | AISDK.Service | Catalog.Service>;
+ export declare const node: import("@opencode-ai/util/effect/layer-node").Node<Service, never, import("@opencode-ai/util/effect/layer-node").Tag<"location">>;
+diff --git a/dist/types/plugin/host.d.ts b/dist/types/plugin/host.d.ts
+index a00c799a37859002707ee15ffec962cc090f9b5f..14c37c5e90928a550b1dd451637a6dd7bf9f31ec 100644
+--- a/dist/types/plugin/host.d.ts
++++ b/dist/types/plugin/host.d.ts
+@@ -85,9 +85,7 @@ export declare const make: (plugin: Interface, pluginID?: string | undefined) =>
+         };
+     };
+     generate: {
+-        text: (input: import("@opencode-ai/client/effect/api").GenerateTextInput) => Effect.Effect<{
+-            text: string;
+-        }, Generate.Error, never>;
++        text: (input: import("@opencode-ai/client/effect/api").GenerateTextInput) => Effect.Effect<Generate.TextOutput, Generate.Error, never>;
+     };
+     integration: {
+         list: () => Effect.Effect<{
+diff --git a/dist/types/session/runner/model.d.ts b/dist/types/session/runner/model.d.ts
+index bcd924d5f3391d673290071fb66da46838f80816..adf7e9dc0ad7177702903289e7fb5788ea4b5d08 100644
+--- a/dist/types/session/runner/model.d.ts
++++ b/dist/types/session/runner/model.d.ts
+@@ -41,8 +41,8 @@ export type UnresolvedProviderVariablesError = ModelResolver.UnresolvedProviderV
+ export type Error = ModelNotSelectedError | ModelUnavailableError | ModelResolver.Error;
+ export type Resolved = ModelResolver.Resolved;
+ export interface Interface {
+-    /** Availability is sampled lazily for each explicitly selected model resolution. */
+-    readonly resolve: (session: SessionSchema.Info, available: () => Effect.Effect<ReadonlyArray<Model.Info>>) => Effect.Effect<Resolved, Error>;
++    /** Resolves availability, provider projection and authority together for the selected model. */
++    readonly resolve: (session: SessionSchema.Info) => Effect.Effect<Resolved, Error>;
+ }
+ declare const Service_base: Context.ServiceClass<Service, "@opencode/SessionRunnerModel", Interface>;
+ export declare class Service extends Service_base {
+diff --git a/dist/types/session/runner/publish-llm-event.d.ts b/dist/types/session/runner/publish-llm-event.d.ts
+index 9bcffece2701254be18a850d7bb1ada7322bce68..6a7b2ebbc4a090dda5b4b4b7d0a2d8756c3f0406 100644
+--- a/dist/types/session/runner/publish-llm-event.d.ts
++++ b/dist/types/session/runner/publish-llm-event.d.ts
+@@ -5,6 +5,7 @@ import type { RelativePath } from "@opencode-ai/schema/schema";
+ import type { Snapshot } from "@opencode-ai/schema/snapshot";
+ import { Effect } from "effect";
+ import { Bus } from "../../bus.js";
++import { SessionEvent } from "../event.js";
+ import { SessionMessage } from "../message.js";
+ import { SessionSchema } from "../schema.js";
+ import { SessionError } from "@opencode-ai/schema/session-error";
+@@ -34,6 +35,7 @@ export interface StepRecord {
+         readonly rawFinish?: string;
+         readonly providerState?: SessionMessage.ProviderState;
+         readonly tokens: ReturnType<typeof SessionUsage.tokens>;
++        readonly reportedUsage?: NonNullable<ReturnType<typeof SessionUsage.reported>>;
+     };
+     readonly needsContinuation: boolean;
+ }
+@@ -57,12 +59,14 @@ export declare const createLLMEventPublisher: (bus: Pick<Bus.Interface, "publish
+     flush: () => Effect.Effect<void, never, never>;
+     failAssistant: (error: SessionError.Error) => Effect.Effect<void, never, never>;
+     failTool: (id: string, error: SessionError.Error, metadata?: Readonly<Record<string, any>> | undefined) => Effect.Effect<boolean, never, never>;
+-    publishStepFailure: (details?: {
++    publishStepFailure: (details: {
++        readonly credentialType: SessionEvent.Step.Failed["data"]["credentialType"];
+         readonly cost?: Money.USD;
+         readonly tokens?: ReturnType<typeof SessionUsage.tokens>;
++        readonly reportedUsage?: NonNullable<ReturnType<typeof SessionUsage.reported>>;
+         readonly snapshot?: Snapshot.ID;
+         readonly files?: readonly RelativePath[];
+-    } | undefined) => Effect.Effect<void, never, never>;
++    }) => Effect.Effect<void, never, never>;
+     failUnsettledTools: (error: SessionError.Error, scope?: "all" | "hosted" | undefined) => Effect.Effect<boolean, never, never>;
+     hasProviderError: () => boolean;
+     hasStarted: () => boolean;
+diff --git a/dist/types/session/usage.d.ts b/dist/types/session/usage.d.ts
+index 1a085761d98ee86a11d56866c9223a89e240ae80..d7f4aa863addb7a6621c4400913f6d203b420ba9 100644
+--- a/dist/types/session/usage.d.ts
++++ b/dist/types/session/usage.d.ts
+@@ -4,10 +4,12 @@ import { Money } from "@opencode-ai/schema/money";
+ import type { TokenUsage } from "@opencode-ai/schema/token-usage";
+ import type { Model } from "@opencode-ai/schema/model";
+ export declare const tokens: (usage: Usage | undefined) => TokenUsage.Info;
++export declare const reported: (usage: Usage | undefined) => TokenUsage.Reported | undefined;
+ export declare function calculateCost(costs: Model.Info["cost"], usage: TokenUsage.Info): number & import("effect/Brand").Brand<"Money.USD">;
+ export type Recorded = {
+     readonly tokens: TokenUsage.Info;
+     readonly cost: Money.USD;
++    readonly reportedUsage?: TokenUsage.Reported;
+ };
+ export declare const record: (usage: Usage | undefined, costs: Model.Info["cost"]) => Recorded;
+ export declare const add: (a: Recorded, b: Recorded) => Recorded;
+diff --git a/dist/types/tool/mcp.d.ts b/dist/types/tool/mcp.d.ts
+index 9f56b8f5dbcf844f4409b89ea7c8704a1b0b673f..ca024a8f82a8488358a9c19e0061f4e041710f64 100644
+--- a/dist/types/tool/mcp.d.ts
++++ b/dist/types/tool/mcp.d.ts
+@@ -10,7 +10,7 @@ import { Tool } from "../tool.js";
+ export declare const namespace: (server: string) => string;
+ export declare const name: (server: string, tool: string) => string;
+ export interface Interface {
+-    /** Wait for the initial MCP tool registration to settle. */
++    /** Commit discovered MCP tools to the registry before session selection. */
+     readonly flush: Effect.Effect<void>;
+ }
+ declare const Service_base: Context.ServiceClass<Service, "@opencode/McpTool", Interface>;
