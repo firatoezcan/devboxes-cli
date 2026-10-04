@@ -17,11 +17,7 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "types": ["bun-types", "node"],
-    "noEmit": true,
-    "paths": {
-      "@/*": ["../firops-api/src/*"],
-      "#monorepo/api": ["../firops-api/src/app.ts"]
-    }
+    "noEmit": true
   },
   "include": ["src/**/*.ts", "scripts/**/*.ts", "../../packages/platform/types/**/*.d.ts"]
 }

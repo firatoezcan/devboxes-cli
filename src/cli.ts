@@ -1,27 +1,26 @@
 #!/usr/bin/env bun
 
-import { captureCliTelemetryError } from "@firops/platform/observability/cli-telemetry";
-import { Command, Option } from "commander";
+import { Command } from "commander";
 
 import { cliVersion } from "./api";
+import { addAuthenticationCommands } from "./auth";
+import { CommandError } from "./commands";
 import { addAccountCommands } from "./devboxes";
 import { addRunnerCommands } from "./runner/runner";
-import { addTelemetryCommands } from "./telemetry";
 
 export const createDevboxesCommand = () => {
   const program = new Command()
     .name("devboxes")
-    .description("Run coding tasks, follow sessions, and connect execution machines")
+    .description("Discover and invoke Devboxes application commands")
     .version(cliVersion)
     .showHelpAfterError()
     .option("--config <path>", "Path to the Devboxes configuration file")
-    .addOption(new Option("--api <url>", "Devboxes API base URL").hideHelp())
-    .addOption(new Option("--auth <url>", "Devboxes auth base URL").hideHelp())
-    .option("--organization <id>", "Organization ID to use for this command");
+    .option("--api <url>", "API origin; required for the first signup or login")
+    .option("--json", "Write machine-readable results and errors");
 
-  addAccountCommands(program);
   addRunnerCommands(program);
-  addTelemetryCommands(program);
+  addAccountCommands(program);
+  addAuthenticationCommands(program);
   program.action(() => program.outputHelp());
   return program;
 };
@@ -42,12 +41,19 @@ if (import.meta.main) {
       )) as typeof stream.write;
   }
 
+  const program = createDevboxesCommand();
   try {
-    await createDevboxesCommand().parseAsync(Bun.argv, { from: "node" });
+    await program.parseAsync(Bun.argv, { from: "node" });
   } catch (error) {
-    await captureCliTelemetryError(error);
-    // User-facing failures end as one readable line, not a stack trace.
-    console.error(error instanceof Error ? error.message : String(error));
+    const failure =
+      error instanceof CommandError
+        ? error
+        : new CommandError("COMMAND_FAILED", "The command failed unexpectedly.");
+    console.error(
+      program.opts<{ json?: boolean }>().json
+        ? JSON.stringify(failure.toJSON())
+        : `${failure.code}${failure.status === undefined ? "" : ` (HTTP ${failure.status})`}: ${failure.message}`,
+    );
     process.exit(process.exitCode && process.exitCode !== 0 ? Number(process.exitCode) : 1);
   }
 }

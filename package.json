@@ -2,7 +2,7 @@
   "name": "devboxes",
   "version": "0.3.6",
   "private": true,
-  "description": "Devboxes CLI: sign in, dispatch coding tasks, follow sessions, run connected machines, and expose MCP tools.",
+  "description": "Devboxes CLI: discover and invoke application commands, authenticate, run execution capacity, and serve stdio MCP.",
   "homepage": "https://github.com/firatoezcan/devboxes-cli#readme",
   "bugs": "https://github.com/firatoezcan/devboxes-cli/issues",
   "license": "MIT",
@@ -14,31 +14,30 @@
   "scripts": {
     "build": "bun scripts/build-cli-binaries.ts",
     "build:smoke": "bun scripts/build-cli-binaries.ts --smoke",
-    "devboxes:local": "NODE_EXTRA_CA_CERTS=${DEVBOXES_LOCAL_CA_DIR:-$HOME/.local/share/devboxes/ca}/root.crt bun src/cli.ts",
-    "test": "node --experimental-strip-types ../../scripts/run-devboxes-cli-tests.ts --task=test --changed=${DEVBOXES_CHANGED_BASE:-origin/dev}",
-    "test:full": "node --experimental-strip-types ../../scripts/run-devboxes-cli-tests.ts --task=test:full"
+    "devboxes:local": "bun src/cli.ts",
+    "test": "bun ../../scripts/run-workspace-tests.ts --task=test --timeout=60000 --changed=${DEVBOXES_CHANGED_BASE:-origin/dev}",
+    "test:full": "bun ../../scripts/run-workspace-tests.ts --task=test:full --timeout=60000"
   },
   "dependencies": {
+    "@better-fetch/fetch": "1.1.21",
     "@clack/prompts": "^1.7.0",
-    "@elysiajs/eden": "^1.4.9",
     "@firops/connections": "workspace:*",
     "@firops/devbox": "workspace:*",
     "@firops/platform": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@sentry/bun": "catalog:",
-    "@sentry/core": "catalog:",
-    "age-encryption": "0.3.0",
-    "better-auth": "^1.6.9",
+    "@opencode-ai/models": "catalog:",
+    "better-auth": "1.6.9",
     "commander": "^14.0.3",
-    "dockerode": "5.0.1",
+    "dockerode": "catalog:",
     "elysia": "catalog:",
-    "log-update": "8.0.0",
-    "open": "^11.0.0",
+    "jose": "catalog:",
+    "oauth4webapi": "catalog:",
+    "tough-cookie": "6.0.1",
     "typebox": "catalog:",
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@types/dockerode": "^4.0.1",
+    "@types/dockerode": "catalog:",
     "@types/node": "^25.6.0",
     "@typescript/native": "catalog:",
     "bun-types": "catalog:",
@@ -46,7 +45,7 @@
     "typescript": "catalog:"
   },
   "engines": {
-    "node": ">=18"
+    "bun": ">=1.4.2"
   },
   "packageManager": "pnpm@10.33.2"
 }

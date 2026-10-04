@@ -1,61 +1,80 @@
-import type { DevboxesContext } from "@firops/connections/local/config";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { z } from "zod";
 
 import { cliVersion } from "./api";
+import { CommandError, describeCommands, invokeCommand, type CommandConnection } from "./commands";
 
-export const runDevboxesMcpServer = async (
-  context: DevboxesContext,
-  options: { projectId?: string } = {},
-) => {
-  let remote: Client | undefined;
-  const connectedRemote = async () => {
-    if (remote) return remote;
-    const { apiBaseUrl, organizationId, sessionToken } = context.config;
-    if (!organizationId || !sessionToken) {
-      throw new Error("This command requires a signed-in account. Run `devboxes login` first.");
-    }
-    const endpoint = new URL(`${apiBaseUrl}/org/${encodeURIComponent(organizationId)}/mcp`);
-    const headers = new Headers({
-      Authorization: `Bearer ${sessionToken}`,
-      "User-Agent": `devboxes/${cliVersion}`,
-    });
-    if (options.projectId) headers.set("X-Devboxes-Project-Id", options.projectId);
-    remote = new Client({ name: "devboxes-cli", version: cliVersion });
-    await remote.connect(
-      new StreamableHTTPClientTransport(endpoint, {
-        requestInit: { headers },
-      }),
-    );
-    return remote;
-  };
-
-  const local = new Server(
-    { name: "devboxes", version: cliVersion },
-    { capabilities: { tools: {} } },
-  );
-  local.setRequestHandler(ListToolsRequestSchema, async () =>
-    (await connectedRemote()).listTools(),
-  );
-  local.setRequestHandler(CallToolRequestSchema, async ({ params }) =>
-    (await connectedRemote()).callTool(params),
-  );
-
-  local.onclose = () => {
-    void remote?.close();
-  };
-  await local.connect(new StdioServerTransport());
-  await new Promise<void>((resolve) => {
-    const closeRemote = local.onclose;
-    local.onclose = () => {
-      closeRemote?.();
-      resolve();
+const toolResult = async (
+  operation: () => Promise<NonNullable<CallToolResult["structuredContent"]>>,
+): Promise<CallToolResult> => {
+  try {
+    const result = await operation();
+    return {
+      content: [{ type: "text", text: JSON.stringify(result) }],
+      structuredContent: result,
     };
-    process.stdin.once("end", resolve);
-    process.stdin.once("close", resolve);
-  });
-  await local.close();
+  } catch (error) {
+    const result =
+      error instanceof CommandError
+        ? error.toJSON()
+        : { error: { code: "COMMAND_FAILED", message: "The command failed unexpectedly." } };
+    return {
+      isError: true,
+      content: [{ type: "text", text: JSON.stringify(result) }],
+      structuredContent: result,
+    };
+  }
+};
+
+export const runDevboxesMcpServer = async (connection: CommandConnection) => {
+  const server = new McpServer({ name: "devboxes", version: cliVersion });
+  server.registerTool(
+    "devboxes_describe",
+    {
+      description:
+        "List Devboxes command IDs, effects, and summaries when command is omitted. Pass an exact command ID to read its OpenAPI input, response, and authority contract before using devboxes_invoke. Discovery does not grant authority.",
+      inputSchema: { command: z.string().min(1).optional() },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ command }) =>
+      toolResult(async () => {
+        const description = await describeCommands(connection, command);
+        if (command !== undefined) return description;
+        return {
+          commands: description.commands.map((operation) => ({
+            operationId: operation.operationId,
+            effect: operation["x-devboxes"].effect,
+            summary: operation.summary,
+          })),
+        };
+      }),
+  );
+  server.registerTool(
+    "devboxes_invoke",
+    {
+      description:
+        "Invoke an advertised Devboxes command. Supply JSON input directly, never a local file reference. HTTP acceptance is not evidence that asynchronous work completed.",
+      inputSchema: {
+        command: z.string().min(1),
+        input: z.json(),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+    },
+    async (invocation) => toolResult(() => invokeCommand(connection, invocation)),
+  );
+
+  const { promise: closed, resolve: finish } = Promise.withResolvers<void>();
+  server.server.onclose = finish;
+  process.stdin.once("end", finish);
+  process.stdin.once("close", finish);
+  try {
+    await server.connect(new StdioServerTransport());
+    await closed;
+  } finally {
+    process.stdin.off("end", finish);
+    process.stdin.off("close", finish);
+    await server.close();
+  }
 };

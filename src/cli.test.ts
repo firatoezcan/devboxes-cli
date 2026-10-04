@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { join } from "node:path";
 
-import { createDevboxesCommand } from "./cli";
+import { apiOrigin } from "./commands";
 
 describe("devboxes entrypoint", () => {
   it("prints help instead of listening when invoked without a subcommand", async () => {
@@ -26,50 +26,27 @@ describe("devboxes entrypoint", () => {
     expect(completed).not.toBeNull();
     expect(completed?.exitCode).toBe(0);
     expect(await stdout).toContain("Usage: devboxes");
-    expect(await stdout).toContain("login");
-    expect(await stdout).toContain("listen");
     expect(await stderr).toBe("");
   });
 });
 
-describe("Devboxes root options", () => {
-  it("keeps deployment overrides functional without advertising them", () => {
-    const command = createDevboxesCommand();
-    const help = command.helpInformation();
-
-    expect(help).toContain("--organization <id>");
-    expect(help).not.toContain("--api <url>");
-    expect(help).not.toContain("--auth <url>");
-
-    command.parseOptions([
-      "--api",
-      "https://api.example.com",
-      "--auth",
-      "https://auth.example.com",
-    ]);
-    expect(command.opts()).toMatchObject({
-      api: "https://api.example.com",
-      auth: "https://auth.example.com",
-    });
-  });
-
-  it("rejects missing or invalid continuation input at the command boundary", async () => {
-    for (const [args, expectedError] of [
-      [["continue"], "missing required argument 'agentSessionId'"],
-      [["continue", "not-a-session", "Keep working."], "must be a UUID"],
-      [["continue", "00000000-0000-7000-8000-000000000001"], "missing required argument 'task'"],
-    ] as const) {
-      const child = Bun.spawn([process.execPath, "src/cli.ts", ...args], {
-        cwd: join(import.meta.dir, ".."),
-        env: { ...process.env, BROWSER: "none" },
-        stdin: "ignore",
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-
-      expect(await child.exited).toBe(1);
-      expect(await new Response(child.stdout).text()).toBe("");
-      expect(await new Response(child.stderr).text()).toContain(expectedError);
+describe("CLI API origin", () => {
+  it("allows HTTPS and local HTTP without accepting credential or URL escapes", () => {
+    expect(apiOrigin("https://api.example.com/api")).toBe("https://api.example.com");
+    for (const host of ["localhost", "127.0.0.1", "[::1]", "host.docker.internal"]) {
+      expect(apiOrigin(`http://${host}:3000/api`)).toBe(`http://${host}:3000`);
+    }
+    expect(() => apiOrigin("http://host.docker.internal:3000", "account")).toThrow();
+    for (const api of [
+      "not a url",
+      "file:///srv/devboxes/api",
+      "http://devboxes.internal/api",
+      "https://user:secret@api.example.com/api",
+      "https://api.example.com/api?tenant=1",
+      "https://api.example.com/api#fragment",
+      "https://api.example.com/other",
+    ]) {
+      expect(() => apiOrigin(api)).toThrow();
     }
   });
 });
