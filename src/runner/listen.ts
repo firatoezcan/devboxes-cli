@@ -6,6 +6,8 @@ import { DockerOpencodeTaskRuntime } from "@firops/devbox/runner/docker-task-run
 import Type, { type Static } from "typebox";
 import Value from "typebox/value";
 
+import { CommandError } from "../commands";
+
 const taskSchema = Type.Object({
   id: Type.String({ format: "uuid" }),
   executorId: Type.Union([Type.String(), Type.Null()]),
@@ -34,11 +36,15 @@ export const listen = async (options: {
   socketPath: string;
 }) => {
   const tokenPath = resolve(options.tokenFile);
-  const metadata = await stat(tokenPath);
-  if ((metadata.mode & 0o077) !== 0 || !metadata.isFile())
-    throw new Error("The Runner token must be stored in a regular file with mode 0600.");
+  const metadata = await stat(tokenPath).catch(() => null);
+  if (!metadata?.isFile() || (metadata.mode & 0o077) !== 0)
+    throw new CommandError(
+      "INVALID_RUNNER_TOKEN_FILE",
+      "The Runner token must be stored in a regular file with mode 0600.",
+    );
   const token = (await readFile(tokenPath, "utf8")).trim();
-  if (!token) throw new Error("The Runner token file is empty.");
+  if (!token)
+    throw new CommandError("INVALID_RUNNER_TOKEN_FILE", "The Runner token file is empty.");
   const directory = resolve(options.stateDirectory);
   const runtime = new DockerOpencodeTaskRuntime({
     socketPath: options.socketPath,

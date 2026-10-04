@@ -16,7 +16,7 @@ import {
   failureSchema,
   readCommandInput,
 } from "./commands";
-import { loadAccountContext, loadCommandConnection, type AccountContext } from "./connection";
+import { loadAccountContext, type AccountContext } from "./connection";
 
 const authenticationSchema = z.object({
   token: z.string().min(1).nullable(),
@@ -58,6 +58,7 @@ const requestAuthentication = async (
     >,
     "body" | "method" | "params" | "query"
   > = {},
+  redactResponse = true,
 ) => {
   const origin = apiOrigin(context.config.apiBaseUrl);
   const endpoint = new URLPattern({ baseURL: origin, pathname: `/api/auth${path}` });
@@ -73,7 +74,7 @@ const requestAuthentication = async (
       auth: { type: "Bearer", token: context.config.sessionToken },
       headers: { "User-Agent": cliUserAgent, Origin: origin },
       redirect: "error",
-      jsonParser: (text) => credentialSafeJson(text, secrets, true),
+      jsonParser: redactResponse ? (text) => credentialSafeJson(text, secrets, true) : JSON.parse,
       onRequest: ({ url, headers }) => {
         if (new URL(url).origin !== origin || !endpoint.test(String(url))) {
           throw new CommandError(
@@ -218,12 +219,22 @@ export const addAuthenticationCommands = (program: Command) => {
     .description("revoke the current session and remove its saved credential");
   logout.action(async () => {
     const options = logout.optsWithGlobals<{ config?: string; api?: string; json?: boolean }>();
-    const connection = await loadCommandConnection(options);
+    if (process.env.DEVBOXES_TOKEN !== undefined) {
+      throw new CommandError(
+        "SCOPED_AUTHENTICATION",
+        "Logout revokes a saved account session. Revoke a scoped delegation with delegations.revoke.",
+      );
+    }
+    const context = await loadAccountContext(options);
+    const token = context.config.sessionToken;
+    if (!token) {
+      throw new CommandError("AUTHENTICATION_REQUIRED", "No saved account session to revoke.");
+    }
     const { error } = await createAuthClient({
-      baseURL: connection.origin,
+      baseURL: apiOrigin(context.config.apiBaseUrl),
       disableDefaultFetchPlugins: true,
       fetchOptions: {
-        auth: { type: "Bearer", token: connection.token },
+        auth: { type: "Bearer", token },
         redirect: "error",
       },
     }).$fetch("/sign-out", { method: "POST", body: {} });
@@ -234,14 +245,9 @@ export const addAuthenticationCommands = (program: Command) => {
         error.status,
       );
     }
-    if (process.env.DEVBOXES_TOKEN === undefined) {
-      const context = await loadAccountContext(options);
-      if (context.config.sessionToken === connection.token) {
-        delete context.config.cookieJar;
-        delete context.config.sessionToken;
-        await writeConfig(context);
-      }
-    }
+    delete context.config.cookieJar;
+    delete context.config.sessionToken;
+    await writeConfig(context);
     await Bun.write(
       Bun.stdout,
       `${
@@ -302,14 +308,21 @@ export const addAuthenticationCommands = (program: Command) => {
       );
       return;
     }
-    const matches = operations.filter((entry) => entry.path === endpoint);
-    const operation = options.method
-      ? matches.find((entry) => entry.method === options.method?.toLowerCase())
-      : (matches.find((entry) => entry.method === "post") ?? matches[0]);
+    const matches = operations.filter(
+      (entry) =>
+        entry.path === endpoint &&
+        (!options.method || entry.method === options.method.toLowerCase()),
+    );
+    const [operation] = matches;
     if (!operation)
       throw new CommandError(
         "UNKNOWN_AUTH_OPERATION",
         "The installed authentication owner does not advertise this endpoint and method.",
+      );
+    if (matches.length > 1)
+      throw new CommandError(
+        "AUTH_METHOD_REQUIRED",
+        "This endpoint accepts GET and POST. Select one with --method.",
       );
     if (!options.input) {
       await Bun.write(
@@ -325,6 +338,25 @@ export const addAuthenticationCommands = (program: Command) => {
     const input = z.record(z.string(), z.json()).safeParse(await readCommandInput(options.input));
     if (!input.success)
       throw new CommandError("INVALID_INPUT", "Authentication input must be a JSON object.");
+    if (operation.path === "/revoke-session") {
+      const selection = z.strictObject({ id: z.string().min(1) }).safeParse(input.data);
+      if (!selection.success)
+        throw new CommandError(
+          "INVALID_INPUT",
+          "Select the session to revoke by the id that /list-sessions returns.",
+        );
+      const listed = await requestAuthentication(context, "/list-sessions", {}, false);
+      const token = z
+        .array(z.object({ id: z.string(), token: z.string() }))
+        .parse(listed.data)
+        .find((listedSession) => listedSession.id === selection.data.id)?.token;
+      if (!token)
+        throw new CommandError(
+          "SESSION_NOT_FOUND",
+          "No active session of this account has that id.",
+        );
+      input.data = { token };
+    }
     if (
       !operation.path.startsWith("/") ||
       operation.path.startsWith("//") ||

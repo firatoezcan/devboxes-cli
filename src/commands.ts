@@ -1,5 +1,3 @@
-import { readFile } from "node:fs/promises";
-
 import { betterFetch } from "@better-fetch/fetch";
 import { z } from "zod";
 
@@ -52,20 +50,32 @@ export class CommandError extends Error {
     this.name = "CommandError";
   }
 
+  // A serialization conflict commits nothing, so the same command can be sent again.
+  get retryable() {
+    return this.code === "CONCURRENT_MODIFICATION";
+  }
+
   toJSON() {
     return {
-      error: { code: this.code, message: this.message, details: this.details },
+      error: {
+        code: this.code,
+        message: this.message,
+        details: this.details,
+        retryable: this.retryable,
+      },
       status: this.status,
     };
   }
 }
 
 export const apiOrigin = (value: string, identity: "account" | "scoped" = "scoped"): string => {
-  const url = new URL(value);
+  const url = URL.parse(value);
   const local =
-    ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) ||
-    (identity === "scoped" && url.hostname === "host.docker.internal");
+    url !== null &&
+    (["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) ||
+      (identity === "scoped" && url.hostname === "host.docker.internal"));
   if (
+    url === null ||
     (url.protocol !== "https:" && !(url.protocol === "http:" && local)) ||
     url.username ||
     url.password ||
@@ -142,14 +152,25 @@ export const readCommandInput = async (source: string): Promise<z.core.util.JSON
       throw new CommandError("INPUT_REQUIRED", "Pipe JSON to stdin or use --input @file.");
     text = await Bun.stdin.text();
   } else if (source.startsWith("@") && source.length > 1) {
-    text = await readFile(source.slice(1), "utf8");
+    const file = Bun.file(source.slice(1));
+    if (!(await file.exists()))
+      throw new CommandError("INPUT_FILE_NOT_FOUND", "The --input file does not exist.");
+    text = await file.text();
   } else {
     throw new CommandError(
       "INVALID_INPUT_SOURCE",
       "Use --input @file or --input -. Keep credentials out of command arguments.",
     );
   }
-  return JSON.parse(text);
+  let input: z.core.util.JSONType | undefined;
+  try {
+    input = JSON.parse(text);
+  } catch {
+    input = undefined;
+  }
+  if (input === undefined)
+    throw new CommandError("INVALID_INPUT_JSON", "The command input is not valid JSON.");
+  return input;
 };
 
 export const describeCommands = async (

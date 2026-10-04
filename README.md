@@ -42,10 +42,15 @@ devboxes auth /two-factor/verify-totp --input @verification.json
 
 `auth` reads Better Auth's generated schema. It also exposes the installed
 password recovery, email verification, account, session, and factor-management
-endpoints. Supply `--method GET` or `--method POST` when an endpoint accepts both.
-GET input supplies query parameters; template-path parameters use the same JSON
-object. Authentication operations follow the native owner's semantics.
-Enrollment results contain authenticator secrets and backup codes; store them privately.
+endpoints. An endpoint that accepts both GET and POST requires `--method GET` or
+`--method POST`. GET input supplies query parameters; template-path parameters
+use the same JSON object. Authentication operations follow the native owner's
+semantics. Enrollment results contain authenticator secrets and backup codes;
+store them privately.
+
+The CLI redacts session tokens from its output. To revoke one session, submit
+`{"id":"<session id>"}` from `/list-sessions` to `/revoke-session`. The CLI
+resolves that session's token itself.
 
 ## Discover and invoke application commands
 
@@ -85,8 +90,9 @@ same API commands as the terminal. It does not proxy a separate API MCP catalog.
 For an agent, issue a bounded grant with `delegations.create`, then supply
 `DEVBOXES_API_URL` and `DEVBOXES_TOKEN` to the child process. Both variables are
 required; an incomplete scoped connection never loads a personal credential.
-Scoped connections cannot manage personal account authentication. Revoke the
-grant with `delegations.revoke` when its work ends.
+Scoped connections cannot manage personal account authentication, and
+`devboxes logout` refuses them. Revoke the grant with `delegations.revoke` when
+its work ends.
 
 ## Run execution capacity
 

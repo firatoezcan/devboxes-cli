@@ -1,32 +1,173 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { apiOrigin } from "./commands";
 
+const runCli = async (args: string[], env: Record<string, string | undefined> = {}) => {
+  const child = Bun.spawn([process.execPath, "src/cli.ts", ...args], {
+    cwd: join(import.meta.dir, ".."),
+    env: { ...process.env, BROWSER: "none", ...env },
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const stdout = new Response(child.stdout).text();
+  const stderr = new Response(child.stderr).text();
+  const completed = await Promise.race([
+    child.exited.then((exitCode) => ({ exitCode })),
+    Bun.sleep(10_000).then(() => null),
+  ]);
+  if (!completed) {
+    child.kill();
+    await child.exited;
+  }
+  return { exitCode: completed?.exitCode, stdout: await stdout, stderr: await stderr };
+};
+
+const fixtureDirectory = await mkdtemp(join(tmpdir(), "devboxes-cli-"));
+afterAll(() => rm(fixtureDirectory, { recursive: true, force: true }));
+const sharedTokenFile = join(fixtureDirectory, "shared-token");
+const emptyTokenFile = join(fixtureDirectory, "empty-token");
+const malformedInput = join(fixtureDirectory, "malformed.json");
+await writeFile(sharedTokenFile, "firops_runner_fixture\n");
+await chmod(sharedTokenFile, 0o644);
+await writeFile(emptyTokenFile, "\n");
+await chmod(emptyTokenFile, 0o600);
+await writeFile(malformedInput, "{ not json");
+const scoped = { DEVBOXES_API_URL: "https://api.example.com", DEVBOXES_TOKEN: "scoped" };
+const listen = ["--json", "--api", "https://api.example.com", "runner", "listen"];
+const localDocker = { DOCKER_HOST: undefined, DEVBOX_OPENCODE_DOCKER_SOCKET_PATH: undefined };
+
 describe("devboxes entrypoint", () => {
   it("prints help instead of listening when invoked without a subcommand", async () => {
-    const child = Bun.spawn([process.execPath, "src/cli.ts"], {
-      cwd: join(import.meta.dir, ".."),
-      env: { ...process.env, BROWSER: "none" },
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const stdout = new Response(child.stdout).text();
-    const stderr = new Response(child.stderr).text();
-    const completed = await Promise.race([
-      child.exited.then((exitCode) => ({ exitCode })),
-      Bun.sleep(2_000).then(() => null),
-    ]);
-    if (!completed) {
-      child.kill();
-      await child.exited;
-    }
+    const result = await runCli([]);
 
-    expect(completed).not.toBeNull();
-    expect(completed?.exitCode).toBe(0);
-    expect(await stdout).toContain("Usage: devboxes");
-    expect(await stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Usage: devboxes");
+    expect(result.stderr).toBe("");
+  });
+
+  it("keeps help available in JSON mode", async () => {
+    const result = await runCli(["--json", "--help"]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Usage: devboxes");
+  });
+
+  it.each([
+    ["a missing required option", ["--json", "invoke", "sessions.list"]],
+    ["a trailing JSON flag", ["invoke", "sessions.list", "--json"]],
+    ["an unexpected argument", ["--json", "unknown-command"]],
+  ])("writes %s as a structured error in JSON mode", async (_case, args) => {
+    const result = await runCli(args);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(JSON.parse(result.stderr)).toMatchObject({
+      error: { code: "INVALID_USAGE", message: expect.any(String) },
+    });
+  });
+
+  it.skipIf(process.platform === "win32").each([
+    [
+      "a shared token file",
+      [...listen, "--token-file", sharedTokenFile],
+      localDocker,
+      "INVALID_RUNNER_TOKEN_FILE",
+    ],
+    [
+      "an empty token file",
+      [...listen, "--token-file", emptyTokenFile],
+      localDocker,
+      "INVALID_RUNNER_TOKEN_FILE",
+    ],
+    [
+      "a missing token file",
+      [...listen, "--token-file", join(fixtureDirectory, "absent")],
+      localDocker,
+      "INVALID_RUNNER_TOKEN_FILE",
+    ],
+    [
+      "malformed command input",
+      ["--json", "invoke", "organizations.create", "--input", `@${malformedInput}`],
+      scoped,
+      "INVALID_INPUT_JSON",
+    ],
+    [
+      "a missing input file",
+      [
+        "--json",
+        "invoke",
+        "organizations.create",
+        "--input",
+        `@${join(fixtureDirectory, "absent.json")}`,
+      ],
+      scoped,
+      "INPUT_FILE_NOT_FOUND",
+    ],
+    [
+      "an unparseable API origin",
+      ["--json", "commands"],
+      { ...scoped, DEVBOXES_API_URL: "not a url" },
+      "INVALID_API_URL",
+    ],
+  ])("reports %s with its own error code", async (_case, args, env, code) => {
+    const result = await runCli(args, env);
+
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.stderr)).toMatchObject({ error: { code } });
+  });
+});
+
+describe("devboxes invoke", () => {
+  const api = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: (request) => {
+      const { pathname } = new URL(request.url);
+      if (pathname === "/api/openapi/json")
+        return Response.json({
+          openapi: "3.0.3",
+          paths: {
+            "/api/commands/sessions/dispatch": {
+              post: {
+                operationId: "sessions.dispatch",
+                "x-devboxes": { effect: "write", authority: "Organization member" },
+                responses: {},
+              },
+            },
+          },
+        });
+      return Response.json(
+        {
+          error: {
+            code: "CONCURRENT_MODIFICATION",
+            message: "The command conflicted with another change. Submit it again.",
+          },
+        },
+        { status: 409 },
+      );
+    },
+  });
+  afterAll(() => api.stop(true));
+  const dispatchInput = join(fixtureDirectory, "dispatch.json");
+  const connection = { DEVBOXES_API_URL: api.url.origin, DEVBOXES_TOKEN: "scoped" };
+  const dispatch = ["invoke", "sessions.dispatch", "--input", `@${dispatchInput}`];
+
+  it("reports a concurrent modification as retryable", async () => {
+    await writeFile(dispatchInput, "{}");
+    const human = await runCli(dispatch, connection);
+    const json = await runCli(["--json", ...dispatch], connection);
+
+    expect(human.exitCode).toBe(1);
+    expect(human.stderr).toStartWith("CONCURRENT_MODIFICATION (HTTP 409, retryable): ");
+    expect(json.exitCode).toBe(1);
+    expect(JSON.parse(json.stderr)).toMatchObject({
+      error: { code: "CONCURRENT_MODIFICATION", retryable: true },
+      status: 409,
+    });
   });
 });
 

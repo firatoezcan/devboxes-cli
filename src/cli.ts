@@ -14,6 +14,16 @@ export const createDevboxesCommand = () => {
     .description("Discover and invoke Devboxes application commands")
     .version(cliVersion)
     .showHelpAfterError()
+    .configureOutput({
+      writeErr: (text) => {
+        if (!program.opts<{ json?: boolean }>().json) process.stderr.write(text);
+      },
+    })
+    .exitOverride((error) => {
+      if (error.exitCode !== 0 && program.opts<{ json?: boolean }>().json) {
+        throw new CommandError("INVALID_USAGE", error.message.replace(/^error: /, ""));
+      }
+    })
     .option("--config <path>", "Path to the Devboxes configuration file")
     .option("--api <url>", "API origin; required for the first signup or login")
     .option("--json", "Write machine-readable results and errors");
@@ -49,11 +59,15 @@ if (import.meta.main) {
       error instanceof CommandError
         ? error
         : new CommandError("COMMAND_FAILED", "The command failed unexpectedly.");
+    const qualifiers = [
+      ...(failure.status === undefined ? [] : [`HTTP ${failure.status}`]),
+      ...(failure.retryable ? ["retryable"] : []),
+    ];
     console.error(
       program.opts<{ json?: boolean }>().json
         ? JSON.stringify(failure.toJSON())
-        : `${failure.code}${failure.status === undefined ? "" : ` (HTTP ${failure.status})`}: ${failure.message}`,
+        : `${failure.code}${qualifiers.length ? ` (${qualifiers.join(", ")})` : ""}: ${failure.message}`,
     );
-    process.exit(process.exitCode && process.exitCode !== 0 ? Number(process.exitCode) : 1);
+    process.exit(1);
   }
 }
