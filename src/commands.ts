@@ -34,6 +34,7 @@ export const failureSchema = z.object({
   details: z.json().optional(),
 });
 const errorSchema = z.object({ error: failureSchema });
+const systemErrorSchema = z.object({ code: z.string() });
 const responseTextSchema = z.string();
 
 export type CommandDescription = {
@@ -58,6 +59,16 @@ export class CommandError extends Error {
     this.name = "CommandError";
   }
 
+  static from(cause: unknown) {
+    if (cause instanceof CommandError) return cause;
+    if (!(cause instanceof Error)) return new CommandError("COMMAND_FAILED", String(cause));
+    const system = systemErrorSchema.safeParse(cause);
+    return new CommandError(
+      "COMMAND_FAILED",
+      `${system.success ? system.data.code : cause.name}: ${cause.message}`,
+    );
+  }
+
   // A serialization conflict commits nothing, so the same command can be sent again.
   get retryable() {
     return this.code === "CONCURRENT_MODIFICATION";
@@ -74,6 +85,14 @@ export class CommandError extends Error {
       status: this.options.status,
       ...this.options.correlation,
     };
+  }
+
+  toString() {
+    const qualifiers = [
+      ...(this.options.status === undefined ? [] : [`HTTP ${this.options.status}`]),
+      ...(this.retryable ? ["retryable"] : []),
+    ];
+    return `${this.code}${qualifiers.length ? ` (${qualifiers.join(", ")})` : ""}: ${this.message}`;
   }
 }
 
@@ -144,7 +163,7 @@ export const credentialSafeJson = (
       })
     : null;
 
-const requestJson = async (
+export const requestJson = async (
   connection: CommandConnection,
   path: string,
   { traceId, inject }: ReturnType<typeof invocationTrace>,

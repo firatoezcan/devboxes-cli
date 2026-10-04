@@ -1,12 +1,12 @@
 import { readFile, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-import { createFetch } from "@better-fetch/fetch";
 import { DockerOpencodeTaskRuntime } from "@firops/devbox/runner/docker-task-runtime";
-import Type, { type Static } from "typebox";
+import Type, { type Static, type TSchema } from "typebox";
 import Value from "typebox/value";
+import type { z } from "zod";
 
-import { CommandError } from "../commands";
+import { CommandError, invocationTrace, requestJson } from "../commands";
 
 const taskSchema = Type.Object({
   id: Type.String({ format: "uuid" }),
@@ -30,7 +30,7 @@ const claimSchema = Type.Object({ task: Type.Union([taskSchema, Type.Null()]) })
 const reconcileSchema = Type.Object({ status: Type.String() });
 
 export const listen = async (options: {
-  apiBaseUrl: string;
+  apiOrigin: string;
   daemonApiBaseUrl: string;
   tokenFile: string;
   stateDirectory: string;
@@ -52,50 +52,55 @@ export const listen = async (options: {
     apiBaseUrl: options.daemonApiBaseUrl,
     stateDirectory: directory,
   });
-  const api = createFetch({
-    baseURL: options.apiBaseUrl,
-    method: "POST",
-    auth: { type: "Bearer", token },
-    redirect: "error",
-    throw: true,
-  });
-  let stopped = false;
+  const api = async <Schema extends TSchema>(
+    operation: string,
+    schema: Schema,
+    body: z.core.util.JSONType,
+  ): Promise<Static<Schema>> => {
+    const { data } = await requestJson(
+      { origin: options.apiOrigin, token },
+      `/api/internal/execution/runners/${operation}`,
+      invocationTrace(),
+      body,
+    );
+    if (Value.Check(schema, data)) return data;
+    const [invalid] = Value.Errors(schema, data);
+    throw new CommandError(
+      "INVALID_RESPONSE",
+      `The ${operation} response is invalid at ${invalid?.instancePath || "/"}: ${invalid?.message}.`,
+    );
+  };
+  let stopping = false;
   const interrupt = () => {
-    stopped = true;
+    stopping = true;
   };
   const startCreated = async (task: Static<typeof assignmentSchema>, containerId: string) => {
     const executorId = task.executorId ?? `devboxes-task-${task.id}`;
     const container = runtime.docker.getContainer(containerId);
-    let started = false;
-    try {
-      const result = Value.Parse(
-        reconcileSchema,
-        await api("/internal/execution/runners/reconcile", {
-          body: { taskId: task.id, executorId, containerId, observation: "created" },
-        }),
-      );
-      if (result.status === "running" && !stopped) {
-        await container.start();
-        started = true;
-        console.info(`Started Task ${task.id} in ${executorId}.`);
-      }
-    } finally {
-      if (!started) {
-        const current = await runtime.inspect(containerId);
-        if (current?.State.Status === "created") await container.remove();
-      }
+    const result = await api("reconcile", reconcileSchema, {
+      taskId: task.id,
+      executorId,
+      containerId,
+      observation: "created",
+    });
+    if (result.status !== "running") await container.remove();
+    else if (!stopping) {
+      await container.start();
+      console.info(`Started Task ${task.id} in ${executorId}.`);
     }
   };
   process.once("SIGINT", interrupt);
   process.once("SIGTERM", interrupt);
-  try {
-    while (!stopped) {
-      const assignments = Value.Parse(
-        assignmentsSchema,
-        await api("/internal/execution/runners/assignments", { body: {} }),
-      );
+  let connected = false;
+  let failures = 0;
+  const endsListener = ({ options: { status } }: CommandError) =>
+    status === 401 || status === 403 || (!connected && (status === 404 || status === 422));
+  const poll = async () => {
+    try {
+      const assignments = await api("assignments", assignmentsSchema, {});
+      connected = true;
       for (const task of assignments.tasks) {
-        if (stopped) break;
+        if (stopping) break;
         const executorId = task.executorId ?? `devboxes-task-${task.id}`;
         const executor = await runtime.inspect(task.containerId ?? executorId);
         if (!executor) {
@@ -105,18 +110,13 @@ export const listen = async (options: {
             task.status === "cancel_requested"
           )
             await rm(join(directory, task.id), { recursive: true, force: true });
-          const result = Value.Parse(
-            reconcileSchema,
-            await api("/internal/execution/runners/reconcile", {
-              body: {
-                taskId: task.id,
-                executorId: task.executorId,
-                containerId: task.containerId,
-                observation: "absent",
-                observedAt: new Date().toISOString(),
-              },
-            }),
-          );
+          const result = await api("reconcile", reconcileSchema, {
+            taskId: task.id,
+            executorId: task.executorId,
+            containerId: task.containerId,
+            observation: "absent",
+            observedAt: new Date().toISOString(),
+          });
           console.info(`Task ${task.id} ended as ${result.status}; its executor is absent.`);
           continue;
         }
@@ -124,23 +124,18 @@ export const listen = async (options: {
           await startCreated(task, executor.Id);
           continue;
         }
-        const result = Value.Parse(
-          reconcileSchema,
-          await api("/internal/execution/runners/reconcile", {
-            body: {
-              taskId: task.id,
-              executorId,
-              containerId: executor.Id,
-              ...(executor.State.Running
-                ? { observation: "running", startedAt: executor.State.StartedAt }
-                : {
-                    observation: "stopped",
-                    startedAt: executor.State.StartedAt,
-                    stoppedAt: executor.State.FinishedAt,
-                  }),
-            },
-          }),
-        );
+        const result = await api("reconcile", reconcileSchema, {
+          taskId: task.id,
+          executorId,
+          containerId: executor.Id,
+          ...(executor.State.Running
+            ? { observation: "running", startedAt: executor.State.StartedAt }
+            : {
+                observation: "stopped",
+                startedAt: executor.State.StartedAt,
+                stoppedAt: executor.State.FinishedAt,
+              }),
+        });
         if (!executor.State.Running) {
           if (result.status === "succeeded" || result.status === "cancelled") {
             await runtime.docker.getContainer(executor.Id).remove();
@@ -149,12 +144,9 @@ export const listen = async (options: {
           console.info(`Task ${task.id} ended as ${result.status}.`);
         }
       }
-      if (stopped) break;
-      const { task } = Value.Parse(
-        claimSchema,
-        await api("/internal/execution/runners/claim", { body: {} }),
-      );
-      if (task && !stopped && task.containerId === null) {
+      if (stopping) return null;
+      const { task } = await api("claim", claimSchema, {});
+      if (task && !stopping && task.containerId === null) {
         const executorId = task.executorId ?? `devboxes-task-${task.id}`;
         const existing = await runtime.inspect(executorId);
         if (!existing) {
@@ -164,7 +156,22 @@ export const listen = async (options: {
           await startCreated(task, existing.Id);
         }
       }
-      await Bun.sleep(5_000);
+      return null;
+    } catch (error) {
+      if (!(error instanceof CommandError && endsListener(error))) return CommandError.from(error);
+      throw error;
+    }
+  };
+  try {
+    while (!stopping) {
+      const failure = await poll();
+      failures = failure ? failures + 1 : 0;
+      const delay = failure
+        ? Math.min(60_000, 5_000 * 2 ** failures) * (0.5 + Math.random() / 2)
+        : 5_000;
+      if (failure)
+        console.error(`Polling failed, retrying in ${Math.ceil(delay / 1_000)}s: ${failure}`);
+      for (let waited = 0; waited < delay && !stopping; waited += 250) await Bun.sleep(250);
     }
   } finally {
     process.removeListener("SIGINT", interrupt);

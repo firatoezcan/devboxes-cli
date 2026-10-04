@@ -55,18 +55,9 @@ if (import.meta.main) {
   try {
     await program.parseAsync(Bun.argv, { from: "node" });
   } catch (error) {
-    const failure =
-      error instanceof CommandError
-        ? error
-        : new CommandError("COMMAND_FAILED", "The command failed unexpectedly.");
-    const qualifiers = [
-      ...(failure.options.status === undefined ? [] : [`HTTP ${failure.options.status}`]),
-      ...(failure.retryable ? ["retryable"] : []),
-    ];
+    const failure = CommandError.from(error);
     console.error(
-      program.opts<{ json?: boolean }>().json
-        ? JSON.stringify(failure.toJSON())
-        : `${failure.code}${qualifiers.length ? ` (${qualifiers.join(", ")})` : ""}: ${failure.message}`,
+      program.opts<{ json?: boolean }>().json ? JSON.stringify(failure.toJSON()) : String(failure),
     );
     process.exit(1);
   }

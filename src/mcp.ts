@@ -16,10 +16,7 @@ const toolResult = async (
       structuredContent: result,
     };
   } catch (error) {
-    const result =
-      error instanceof CommandError
-        ? error.toJSON()
-        : { error: { code: "COMMAND_FAILED", message: "The command failed unexpectedly." } };
+    const result = CommandError.from(error).toJSON();
     return {
       isError: true,
       content: [{ type: "text", text: JSON.stringify(result) }],

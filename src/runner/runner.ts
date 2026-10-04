@@ -36,7 +36,7 @@ export const addRunnerCommands = (program: Command) => {
       : apiOrigin((await loadAccountContext(options)).config.apiBaseUrl);
     const socketPath = options.dockerSocket ?? dockerSocketPath();
     await listen({
-      apiBaseUrl: `${origin}/api`,
+      apiOrigin: origin,
       daemonApiBaseUrl: `${apiOrigin(options.daemonApi ?? origin)}/api`,
       tokenFile: options.tokenFile,
       stateDirectory: options.stateDirectory,

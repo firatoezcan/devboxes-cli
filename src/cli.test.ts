@@ -207,6 +207,211 @@ describe("devboxes invoke", () => {
   });
 });
 
+describe("devboxes runner listen", () => {
+  const runnerTokenFile = join(fixtureDirectory, "runner-token");
+  const listenTo = (origin: string) => [
+    "--api",
+    origin,
+    "runner",
+    "listen",
+    "--token-file",
+    runnerTokenFile,
+    "--docker-socket",
+    join(fixtureDirectory, "docker.sock"),
+  ];
+  const until = async (condition: () => boolean) => {
+    while (!condition()) await Bun.sleep(50);
+  };
+  const spawnListener = async (origin: string) => {
+    await writeFile(runnerTokenFile, "firops_runner_fixture\n", { mode: 0o600 });
+    const listener = Bun.spawn([process.execPath, "src/cli.ts", ...listenTo(origin)], {
+      cwd: join(import.meta.dir, ".."),
+      env: { ...process.env, ...localDocker },
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+    const output = { stderr: "" };
+    const reading = listener.stderr.pipeThrough(new TextDecoderStream()).pipeTo(
+      new WritableStream({
+        write: (chunk) => {
+          output.stderr += chunk;
+        },
+      }),
+    );
+    return {
+      listener,
+      output,
+      [Symbol.asyncDispose]: async () => {
+        listener.kill();
+        await listener.exited;
+        await reading;
+      },
+    };
+  };
+
+  it.skipIf(process.platform === "win32")(
+    "keeps polling while the API is unreachable and claims again when it returns",
+    async () => {
+      let claims = 0;
+      const serve = (port: number) =>
+        Bun.serve({
+          hostname: "127.0.0.1",
+          port,
+          fetch: (request) => {
+            const { pathname } = new URL(request.url);
+            if (pathname === "/api/internal/execution/runners/assignments")
+              return Response.json({ tasks: [] });
+            if (pathname === "/api/internal/execution/runners/claim") {
+              claims += 1;
+              return Response.json({ task: null });
+            }
+            return new Response(null, { status: 404 });
+          },
+        });
+      let api = serve(0);
+      const { origin, port } = api.url;
+      try {
+        await using runner = await spawnListener(origin);
+        await until(() => claims === 1);
+        await api.stop(true);
+        await until(
+          () =>
+            runner.output.stderr.includes("ConnectionRefused") || runner.listener.exitCode !== null,
+        );
+        expect(runner.listener.exitCode).toBeNull();
+        api = serve(Number(port));
+        await until(() => claims === 2 || runner.listener.exitCode !== null);
+
+        expect(claims).toBe(2);
+        expect(runner.listener.exitCode).toBeNull();
+      } finally {
+        await api.stop(true);
+      }
+    },
+    40_000,
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "retries a server error, names an invalid response, and stops without finishing its wait",
+    async () => {
+      let assignments = 0;
+      const api = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: (request) => {
+          const { pathname } = new URL(request.url);
+          if (pathname === "/api/internal/execution/runners/assignments") {
+            assignments += 1;
+            return assignments === 1
+              ? Response.json(
+                  { error: { code: "SERVICE_UNAVAILABLE", message: "The API is restarting." } },
+                  { status: 503 },
+                )
+              : Response.json({ tasks: [] });
+          }
+          return Response.json({ task: { id: "not-a-task" } });
+        },
+      });
+      try {
+        await using runner = await spawnListener(api.url.origin);
+        await until(
+          () =>
+            runner.output.stderr.split("Polling failed").length > 2 ||
+            runner.listener.exitCode !== null,
+        );
+
+        expect(runner.output.stderr).toContain(
+          "SERVICE_UNAVAILABLE (HTTP 503): The API is restarting.",
+        );
+        expect(runner.output.stderr).toMatch(/claim response .*\/task/);
+        const stopping = performance.now();
+        runner.listener.kill("SIGTERM");
+        expect(await runner.listener.exited).toBe(0);
+        expect(performance.now() - stopping).toBeLessThan(2_000);
+      } finally {
+        await api.stop(true);
+      }
+    },
+    30_000,
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "retries a 404 after its first successful poll",
+    async () => {
+      let claims = 0;
+      const api = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: (request) => {
+          if (new URL(request.url).pathname === "/api/internal/execution/runners/assignments")
+            return Response.json({ tasks: [] });
+          claims += 1;
+          return claims === 1
+            ? Response.json(
+                { error: { code: "TASK_NOT_FOUND", message: "The Task is not assigned." } },
+                { status: 404 },
+              )
+            : Response.json({ task: null });
+        },
+      });
+      try {
+        await using runner = await spawnListener(api.url.origin);
+        await until(() => claims === 2 || runner.listener.exitCode !== null);
+
+        expect(runner.listener.exitCode).toBeNull();
+        expect(runner.output.stderr).toContain(
+          "TASK_NOT_FOUND (HTTP 404): The Task is not assigned.",
+        );
+      } finally {
+        await api.stop(true);
+      }
+    },
+    30_000,
+  );
+
+  it.skipIf(process.platform === "win32").each([
+    [401, "RUNNER_TOKEN_REVOKED", "The Runner credential is unavailable."],
+    [404, "NOT_FOUND", "The requested route does not exist."],
+  ])("stops when its first poll is rejected with HTTP %i", async (status, code, message) => {
+    const api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => Response.json({ error: { code, message } }, { status }),
+    });
+    try {
+      await writeFile(runnerTokenFile, "firops_runner_fixture\n", { mode: 0o600 });
+      const human = await runCli(listenTo(api.url.origin), localDocker);
+      const json = await runCli(["--json", ...listenTo(api.url.origin)], localDocker);
+
+      expect(human.exitCode).toBe(1);
+      expect(human.stderr).toBe(`${code} (HTTP ${status}): ${message}\n`);
+      expect(json.exitCode).toBe(1);
+      expect(JSON.parse(json.stderr)).toMatchObject({ error: { code }, status });
+    } finally {
+      await api.stop(true);
+    }
+  });
+});
+
+describe("devboxes failure report", () => {
+  it("names the cause of an unexpected failure", async () => {
+    const closed = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
+    const origin = closed.url.origin;
+    await closed.stop(true);
+
+    const result = await runCli(["--json", "commands"], {
+      DEVBOXES_API_URL: origin,
+      DEVBOXES_TOKEN: "scoped",
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.stderr)).toMatchObject({
+      error: { code: "COMMAND_FAILED", message: expect.stringContaining("ConnectionRefused") },
+    });
+  });
+});
+
 describe("CLI API origin", () => {
   it("allows HTTPS and local HTTP without accepting credential or URL escapes", () => {
     expect(apiOrigin("https://api.example.com/api")).toBe("https://api.example.com");
