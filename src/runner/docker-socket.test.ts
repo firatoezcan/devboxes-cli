@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 
-import { dockerSocketPath } from "./docker-socket";
+import { dockerSocketPath } from "@firops/devbox/runner/docker-socket";
 
 // The wire client is dockerode; what stays ours — and needs pinning — is the
 // policy for WHICH socket the runner may drive.

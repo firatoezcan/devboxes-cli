@@ -6,6 +6,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { log, note, spinner } from "@clack/prompts";
 import { treaty } from "@elysiajs/eden";
+import { writeSecretFile } from "@firops/connections/local/secret-file";
 import { createAuthClient } from "better-auth/client";
 import { deviceAuthorizationClient } from "better-auth/client/plugins";
 import { Command, InvalidArgumentError } from "commander";
@@ -20,7 +21,6 @@ import Value from "typebox/value";
 import type { ApiType } from "#monorepo/api";
 
 import packageJson from "../package.json";
-import { writeSecretFile } from "./secret-file";
 
 export type DevboxesCliOptions = {
   config?: string;

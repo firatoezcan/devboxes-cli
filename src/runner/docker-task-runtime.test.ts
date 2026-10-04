@@ -67,7 +67,7 @@ const runningState = {
   FinishedAt: "0001-01-01T00:00:00Z",
 };
 
-await mock.module("./runtime-env", () => ({
+await mock.module("@firops/devbox/runner/runtime-env", () => ({
   runnerRuntimeEnv,
 }));
 
@@ -170,7 +170,7 @@ describe("opencode Docker task runtime against the engine API", () => {
       if (request.pathname === "/containers/container_1/start") return { status: 204 };
       return { status: 500, body: { message: `unexpected ${request.pathname}` } };
     });
-    const { DockerOpencodeTaskRuntime } = await import("./docker-task-runtime");
+    const { DockerOpencodeTaskRuntime } = await import("@firops/devbox/runner/docker-task-runtime");
     const runtime = new DockerOpencodeTaskRuntime({ daemonApiBaseUrl });
     await runtime.persistProviderAuthSnapshot({
       organizationId: "org_1",
@@ -349,7 +349,7 @@ describe("opencode Docker task runtime against the engine API", () => {
       if (request.pathname === "/images/create") return { status: 200, body: { status: "done" } };
       return { status: 500, body: { message: "Docker create failed" } };
     });
-    const { DockerOpencodeTaskRuntime } = await import("./docker-task-runtime");
+    const { DockerOpencodeTaskRuntime } = await import("@firops/devbox/runner/docker-task-runtime");
 
     try {
       await assert.rejects(
@@ -387,7 +387,7 @@ describe("opencode Docker task runtime against the engine API", () => {
       }
       return { status: 500, body: { message: `unexpected ${request.pathname}` } };
     });
-    const { DockerOpencodeTaskRuntime } = await import("./docker-task-runtime");
+    const { DockerOpencodeTaskRuntime } = await import("@firops/devbox/runner/docker-task-runtime");
 
     try {
       await assert.rejects(
@@ -427,7 +427,7 @@ describe("opencode Docker task runtime against the engine API", () => {
       if (request.pathname === "/containers/container_new/start") return { status: 204 };
       return { status: 500, body: { message: `unexpected ${request.pathname}` } };
     });
-    const { DockerOpencodeTaskRuntime } = await import("./docker-task-runtime");
+    const { DockerOpencodeTaskRuntime } = await import("@firops/devbox/runner/docker-task-runtime");
 
     try {
       const container = await new DockerOpencodeTaskRuntime({ daemonApiBaseUrl }).launchTask({
@@ -499,7 +499,7 @@ describe("opencode Docker task runtime against the engine API", () => {
       }
       return { status: 500, body: { message: `unexpected ${request.pathname}` } };
     });
-    const { DockerOpencodeTaskRuntime } = await import("./docker-task-runtime");
+    const { DockerOpencodeTaskRuntime } = await import("@firops/devbox/runner/docker-task-runtime");
 
     try {
       await assert.rejects(
@@ -549,7 +549,7 @@ describe("opencode Docker task runtime against the engine API", () => {
       }
       return { status: 500, body: { message: `unexpected ${request.pathname}` } };
     });
-    const { DockerOpencodeTaskRuntime } = await import("./docker-task-runtime");
+    const { DockerOpencodeTaskRuntime } = await import("@firops/devbox/runner/docker-task-runtime");
     await writeTaskBackendTokenFile();
 
     try {
@@ -606,7 +606,7 @@ describe("opencode Docker task runtime against the engine API", () => {
       }
       return { status: 500, body: { message: `unexpected ${request.pathname}` } };
     });
-    const { DockerOpencodeTaskRuntime } = await import("./docker-task-runtime");
+    const { DockerOpencodeTaskRuntime } = await import("@firops/devbox/runner/docker-task-runtime");
     await writeTaskBackendTokenFile();
 
     try {
@@ -632,7 +632,7 @@ describe("opencode Docker task runtime against the engine API", () => {
       }
       return { status: 500, body: { message: `unexpected ${request.pathname}` } };
     });
-    const { DockerOpencodeTaskRuntime } = await import("./docker-task-runtime");
+    const { DockerOpencodeTaskRuntime } = await import("@firops/devbox/runner/docker-task-runtime");
     await writeTaskBackendTokenFile();
 
     try {
@@ -654,7 +654,7 @@ describe("opencode Docker task runtime against the engine API", () => {
   });
 
   it("rewrites the mounted backend-token file in place on re-adoption", async () => {
-    const { DockerOpencodeTaskRuntime } = await import("./docker-task-runtime");
+    const { DockerOpencodeTaskRuntime } = await import("@firops/devbox/runner/docker-task-runtime");
     await writeTaskBackendTokenFile();
     const tokenFile = join(homeRoot, "secrets", "org_1", "task_1", "backend-token");
 

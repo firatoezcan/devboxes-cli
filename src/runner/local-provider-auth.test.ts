@@ -7,14 +7,16 @@ import { join } from "node:path";
 // Only the vendor OAuth boundary is mocked: refresh calls target the live
 // vendor token endpoints, which tests must never reach.
 const refreshOpencodeOauthAccess = mock();
-await mock.module("../provider-connect/flows", () => ({
+await mock.module("@firops/connections/provider-connect/flows", () => ({
   refreshOpencodeOauthAccess,
 }));
 
-const { LocalRunnerOpencodeProviderAuthRuntime } = await import("./local-provider-auth");
-const { readCredentialStore, writeCredentialStore } = await import("./credential-store");
+const { LocalRunnerOpencodeProviderAuthRuntime } =
+  await import("@firops/connections/local/local-provider-auth");
+const { readCredentialStore, writeCredentialStore } =
+  await import("@firops/connections/local/credential-store");
 type OpencodeConnectorDescriptor =
-  import("../provider-connect/descriptor-schema").OpencodeConnectorDescriptor;
+  import("@firops/connections/provider-connect/descriptor-schema").OpencodeConnectorDescriptor;
 
 // Served connector data is a boundary these tests own: the vendor flow module
 // is mocked above, so descriptors only need to route refreshes by providerId.

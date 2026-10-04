@@ -11,11 +11,6 @@
     "url": "git+https://github.com/firatoezcan/devboxes-cli.git"
   },
   "type": "module",
-  "exports": {
-    "./protocol/*": "./src/protocol/*.ts",
-    "./provider-connect/*": "./src/provider-connect/*.ts",
-    "./sentry-redaction": "./src/sentry-redaction.ts"
-  },
   "scripts": {
     "build": "bun scripts/build-cli-binaries.ts",
     "build:smoke": "bun scripts/build-cli-binaries.ts --smoke",
@@ -26,6 +21,9 @@
   "dependencies": {
     "@clack/prompts": "^1.7.0",
     "@elysiajs/eden": "^1.4.9",
+    "@firops/connections": "workspace:*",
+    "@firops/devbox": "workspace:*",
+    "@firops/platform": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@sentry/bun": "catalog:",
     "@sentry/core": "catalog:",

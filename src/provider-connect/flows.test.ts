@@ -1,15 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import assert from "node:assert/strict";
 
-import Value from "typebox/value";
-
-import { OpencodeConnectorDescriptorSchema } from "./descriptor-schema";
-import { opencodeProviderConnectors } from "./descriptors";
+import { OpencodeConnectorDescriptorSchema } from "@firops/connections/provider-connect/descriptor-schema";
+import { opencodeProviderConnectors } from "@firops/connections/provider-connect/descriptors";
 import {
   pollOpencodeOauthDeviceFlow,
   refreshOpencodeOauthAccess,
   startOpencodeOauthDeviceFlow,
-} from "./flows";
+} from "@firops/connections/provider-connect/flows";
+import Value from "typebox/value";
 
 // Catalog order is part of the exported contract these tests pin.
 const [openaiConnector, copilotConnector, xaiConnector] = opencodeProviderConnectors;

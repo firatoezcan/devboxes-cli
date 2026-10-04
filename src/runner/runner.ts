@@ -5,6 +5,46 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import * as prompts from "@clack/prompts";
 import { intro, isCancel, log, note, outro, password, select, spinner, text } from "@clack/prompts";
+import {
+  createOpencodeCredentialBroker,
+  type ActiveOpencodeCredentialTask,
+} from "@firops/connections/local/credential-broker";
+import {
+  ambiguousOpencodeCredentialMessage,
+  CredentialStoreUnreadableError,
+  credentialStoreExists,
+  readCredentialStore,
+  writeCredentialStore,
+  type LocalCredentialStore,
+} from "@firops/connections/local/credential-store";
+import {
+  LocalRunnerOpencodeProviderAuthRuntime,
+  type LocalCredentialStoreAccess,
+  type LocalOpencodeProviderCredentialReference,
+} from "@firops/connections/local/local-provider-auth";
+import {
+  OpencodeConnectorDescriptorSchema,
+  type OpencodeConnectorDescriptor,
+} from "@firops/connections/provider-connect/descriptor-schema";
+import {
+  pollOpencodeOauthDeviceFlow,
+  startOpencodeOauthDeviceFlow,
+} from "@firops/connections/provider-connect/flows";
+import { dockerSocketPath } from "@firops/devbox/runner/docker-socket";
+import {
+  listenerRegistrationDeviceClientId,
+  listenerUpgradeRequiredCode,
+} from "@firops/platform/protocol/frozen";
+import {
+  OpencodeLaunchSpecSchema,
+  opencodeWorkspaceLaunchProtocol,
+} from "@firops/platform/protocol/launch-spec";
+import {
+  normalizeOpencodeProviderId,
+  opencodeProviderAuthFingerprint,
+  type OpencodeProviderAuthJson,
+} from "@firops/platform/protocol/provider-auth";
+import { taskContainerName } from "@firops/platform/protocol/task-runtime";
 import { Command, InvalidArgumentError } from "commander";
 import Docker from "dockerode";
 import Type from "typebox";
@@ -24,44 +64,7 @@ import {
   type DevboxesCliOptions,
   type DevboxesContext,
 } from "../devboxes";
-import {
-  listenerRegistrationDeviceClientId,
-  listenerUpgradeRequiredCode,
-} from "../protocol/frozen";
-import { OpencodeLaunchSpecSchema, opencodeWorkspaceLaunchProtocol } from "../protocol/launch-spec";
-import {
-  normalizeOpencodeProviderId,
-  opencodeProviderAuthFingerprint,
-  type OpencodeProviderAuthJson,
-} from "../protocol/provider-auth";
-import { taskContainerName } from "../protocol/task-runtime";
-import {
-  OpencodeConnectorDescriptorSchema,
-  type OpencodeConnectorDescriptor,
-} from "../provider-connect/descriptor-schema";
-import {
-  pollOpencodeOauthDeviceFlow,
-  startOpencodeOauthDeviceFlow,
-} from "../provider-connect/flows";
-import {
-  createOpencodeCredentialBroker,
-  type ActiveOpencodeCredentialTask,
-} from "./credential-broker";
-import {
-  ambiguousOpencodeCredentialMessage,
-  CredentialStoreUnreadableError,
-  credentialStoreExists,
-  readCredentialStore,
-  writeCredentialStore,
-  type LocalCredentialStore,
-} from "./credential-store";
-import { dockerSocketPath } from "./docker-socket";
 import { playIntro } from "./intro";
-import {
-  LocalRunnerOpencodeProviderAuthRuntime,
-  type LocalCredentialStoreAccess,
-  type LocalOpencodeProviderCredentialReference,
-} from "./local-provider-auth";
 
 type RunnerCliOptions = DevboxesCliOptions & {
   provider?: string;
@@ -1378,7 +1381,7 @@ const listen = async (
   const activeTasks = new Map<string, ActiveTask>();
   const activeModelResolutions = new Map<string, ActiveOpencodeCredentialTask>();
   console.info(`Devboxes ${runnerVersion} starting container runtime...`);
-  const { DockerOpencodeTaskRuntime } = await import("./docker-task-runtime");
+  const { DockerOpencodeTaskRuntime } = await import("@firops/devbox/runner/docker-task-runtime");
   const taskRuntime = new DockerOpencodeTaskRuntime({
     daemonApiBaseUrl: taskContainerApiBaseUrl(context.config.apiBaseUrl),
   });

@@ -4,7 +4,7 @@ import {
   defaultOpencodeDaemonPlatform,
   opencodeDaemonBootstrapProtocol,
   opencodeDaemonPlatforms,
-} from "./daemon-artifact";
+} from "@firops/platform/protocol/daemon-artifact";
 import {
   credentialStoreFileName,
   credentialStoreVersion,
@@ -16,9 +16,12 @@ import {
   reconciliationLabels,
   runnerMachineApiPrefix,
   runnerMachineRoutePrefix,
-} from "./frozen";
-import { clientOwnedLaunchEnvKeys, opencodeWorkspaceLaunchProtocol } from "./launch-spec";
-import { opencodeProviderAuthPath } from "./provider-auth";
+} from "@firops/platform/protocol/frozen";
+import {
+  clientOwnedLaunchEnvKeys,
+  opencodeWorkspaceLaunchProtocol,
+} from "@firops/platform/protocol/launch-spec";
+import { opencodeProviderAuthPath } from "@firops/platform/protocol/provider-auth";
 import {
   containerBackendTokenFile,
   containerDaemonDataDir,
@@ -32,7 +35,7 @@ import {
   taskContainerName,
   taskStateImage,
   taskStateImageRepo,
-} from "./task-runtime";
+} from "@firops/platform/protocol/task-runtime";
 
 // A change-detector BY DESIGN — the one blessed kind: these values are
 // compiled into shipped listener binaries and baked into published runner

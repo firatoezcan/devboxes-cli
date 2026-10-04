@@ -4,14 +4,14 @@ import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { serializedJsonb } from "@firops/platform/database/jsonb";
+import * as schema from "@firops/platform/database/schema";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { eq } from "drizzle-orm";
 import Type from "typebox";
 import Value from "typebox/value";
 
-import { serializedJsonb } from "@/db/jsonb";
-import * as schema from "@/db/schema";
 import { createApiIntegrationHarness } from "@/test/api-integration";
 import { installWorkspaceImageBuilderStub } from "@/test/workspace-image-builder";
 
@@ -96,7 +96,7 @@ describe("devboxes CLI", () => {
         import("@/routes/org.$organizationId"),
         import("@/routes/org.$organizationId/agent-sessions"),
         import("@/routes/org.$organizationId/mcp"),
-        import("@/routes/org.$organizationId/projects"),
+        import("@firops/devbox/server/routes/org.$organizationId/projects"),
         import("@/routes/org.$organizationId/runs"),
       ]);
       return createApp()
@@ -222,7 +222,8 @@ describe("devboxes CLI", () => {
 
   afterAll(async () => {
     await listener?.stop(true);
-    const { closeOpencodeClickHouseEventStorage } = await import("@/clickhouse/opencode-events");
+    const { closeOpencodeClickHouseEventStorage } =
+      await import("@firops/devbox/storage/opencode-events");
     await closeOpencodeClickHouseEventStorage();
     if (configDir) await rm(configDir, { recursive: true, force: true });
     for (const dir of temporaryGitRepos) await rm(dir, { recursive: true, force: true });

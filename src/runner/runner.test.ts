@@ -7,22 +7,25 @@ import { join } from "node:path";
 
 import * as prompts from "@clack/prompts";
 import { treaty } from "@elysiajs/eden";
+import type {
+  ActiveOpencodeCredentialTask,
+  OpencodeCredentialBrokerApi,
+} from "@firops/connections/local/credential-broker";
+import {
+  readCredentialStore,
+  writeCredentialStore,
+} from "@firops/connections/local/credential-store";
+import { opencodeProviderCredentials } from "@firops/platform/database/schema";
+import { credentialStoreFileName } from "@firops/platform/protocol/frozen";
+import { opencodeProviderAuthFingerprint } from "@firops/platform/protocol/provider-auth";
+import { taskContainerName } from "@firops/platform/protocol/task-runtime";
 import { armor, Encrypter } from "age-encryption";
 import { z } from "zod";
 
-import { opencodeProviderCredentials } from "@/db/schema";
 import { createApiIntegrationHarness } from "@/test/api-integration";
 
 import { createDevboxesCommand } from "../cli";
 import { cliVersion } from "../devboxes";
-import { credentialStoreFileName } from "../protocol/frozen";
-import { opencodeProviderAuthFingerprint } from "../protocol/provider-auth";
-import { taskContainerName } from "../protocol/task-runtime";
-import type {
-  ActiveOpencodeCredentialTask,
-  OpencodeCredentialBrokerApi,
-} from "./credential-broker";
-import { readCredentialStore, writeCredentialStore } from "./credential-store";
 import {
   connectOpencodeProviderSubscription,
   removeOpencodeProviderCredentials,
@@ -39,7 +42,8 @@ const credentialSyncHarness = createApiIntegrationHarness(
   async () => {
     const { createApp } = await import("@/app-shell");
     const { createOrganizationRoutes } = await import("@/routes/org.$organizationId");
-    const { orgCredentialRoutes } = await import("@/routes/org.$organizationId/credentials");
+    const { orgCredentialRoutes } =
+      await import("@firops/connections/server/routes/org.$organizationId/credentials");
     return createApp().use(createOrganizationRoutes(orgCredentialRoutes));
   },
   {},
@@ -1293,7 +1297,7 @@ describe("runner Opencode credentials", () => {
       expect(output).toContain("xai");
       // The proof-of-life rotation persists like any other refresh.
       const persisted = await (
-        await import("./credential-store")
+        await import("@firops/connections/local/credential-store")
       ).readCredentialStore({ configPath, passphrase });
       expect(persisted.entries.openai?.auth).toMatchObject({ refresh: "live-refresh-2" });
 
@@ -1970,7 +1974,7 @@ describe("runner Opencode credentials", () => {
     const homeRoot = join(fixtureDir, "restart-authority-runtime");
     process.env.DEVBOX_OPENCODE_DOCKER_SOCKET_PATH = dockerSocketPath;
     process.env.DEVBOX_OPENCODE_HOME_ROOT = homeRoot;
-    const { DockerOpencodeTaskRuntime } = await import("./docker-task-runtime");
+    const { DockerOpencodeTaskRuntime } = await import("@firops/devbox/runner/docker-task-runtime");
     await new DockerOpencodeTaskRuntime({
       daemonApiBaseUrl: "http://host.docker.internal:33001/api",
     }).persistProviderAuthSnapshot({

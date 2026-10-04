@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test";
 
+import {
+  opencodeWorkspaceLaunchProtocol,
+  OpencodeLaunchSpecSchema,
+} from "@firops/platform/protocol/launch-spec";
 import Value from "typebox/value";
-
-import { opencodeWorkspaceLaunchProtocol, OpencodeLaunchSpecSchema } from "./launch-spec";
 
 describe("current launch protocol", () => {
   it("accepts the current Workspace capability protocol", () => {

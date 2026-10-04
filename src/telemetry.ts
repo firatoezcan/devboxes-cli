@@ -2,13 +2,13 @@ import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 
 import { log } from "@clack/prompts";
-import * as Sentry from "@sentry/bun";
-import { type Command } from "commander";
 import {
   scrubSentryBreadcrumb,
   scrubSentryEvent,
   scrubSentrySpan,
-} from "devboxes/sentry-redaction";
+} from "@firops/platform/observability/sentry-redaction";
+import * as Sentry from "@sentry/bun";
+import { type Command } from "commander";
 
 import {
   cliVersion,

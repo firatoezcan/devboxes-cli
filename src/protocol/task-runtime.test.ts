@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { validatedProviderAuthUrl } from "./task-runtime";
+import { validatedProviderAuthUrl } from "@firops/platform/protocol/task-runtime";
 
 describe("validatedProviderAuthUrl", () => {
   it("accepts absolute http(s) base URLs and strips trailing slashes", () => {

@@ -1,7 +1,5 @@
 import { describe, expect, it } from "bun:test";
 
-import type { Breadcrumb, Event, SpanJSON } from "@sentry/core";
-
 import {
   redactSentryQuery,
   redactSentryUrl,
@@ -9,7 +7,8 @@ import {
   scrubSentryEvent,
   scrubSentryRequest,
   scrubSentrySpan,
-} from "./sentry-redaction";
+} from "@firops/platform/observability/sentry-redaction";
+import type { Breadcrumb, Event, SpanJSON } from "@sentry/core";
 
 describe("shared Sentry payload policy", () => {
   it("keeps only allowlisted request diagnostics", () => {

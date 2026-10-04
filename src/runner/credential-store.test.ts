@@ -4,10 +4,12 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import {
+  readCredentialStore,
+  writeCredentialStore,
+} from "@firops/connections/local/credential-store";
+import { credentialStoreFileName } from "@firops/platform/protocol/frozen";
 import { armor, Decrypter, Encrypter } from "age-encryption";
-
-import { credentialStoreFileName } from "../protocol/frozen";
-import { readCredentialStore, writeCredentialStore } from "./credential-store";
 
 describe("local credential store", () => {
   it("round-trips entries as owner-only ciphertext and answers empty when absent", async () => {
