@@ -72,7 +72,7 @@ for (const platform of platforms) {
       ? join(outdir, filename)
       : join(outdir, platform.replace("/", "-"), filename);
 
-  await shell`bun build --compile --sourcemap=external --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target=${target} --external cpu-features --outfile ${outfile} src/cli.ts`;
+  await shell`bun build --compile --sourcemap=external --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target=${target} --external cpu-features --define globalThis.DEVBOXES_DEFAULT_API_ORIGIN='"https://api.devboxes.ai"' --outfile ${outfile} src/cli.ts`;
   if (!smoke && !platform.startsWith("windows/")) await chmod(outfile, 0o755);
 
   if (smoke) {

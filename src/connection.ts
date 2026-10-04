@@ -4,6 +4,7 @@ import {
   type DevboxesContext,
 } from "@firops/connections/local/config";
 
+import { defaultApiOrigin } from "./api";
 import { apiOrigin, CommandError, type CommandConnection } from "./commands";
 
 export type AccountContext = DevboxesContext & {
@@ -34,7 +35,8 @@ export const loadAccountContext = async (
     throw new CommandError("INVALID_CONFIG", "A saved credential must have its own API origin.");
   }
   const storedOrigin = config.apiBaseUrl ? apiOrigin(config.apiBaseUrl, "account") : undefined;
-  const origin = options.api === undefined ? storedOrigin : apiOrigin(options.api, "account");
+  const api = options.api ?? (storedOrigin ? undefined : defaultApiOrigin);
+  const origin = api === undefined ? storedOrigin : apiOrigin(api, "account");
   if (!origin) {
     throw new CommandError(
       "API_URL_REQUIRED",

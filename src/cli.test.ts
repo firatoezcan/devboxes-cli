@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from "bun:test";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,7 +8,7 @@ import { apiOrigin } from "./commands";
 const runCli = async (args: string[], env: Record<string, string | undefined> = {}) => {
   const child = Bun.spawn([process.execPath, "src/cli.ts", ...args], {
     cwd: join(import.meta.dir, ".."),
-    env: { ...process.env, BROWSER: "none", ...env },
+    env: { ...process.env, ...env },
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
@@ -410,6 +410,201 @@ describe("devboxes failure report", () => {
       error: { code: "COMMAND_FAILED", message: expect.stringContaining("ConnectionRefused") },
     });
   });
+});
+
+describe("devboxes signup and login", () => {
+  it.each(["signup", "login"])(
+    "%s lists every sign-in method instead of prompting without a terminal",
+    async (action) => {
+      const result = await runCli([
+        "--json",
+        "--config",
+        join(fixtureDirectory, `${action}.json`),
+        "--api",
+        "https://api.example.com",
+        action,
+      ]);
+
+      expect(result.exitCode).toBe(1);
+      expect(JSON.parse(result.stderr)).toMatchObject({
+        error: {
+          code: "SIGN_IN_METHOD_REQUIRED",
+          details: {
+            methods: [
+              { method: "github", flag: "--github" },
+              { method: "vercel", flag: "--vercel" },
+              { method: "email", flag: "--email <email>" },
+            ],
+          },
+        },
+      });
+    },
+  );
+
+  it("starts a browser sign-in at the embedded API origin when no origin is selected", async () => {
+    const requests: string[] = [];
+    const api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request) => {
+        requests.push(new URL(request.url).pathname);
+        return Response.json(
+          { error: "invalid_client", error_description: "Invalid client ID" },
+          { status: 400 },
+        );
+      },
+    });
+    try {
+      const child = Bun.spawn(
+        [
+          process.execPath,
+          "--define",
+          `globalThis.DEVBOXES_DEFAULT_API_ORIGIN=${JSON.stringify(api.url.origin)}`,
+          "src/cli.ts",
+          "--json",
+          "--config",
+          join(fixtureDirectory, "default-origin.json"),
+          "login",
+          "--github",
+        ],
+        {
+          cwd: join(import.meta.dir, ".."),
+          env: { ...process.env, DEVBOXES_API_URL: undefined },
+          stdin: "ignore",
+          stderr: "pipe",
+        },
+      );
+
+      expect(await child.exited).toBe(1);
+      expect(JSON.parse(await new Response(child.stderr).text())).toMatchObject({
+        error: { code: "invalid_client" },
+      });
+      expect(requests).toEqual(["/api/auth/device/code"]);
+    } finally {
+      await api.stop(true);
+    }
+  });
+  it("keeps waiting for browser approval through a temporary server error", async () => {
+    const tokenResponses = [
+      Response.json(
+        { error: "authorization_pending", error_description: "Authorization pending" },
+        { status: 400 },
+      ),
+      new Response("Bad Gateway", { status: 502 }),
+      Response.json({ access_token: "device-session", token_type: "Bearer" }),
+    ];
+    const api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request) => {
+        const { pathname } = new URL(request.url);
+        if (pathname === "/api/auth/device/code")
+          return Response.json({
+            device_code: "device-code",
+            user_code: "ABCDEFGH",
+            verification_uri_complete: new URL("/api/device?user_code=ABCDEFGH", request.url).href,
+            expires_in: 60,
+            interval: 0,
+          });
+        if (pathname === "/api/auth/device/token")
+          return tokenResponses.shift() ?? new Response(null, { status: 500 });
+        return Response.json({
+          session: {},
+          user: { id: "user", email: "device@example.com", name: "Device", emailVerified: true },
+        });
+      },
+    });
+    try {
+      const result = await runCli([
+        "--json",
+        "--config",
+        join(fixtureDirectory, "device-retry.json"),
+        "--api",
+        api.url.origin,
+        "login",
+        "--github",
+      ]);
+
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        signedIn: true,
+        user: { email: "device@example.com" },
+      });
+      expect(tokenResponses).toEqual([]);
+    } finally {
+      await api.stop(true);
+    }
+  });
+  it.skipIf(process.platform === "win32")(
+    "exits after an interactive browser sign-in while the browser opener still runs",
+    async () => {
+      const openerDirectory = join(fixtureDirectory, "opener");
+      const openerPid = join(fixtureDirectory, "opener.pid");
+      await mkdir(openerDirectory, { recursive: true });
+      for (const name of ["open", "xdg-open"]) {
+        await writeFile(
+          join(openerDirectory, name),
+          `#!/bin/sh\necho $$ > ${openerPid}.tmp\nmv ${openerPid}.tmp ${openerPid}\nexec sleep 30\n`,
+          {
+            mode: 0o755,
+          },
+        );
+      }
+      const api = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: async (request) => {
+          const { pathname } = new URL(request.url);
+          if (pathname === "/api/auth/device/code")
+            return Response.json({
+              device_code: "device-code",
+              user_code: "ABCDEFGH",
+              verification_uri_complete: new URL("/api/device?user_code=ABCDEFGH", request.url)
+                .href,
+              expires_in: 60,
+              interval: 0,
+            });
+          if (pathname === "/api/auth/device/token") {
+            while (!(await Bun.file(openerPid).exists())) await Bun.sleep(50);
+            return Response.json({ access_token: "device-session", token_type: "Bearer" });
+          }
+          return Response.json({
+            session: {},
+            user: { id: "user", email: "device@example.com", name: "Device", emailVerified: true },
+          });
+        },
+      });
+      const login = Bun.spawn(
+        [
+          process.execPath,
+          "src/cli.ts",
+          "--config",
+          join(fixtureDirectory, "opener.json"),
+          "--api",
+          api.url.origin,
+          "login",
+          "--github",
+        ],
+        {
+          cwd: join(import.meta.dir, ".."),
+          env: { ...process.env, PATH: `${openerDirectory}:${process.env.PATH}` },
+          terminal: {},
+        },
+      );
+      try {
+        const exited = await Promise.race([login.exited, Bun.sleep(10_000).then(() => null)]);
+
+        expect(exited).toBe(0);
+      } finally {
+        login.kill();
+        await api.stop(true);
+        if (await Bun.file(openerPid).exists()) {
+          Bun.spawnSync(["kill", await Bun.file(openerPid).text()]);
+        }
+      }
+    },
+    20_000,
+  );
 });
 
 describe("CLI API origin", () => {

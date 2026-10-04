@@ -2,7 +2,7 @@
 
 import { Command } from "commander";
 
-import { cliVersion } from "./api";
+import { cliVersion, defaultApiOrigin } from "./api";
 import { addAuthenticationCommands } from "./auth";
 import { CommandError } from "./commands";
 import { addAccountCommands } from "./devboxes";
@@ -25,7 +25,12 @@ export const createDevboxesCommand = () => {
       }
     })
     .option("--config <path>", "Path to the Devboxes configuration file")
-    .option("--api <url>", "API origin; required for the first signup or login")
+    .option(
+      "--api <url>",
+      defaultApiOrigin
+        ? `API origin; defaults to the saved account's origin, then ${defaultApiOrigin}`
+        : "API origin; required for the first signup or login",
+    )
     .option("--json", "Write machine-readable results and errors");
 
   addRunnerCommands(program);

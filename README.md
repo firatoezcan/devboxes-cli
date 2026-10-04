@@ -20,29 +20,26 @@ setup. Remote API connections require HTTPS.
 ## Create an account or sign in
 
 ```sh
-devboxes --api https://api.devboxes.ai signup --email you@example.com --name "Your name"
-devboxes login --email you@example.com
+devboxes signup
+devboxes login
 ```
 
-The CLI prompts for a password without echoing it. For automation, pipe the
-password into `--password-stdin`; do not put it in command arguments. Use
-`--config <path>` to keep separate API origins or accounts in separate files.
-Credentials are saved atomically with file mode `0600`. `devboxes logout`
+[Work from the terminal](../docs/content/guide/cli.mdx#sign-in) describes the
+sign-in methods, the flags for scripts and agents, email verification, and
+two-factor completion.
+
+Released binaries embed `https://api.devboxes.ai` as the default API origin
+through `scripts/build-cli-binaries.ts`. A source run has no default and
+requires `--api`. `--api` and `DEVBOXES_API_URL` override the default, and a
+saved configuration keeps the origin it was created for.
+
+Credentials are saved atomically with file mode `0600`. Use `--config <path>` to
+keep separate API origins or accounts in separate files. `devboxes logout`
 revokes the current session and clears its saved credential.
 
-A two-factor login saves its pending challenge and reports that verification is
-required. Discover the installed authentication endpoints and inspect the native
-TOTP input before submitting a code:
-
-```sh
-devboxes auth
-devboxes auth /two-factor/verify-totp
-devboxes auth /two-factor/verify-totp --input @verification.json
-```
-
-`auth` reads Better Auth's generated schema. It also exposes the installed
-password recovery, email verification, account, session, and factor-management
-endpoints. An endpoint that accepts both GET and POST requires `--method GET` or
+`devboxes auth` reads Better Auth's generated schema and exposes the installed
+two-factor, password recovery, email verification, account, session, and
+factor-management endpoints. An endpoint that accepts both GET and POST requires `--method GET` or
 `--method POST`. GET input supplies query parameters; template-path parameters
 use the same JSON object. Authentication operations follow the native owner's
 semantics. Enrollment results contain authenticator secrets and backup codes;
