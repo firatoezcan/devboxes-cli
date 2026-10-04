@@ -24,7 +24,7 @@ devboxes signup
 devboxes login
 ```
 
-[Work from the terminal](../docs/content/guide/cli.mdx#sign-in) describes the
+[Install the CLI and run operations](../docs/content/guides/cli.mdx#sign-in) describes the
 sign-in methods, the flags for scripts and agents, email verification, and
 two-factor completion.
 
