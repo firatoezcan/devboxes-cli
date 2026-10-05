@@ -25,7 +25,6 @@
     "@firops/devbox": "workspace:*",
     "@firops/platform": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@opencode-ai/models": "catalog:",
     "@opentelemetry/api": "catalog:",
     "@opentelemetry/core": "catalog:",
     "better-auth": "1.6.9",
