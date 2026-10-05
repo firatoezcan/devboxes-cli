@@ -1,0 +1,341 @@
+diff --git a/dist/effect/api/api.d.ts b/dist/effect/api/api.d.ts
+index e70e51f21980183ef14a7a00735f21a57bfe27d0..0993c04268d4ae1c28653305b9acd543d6832e24 100644
+--- a/dist/effect/api/api.d.ts
++++ b/dist/effect/api/api.d.ts
+@@ -11,6 +11,7 @@ import type { Brand } from "effect";
+ import type { Model } from "@opencode-ai/schema/model";
+ import type { DateTime } from "effect";
+ import type { SessionMessage } from "@opencode-ai/schema/session-message";
++import type { TokenUsage } from "@opencode-ai/schema/token-usage";
+ import type { SessionInbox } from "@opencode-ai/schema/session-inbox";
+ import type { PromptInput } from "@opencode-ai/schema/prompt-input";
+ import type { AgentAttachment } from "@opencode-ai/schema/prompt";
+@@ -531,6 +532,43 @@ export type SessionLogOutput = ({
+         readonly sessionID: Session.ID;
+         readonly idle: number;
+     };
++} | {
++    readonly id: Event.ID;
++    readonly created: number;
++    readonly metadata?: {
++        readonly [x: string]: unknown;
++    } | undefined;
++    readonly type: "session.usage.recorded";
++    readonly durable: {
++        readonly aggregateID: string;
++        readonly seq: Event.Seq;
++        readonly version: Event.Version;
++    };
++    readonly location?: Location.Ref | undefined;
++    readonly data: {
++        readonly sessionID: Session.ID;
++        readonly source: "title" | "compaction";
++        readonly credentialType: "key" | "oauth" | null;
++        readonly cost: number & Brand.Brand<"Money.USD">;
++        readonly tokens: {
++            readonly input: number;
++            readonly output: number;
++            readonly reasoning: number;
++            readonly cache: {
++                readonly read: number;
++                readonly write: number;
++            };
++        };
++        readonly reportedUsage?: {
++            readonly inputTokens?: number | undefined;
++            readonly outputTokens?: number | undefined;
++            readonly nonCachedInputTokens?: number | undefined;
++            readonly cacheReadInputTokens?: number | undefined;
++            readonly cacheWriteInputTokens?: number | undefined;
++            readonly reasoningTokens?: number | undefined;
++            readonly totalTokens?: number | undefined;
++        } | undefined;
++    };
+ } | {
+     readonly id: Event.ID;
+     readonly created: number;
+@@ -865,6 +903,7 @@ export type SessionLogOutput = ({
+         readonly finish: "stop" | "length" | "tool-calls" | "content-filter" | "error" | "unknown";
+         readonly rawFinish?: string | undefined;
+         readonly providerState?: SessionMessage.ProviderState | undefined;
++        readonly credentialType: "key" | "oauth" | null;
+         readonly cost: number & Brand.Brand<"Money.USD">;
+         readonly tokens: {
+             readonly input: number;
+@@ -875,6 +914,7 @@ export type SessionLogOutput = ({
+                 readonly write: number;
+             };
+         };
++        readonly reportedUsage?: TokenUsage.Reported | undefined;
+         readonly snapshot?: (string & Brand.Brand<"Snapshot.ID">) | undefined;
+         readonly files?: ReadonlyArray<RelativePath> | undefined;
+     };
+@@ -902,6 +942,7 @@ export type SessionLogOutput = ({
+         readonly finish?: "content-filter" | undefined;
+         readonly rawFinish?: string | undefined;
+         readonly providerState?: SessionMessage.ProviderState | undefined;
++        readonly credentialType: "key" | "oauth" | null;
+         readonly cost?: (number & Brand.Brand<"Money.USD">) | undefined;
+         readonly tokens?: {
+             readonly input: number;
+@@ -912,6 +953,7 @@ export type SessionLogOutput = ({
+                 readonly write: number;
+             };
+         } | undefined;
++        readonly reportedUsage?: TokenUsage.Reported | undefined;
+         readonly snapshot?: (string & Brand.Brand<"Snapshot.ID">) | undefined;
+         readonly files?: ReadonlyArray<RelativePath> | undefined;
+     };
+@@ -1297,33 +1339,6 @@ export type SessionLogOutput = ({
+         readonly messageID: SessionMessage.ID;
+         readonly content: ReadonlyArray<SessionMessage.AssistantContentEncoded>;
+     };
+-} | {
+-    readonly id: Event.ID;
+-    readonly created: number;
+-    readonly metadata?: {
+-        readonly [x: string]: unknown;
+-    } | undefined;
+-    readonly type: "session.usage.recorded";
+-    readonly durable: {
+-        readonly aggregateID: string;
+-        readonly seq: Event.Seq;
+-        readonly version: Event.Version;
+-    };
+-    readonly location?: Location.Ref | undefined;
+-    readonly data: {
+-        readonly sessionID: Session.ID;
+-        readonly source: "title" | "compaction";
+-        readonly cost: number & Brand.Brand<"Money.USD">;
+-        readonly tokens: {
+-            readonly input: number;
+-            readonly output: number;
+-            readonly reasoning: number;
+-            readonly cache: {
+-                readonly read: number;
+-                readonly write: number;
+-            };
+-        };
+-    };
+ }) | EventLog.Synced;
+ export type SessionLogOperation<E = never> = (input: SessionLogInput) => Stream.Stream<SessionLogOutput, E>;
+ export type SessionInterruptInput = {
+@@ -1464,6 +1479,7 @@ export type GenerateTextInput = {
+ };
+ export type GenerateTextOutput = {
+     readonly text: string;
++    readonly totalTokens?: number | undefined;
+ };
+ export type GenerateTextOperation<E = never> = (input: GenerateTextInput) => Effect.Effect<GenerateTextOutput, E>;
+ export interface GenerateApi<E = never> {
+diff --git a/dist/effect/generated/client.d.ts b/dist/effect/generated/client.d.ts
+index acc8fefe50e539441a6e78cb2067eebc115724c3..51514bf136c9584d75359102266f4b1b5fb8869a 100644
+--- a/dist/effect/generated/client.d.ts
++++ b/dist/effect/generated/client.d.ts
+@@ -873,6 +873,46 @@ export declare const make: (options?: {
+             readonly metadata?: {
+                 readonly [x: string]: unknown;
+             } | undefined;
++        } | {
++            readonly id: string & import("effect/Brand").Brand<"Event.ID">;
++            readonly data: {
++                readonly sessionID: string & import("effect/Brand").Brand<"SessionID">;
++                readonly cost: number & import("effect/Brand").Brand<"Money.USD">;
++                readonly source: "title" | "compaction";
++                readonly tokens: {
++                    readonly input: number;
++                    readonly output: number;
++                    readonly reasoning: number;
++                    readonly cache: {
++                        readonly read: number;
++                        readonly write: number;
++                    };
++                };
++                readonly credentialType: "key" | "oauth" | null;
++                readonly reportedUsage?: {
++                    readonly totalTokens?: number | undefined;
++                    readonly inputTokens?: number | undefined;
++                    readonly outputTokens?: number | undefined;
++                    readonly nonCachedInputTokens?: number | undefined;
++                    readonly cacheReadInputTokens?: number | undefined;
++                    readonly cacheWriteInputTokens?: number | undefined;
++                    readonly reasoningTokens?: number | undefined;
++                } | undefined;
++            };
++            readonly durable: {
++                readonly aggregateID: string;
++                readonly seq: number & import("effect/Brand").Brand<"Event.Seq">;
++                readonly version: number & import("effect/Brand").Brand<"Event.Version">;
++            };
++            readonly type: "session.usage.recorded";
++            readonly created: number;
++            readonly location?: {
++                readonly directory: string & import("effect/Brand").Brand<"AbsolutePath">;
++                readonly workspaceID?: (string & import("effect/Brand").Brand<"Workspace.ID">) | undefined;
++            } | undefined;
++            readonly metadata?: {
++                readonly [x: string]: unknown;
++            } | undefined;
+         } | {
+             readonly id: string & import("effect/Brand").Brand<"Event.ID">;
+             readonly data: {
+@@ -1393,6 +1433,7 @@ export declare const make: (options?: {
+                         readonly write: number;
+                     };
+                 };
++                readonly credentialType: "key" | "oauth" | null;
+                 readonly assistantMessageID: string & import("effect/Brand").Brand<"Session.Message.ID">;
+                 readonly files?: readonly (string & import("effect/Brand").Brand<"RelativePath">)[] | undefined;
+                 readonly providerState?: {
+@@ -1424,6 +1465,7 @@ export declare const make: (options?: {
+                     readonly message: string;
+                     readonly status?: number | undefined;
+                 };
++                readonly credentialType: "key" | "oauth" | null;
+                 readonly assistantMessageID: string & import("effect/Brand").Brand<"Session.Message.ID">;
+                 readonly cost?: (number & import("effect/Brand").Brand<"Money.USD">) | undefined;
+                 readonly files?: readonly (string & import("effect/Brand").Brand<"RelativePath">)[] | undefined;
+diff --git a/dist/promise/generated/client.d.ts b/dist/promise/generated/client.d.ts
+index 2c11b9c59df0667d9923f844c92683cbcc533f5f..d699a63d4e8267330ce459b16241b7e23ab5c8a9 100644
+--- a/dist/promise/generated/client.d.ts
++++ b/dist/promise/generated/client.d.ts
+@@ -88,6 +88,7 @@ export declare function make(options: ClientOptions): {
+     generate: {
+         text: (input: GenerateTextInput, requestOptions?: RequestOptions) => Promise<{
+             text: string;
++            totalTokens?: number;
+         }>;
+     };
+     provider: {
+diff --git a/dist/promise/generated/types.d.ts b/dist/promise/generated/types.d.ts
+index 0bbb5e4825b3e7e21d4dc269823291a6e9bdbcdf..1a762e5b8178e1e4b54aa42c8324366a3080f5e6 100644
+--- a/dist/promise/generated/types.d.ts
++++ b/dist/promise/generated/types.d.ts
+@@ -44,6 +44,15 @@ export type TokenUsageInfo = {
+         write: number;
+     };
+ };
++export type TokenUsageReported = {
++    inputTokens?: number;
++    outputTokens?: number;
++    nonCachedInputTokens?: number;
++    cacheReadInputTokens?: number;
++    cacheWriteInputTokens?: number;
++    reasoningTokens?: number;
++    totalTokens?: number;
++};
+ export type LocationRef = {
+     directory: string;
+     workspaceID?: string;
+@@ -309,6 +318,7 @@ export type MoneyUSDPerMillionTokens = number;
+ export type GenerateTextResponse = {
+     data: {
+         text: string;
++        totalTokens?: number;
+     };
+ };
+ export type ProviderInfo = {
+@@ -943,6 +953,28 @@ export type SessionViewed = {
+         idle: number;
+     };
+ };
++export type SessionUsageRecorded = {
++    id: string;
++    created: number;
++    metadata?: {
++        [x: string]: any;
++    };
++    type: "session.usage.recorded";
++    durable: {
++        aggregateID: string;
++        seq: number;
++        version: 1;
++    };
++    location?: LocationRef;
++    data: {
++        sessionID: string;
++        source: "title" | "compaction";
++        credentialType: "key" | "oauth" | null;
++        cost: MoneyUSD;
++        tokens: TokenUsageInfo;
++        reportedUsage?: TokenUsageReported;
++    };
++};
+ export type SessionDeleted = {
+     id: string;
+     created: number;
+@@ -1362,26 +1394,6 @@ export type SessionRevertCommitted = {
+         to: string;
+     };
+ };
+-export type SessionUsageRecorded = {
+-    id: string;
+-    created: number;
+-    metadata?: {
+-        [x: string]: any;
+-    };
+-    type: "session.usage.recorded";
+-    durable: {
+-        aggregateID: string;
+-        seq: number;
+-        version: 1;
+-    };
+-    location?: LocationRef;
+-    data: {
+-        sessionID: string;
+-        source: "title" | "compaction";
+-        cost: MoneyUSD;
+-        tokens: TokenUsageInfo;
+-    };
+-};
+ export type ModelsDevRefreshed = {
+     id: string;
+     created: number;
+@@ -1924,8 +1936,10 @@ export type SessionStepEnded = {
+         finish: "stop" | "length" | "tool-calls" | "content-filter" | "error" | "unknown";
+         rawFinish?: string;
+         providerState?: SessionMessageProviderState1;
++        credentialType: "key" | "oauth" | null;
+         cost: MoneyUSD;
+         tokens: TokenUsageInfo;
++        reportedUsage?: TokenUsageReported;
+         snapshot?: string;
+         files?: Array<string>;
+     };
+@@ -1950,8 +1964,10 @@ export type SessionStepFailed = {
+         finish?: "content-filter";
+         rawFinish?: string;
+         providerState?: SessionMessageProviderState1;
++        credentialType: "key" | "oauth" | null;
+         cost?: MoneyUSD;
+         tokens?: TokenUsageInfo;
++        reportedUsage?: TokenUsageReported;
+         snapshot?: string;
+         files?: Array<string>;
+     };
+@@ -3022,6 +3038,7 @@ export type SessionMessageAssistant = {
+     providerState?: SessionMessageProviderState;
+     cost?: MoneyUSD;
+     tokens?: TokenUsageInfo;
++    reportedUsage?: TokenUsageReported;
+     error?: SessionStructuredError;
+     retry?: SessionMessageAssistantRetry;
+ };
+@@ -3095,7 +3112,7 @@ export type SessionMessagesResponse = {
+         next?: string | null;
+     };
+ };
+-export type SessionEventDurable = SessionCreated | SessionAgentSelected | SessionModelSelected | SessionMoved | SessionRenamed | SessionViewed | SessionDeleted | SessionForked | SessionInboxDelivered | SessionInboxEnqueued | SessionInboxCancelled | SessionInboxDeliveryChanged | SessionExecutionStarted | SessionExecutionSucceeded | SessionExecutionFailed | SessionExecutionInterrupted | SessionInstructionsUpdated | SessionSynthetic | SessionSkillActivated | SessionShellStarted | SessionShellEnded | SessionStepStarted | SessionStepStreamed | SessionStepEnded | SessionStepFailed | SessionTextStarted | SessionTextEnded | SessionReasoningStarted | SessionReasoningEnded | SessionToolInputStarted | SessionToolInputEnded | SessionToolCalled | SessionToolSuccess | SessionToolFailed | SessionRetryScheduled | SessionCompactionStarted | SessionCompactionEnded | SessionCompactionFailed | SessionRevertStaged | SessionRevertCleared | SessionRevertCommitted | SessionMessageContentUpdated | SessionUsageRecorded;
++export type SessionEventDurable = SessionCreated | SessionAgentSelected | SessionModelSelected | SessionMoved | SessionRenamed | SessionViewed | SessionUsageRecorded | SessionDeleted | SessionForked | SessionInboxDelivered | SessionInboxEnqueued | SessionInboxCancelled | SessionInboxDeliveryChanged | SessionExecutionStarted | SessionExecutionSucceeded | SessionExecutionFailed | SessionExecutionInterrupted | SessionInstructionsUpdated | SessionSynthetic | SessionSkillActivated | SessionShellStarted | SessionShellEnded | SessionStepStarted | SessionStepStreamed | SessionStepEnded | SessionStepFailed | SessionTextStarted | SessionTextEnded | SessionReasoningStarted | SessionReasoningEnded | SessionToolInputStarted | SessionToolInputEnded | SessionToolCalled | SessionToolSuccess | SessionToolFailed | SessionRetryScheduled | SessionCompactionStarted | SessionCompactionEnded | SessionCompactionFailed | SessionRevertStaged | SessionRevertCleared | SessionRevertCommitted | SessionMessageContentUpdated;
+ export type IntegrationInfo = {
+     id: string;
+     name: string;
+@@ -3105,7 +3122,7 @@ export type IntegrationInfo = {
+     methods: Array<IntegrationMethod>;
+     connections: Array<ConnectionInfo>;
+ };
+-export type V2Event = ModelsDevRefreshed | CredentialUpdated | CredentialSwitched | IntegrationUpdated | CatalogUpdated | AgentUpdated | SessionCreated | SessionAgentSelected | SessionModelSelected | SessionMoved | SessionRenamed | SessionViewed | SessionUsageUpdated | SessionDeleted | SessionForked | SessionInboxDelivered | SessionInboxEnqueued | SessionInboxCancelled | SessionInboxDeliveryChanged | SessionExecutionStarted | SessionExecutionSucceeded | SessionExecutionFailed | SessionExecutionInterrupted | SessionInstructionsUpdated | SessionSynthetic | SessionSkillActivated | SessionShellStarted | SessionShellEnded | SessionStepStarted | SessionStepStreamed | SessionStepEnded | SessionStepFailed | SessionTextStarted | SessionTextDelta | SessionTextEnded | SessionReasoningStarted | SessionReasoningDelta | SessionReasoningEnded | SessionToolInputStarted | SessionToolInputDelta | SessionToolInputEnded | SessionToolCalled | SessionToolProgress | SessionToolSuccess | SessionToolFailed | SessionRetryScheduled | SessionCompactionStarted | SessionCompactionDelta | SessionCompactionEnded | SessionCompactionFailed | SessionRevertStaged | SessionRevertCleared | SessionRevertCommitted | SessionMessageContentUpdated | FilesystemChanged | ReferenceUpdated | PermissionAsked | PermissionReplied | PluginAdded | PluginUpdated | ProjectUpdated | WorktreeUpdated | WorktreeResolved | CommandUpdated | ConfigUpdated | SkillUpdated | PtyCreated | PtyUpdated | PtyExited | PtyDeleted | PersistentPtyAdded | PersistentPtyRemoved | ShellCreated | ShellExited | ShellDeleted | FormCreated | FormReplied | FormCancelled | WebsearchUpdated | SessionStatusUpdated | SessionIdle | TuiPromptAppend | TuiCommandExecute | TuiToastShow | TuiSessionSelect | InstallationUpdated | InstallationUpdateAvailable | VcsBranchUpdated | McpStatusChanged | McpResourcesChanged | V2EventServerConnected;
++export type V2Event = ModelsDevRefreshed | CredentialUpdated | CredentialSwitched | IntegrationUpdated | CatalogUpdated | AgentUpdated | SessionCreated | SessionAgentSelected | SessionModelSelected | SessionMoved | SessionRenamed | SessionViewed | SessionUsageRecorded | SessionUsageUpdated | SessionDeleted | SessionForked | SessionInboxDelivered | SessionInboxEnqueued | SessionInboxCancelled | SessionInboxDeliveryChanged | SessionExecutionStarted | SessionExecutionSucceeded | SessionExecutionFailed | SessionExecutionInterrupted | SessionInstructionsUpdated | SessionSynthetic | SessionSkillActivated | SessionShellStarted | SessionShellEnded | SessionStepStarted | SessionStepStreamed | SessionStepEnded | SessionStepFailed | SessionTextStarted | SessionTextDelta | SessionTextEnded | SessionReasoningStarted | SessionReasoningDelta | SessionReasoningEnded | SessionToolInputStarted | SessionToolInputDelta | SessionToolInputEnded | SessionToolCalled | SessionToolProgress | SessionToolSuccess | SessionToolFailed | SessionRetryScheduled | SessionCompactionStarted | SessionCompactionDelta | SessionCompactionEnded | SessionCompactionFailed | SessionRevertStaged | SessionRevertCleared | SessionRevertCommitted | SessionMessageContentUpdated | FilesystemChanged | ReferenceUpdated | PermissionAsked | PermissionReplied | PluginAdded | PluginUpdated | ProjectUpdated | WorktreeUpdated | WorktreeResolved | CommandUpdated | ConfigUpdated | SkillUpdated | PtyCreated | PtyUpdated | PtyExited | PtyDeleted | PersistentPtyAdded | PersistentPtyRemoved | ShellCreated | ShellExited | ShellDeleted | FormCreated | FormReplied | FormCancelled | WebsearchUpdated | SessionStatusUpdated | SessionIdle | TuiPromptAppend | TuiCommandExecute | TuiToastShow | TuiSessionSelect | InstallationUpdated | InstallationUpdateAvailable | VcsBranchUpdated | McpStatusChanged | McpResourcesChanged | V2EventServerConnected;
+ export type SessionLogItem = SessionEventDurable | EventLogSynced;
+ export type UnauthorizedError = {
+     readonly _tag: "UnauthorizedError";
