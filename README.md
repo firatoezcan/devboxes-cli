@@ -29,9 +29,10 @@ sign-in methods, the flags for scripts and agents, email verification, and
 two-factor completion.
 
 Released binaries embed `https://api.devboxes.ai` as the default API origin
-through `scripts/build-cli-binaries.ts`. A source run has no default and
-requires `--api`. `--api` and `DEVBOXES_API_URL` override the default, and a
-saved configuration keeps the origin it was created for.
+through `scripts/build-cli-binaries.ts`. A source run has no default: it uses a
+saved account's origin, and otherwise requires `--api` or `DEVBOXES_API_URL`.
+`--api` takes precedence over `DEVBOXES_API_URL`, both override the default, and
+a saved configuration keeps the origin it was created for.
 
 Credentials are saved atomically with file mode `0600`. Use `--config <path>` to
 keep separate API origins or accounts in separate files. `devboxes logout`
@@ -88,9 +89,11 @@ devboxes mcp
 The stdio server exposes `devboxes_describe` and `devboxes_invoke`. It calls the
 same API commands as the terminal. It does not proxy a separate API MCP catalog.
 
-For an agent, issue a bounded grant with `delegations.create`, then supply
-`DEVBOXES_API_URL` and `DEVBOXES_TOKEN` to the child process. Both variables are
-required; an incomplete scoped connection never loads a personal credential.
+For an agent, issue a bounded grant with `delegations.create`, then supply its
+token to the child process as `DEVBOXES_TOKEN`. The CLI sends the token to the
+`--api` origin, else `DEVBOXES_API_URL`, else the default origin. When
+`DEVBOXES_TOKEN` is set, the CLI never loads a personal credential, and an empty
+or malformed token fails with `INVALID_DEVBOXES_TOKEN`.
 Scoped connections cannot manage personal account authentication, and
 `devboxes logout` refuses them. Revoke the grant with `delegations.revoke` when
 its work ends.

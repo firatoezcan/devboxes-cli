@@ -28,8 +28,8 @@ export const createDevboxesCommand = () => {
     .option(
       "--api <url>",
       defaultApiOrigin
-        ? `API origin; defaults to the saved account's origin, then ${defaultApiOrigin}`
-        : "API origin; required for the first signup or login",
+        ? `API origin, also read from DEVBOXES_API_URL; defaults to the saved account's origin, then ${defaultApiOrigin}`
+        : "API origin, also read from DEVBOXES_API_URL; required without a saved account",
     )
     .option("--json", "Write machine-readable results and errors");
 

@@ -1,6 +1,6 @@
 {
   "name": "devboxes",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "private": true,
   "description": "Devboxes CLI: discover and invoke application commands, authenticate, run execution capacity, and serve stdio MCP.",
   "homepage": "https://github.com/firatoezcan/devboxes-cli#readme",
@@ -15,7 +15,6 @@
     "@better-fetch/fetch": "1.1.21",
     "@clack/prompts": "^1.7.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@opencode-ai/models": "0.0.43",
     "@opentelemetry/api": "1.9.1",
     "@opentelemetry/core": "2.7.0",
     "better-auth": "1.6.9",

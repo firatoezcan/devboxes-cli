@@ -202,10 +202,7 @@ export const addAuthenticationCommands = (program: Command) => {
       let choice = signInMethods.find((entry) =>
         entry.method === "email" ? options.email !== undefined : options[entry.method],
       );
-      const context = await loadAccountContext({
-        config: options.config,
-        api: options.api ?? process.env.DEVBOXES_API_URL,
-      });
+      const context = await loadAccountContext(options);
       if (!choice) {
         if (!interactive) {
           throw new CommandError(
@@ -489,10 +486,7 @@ export const addAuthenticationCommands = (program: Command) => {
       input?: string;
       method?: string;
     }>();
-    const context = await loadAccountContext({
-      ...options,
-      api: options.api ?? process.env.DEVBOXES_API_URL,
-    });
+    const context = await loadAccountContext(options);
     const response = await requestAuthentication(context, "/open-api/generate-schema");
     const document = z
       .object({
