@@ -1,5 +1,11 @@
 # devboxes
 
+## 0.4.2
+
+### Patch Changes
+
+- fa2cb94: Connect with only `DEVBOXES_TOKEN` set: the CLI sends the delegation token to the `--api` origin, else `DEVBOXES_API_URL`, else `https://api.devboxes.ai`. An empty or malformed `DEVBOXES_TOKEN` fails with `INVALID_DEVBOXES_TOKEN`.
+
 ## 0.4.1
 
 ### Patch Changes
