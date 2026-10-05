@@ -1,0 +1,838 @@
+diff --git a/dist/groups/event.d.ts b/dist/groups/event.d.ts
+index 1f7a4e2404d83bb91073813387bb02f64048fde0..4685d1f150cccf377b0c358efb35048ca5f1c956 100644
+--- a/dist/groups/event.d.ts
++++ b/dist/groups/event.d.ts
+@@ -1,4 +1,5 @@
+ import { Event } from "@opencode-ai/schema/event";
++import { TokenUsage } from "@opencode-ai/schema/token-usage";
+ import type { Definition } from "@opencode-ai/schema/event";
+ import { Schema } from "effect";
+ import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/unstable/httpapi";
+@@ -847,6 +848,118 @@ export declare const EventGroup: HttpApiGroup.HttpApiGroup<"server.event", HttpA
+             descending: (id?: string) => string & import("effect/Brand").Brand<"SessionID">;
+         };
+     }>;
++}, Schema.Struct<{
++    readonly id: Schema.brand<Schema.String, "Event.ID"> & {
++        create: () => string & import("effect/Brand").Brand<"Event.ID">;
++    };
++    readonly created: Schema.Finite;
++    readonly metadata: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Record<Schema.String, Schema.Unknown>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Unknown>>, never, never>;
++    readonly type: Schema.Literal<"session.usage.recorded">;
++    readonly durable: Schema.Struct<{
++        readonly aggregateID: Schema.String;
++        readonly seq: Schema.brand<Schema.Int, "Event.Seq">;
++        readonly version: Schema.decodeTo<Schema.toType<Schema.brand<Schema.Int, "Event.Version">>, Schema.Literal<number>, never, never>;
++    }>;
++    readonly location: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Struct<{
++        readonly directory: Schema.brand<Schema.String, "AbsolutePath">;
++        readonly workspaceID: Schema.decodeTo<Schema.optional<Schema.toType<Schema.brand<Schema.String, "Workspace.ID"> & {
++            ascending: (id?: string) => string & import("effect/Brand").Brand<"Workspace.ID">;
++            create: () => string & import("effect/Brand").Brand<"Workspace.ID">;
++        }>>, Schema.optionalKey<Schema.brand<Schema.String, "Workspace.ID"> & {
++            ascending: (id?: string) => string & import("effect/Brand").Brand<"Workspace.ID">;
++            create: () => string & import("effect/Brand").Brand<"Workspace.ID">;
++        }>, never, never>;
++    }>>>, Schema.optionalKey<Schema.Struct<{
++        readonly directory: Schema.brand<Schema.String, "AbsolutePath">;
++        readonly workspaceID: Schema.decodeTo<Schema.optional<Schema.toType<Schema.brand<Schema.String, "Workspace.ID"> & {
++            ascending: (id?: string) => string & import("effect/Brand").Brand<"Workspace.ID">;
++            create: () => string & import("effect/Brand").Brand<"Workspace.ID">;
++        }>>, Schema.optionalKey<Schema.brand<Schema.String, "Workspace.ID"> & {
++            ascending: (id?: string) => string & import("effect/Brand").Brand<"Workspace.ID">;
++            create: () => string & import("effect/Brand").Brand<"Workspace.ID">;
++        }>, never, never>;
++    }>>, never, never>;
++    readonly data: Schema.Struct<{
++        readonly source: Schema.Literals<readonly ["title", "compaction"]>;
++        readonly credentialType: Schema.NullOr<Schema.Literals<readonly ["key", "oauth"]>>;
++        readonly cost: Schema.brand<Schema.Finite, "Money.USD"> & {
++            zero: number & import("effect/Brand").Brand<"Money.USD">;
++        };
++        readonly tokens: Schema.Struct<{
++            readonly input: Schema.Finite;
++            readonly output: Schema.Finite;
++            readonly reasoning: Schema.Finite;
++            readonly cache: Schema.Struct<{
++                readonly read: Schema.Finite;
++                readonly write: Schema.Finite;
++            }>;
++        }>;
++        readonly reportedUsage: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Struct<{
++            readonly inputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly outputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly nonCachedInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly cacheReadInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly cacheWriteInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly reasoningTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly totalTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++        }>>>, Schema.optionalKey<Schema.Struct<{
++            readonly inputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly outputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly nonCachedInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly cacheReadInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly cacheWriteInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly reasoningTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly totalTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++        }>>, never, never>;
++        readonly sessionID: Schema.brand<Schema.String, "SessionID"> & {
++            create: () => string & import("effect/Brand").Brand<"SessionID">;
++            descending: (id?: string) => string & import("effect/Brand").Brand<"SessionID">;
++        };
++    }>;
++}> & {
++    type: "session.usage.recorded";
++    durability: "durable";
++    durable: {
++        readonly version: number;
++        readonly aggregate: string;
++    };
++    data: Schema.Struct<{
++        readonly source: Schema.Literals<readonly ["title", "compaction"]>;
++        readonly credentialType: Schema.NullOr<Schema.Literals<readonly ["key", "oauth"]>>;
++        readonly cost: Schema.brand<Schema.Finite, "Money.USD"> & {
++            zero: number & import("effect/Brand").Brand<"Money.USD">;
++        };
++        readonly tokens: Schema.Struct<{
++            readonly input: Schema.Finite;
++            readonly output: Schema.Finite;
++            readonly reasoning: Schema.Finite;
++            readonly cache: Schema.Struct<{
++                readonly read: Schema.Finite;
++                readonly write: Schema.Finite;
++            }>;
++        }>;
++        readonly reportedUsage: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Struct<{
++            readonly inputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly outputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly nonCachedInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly cacheReadInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly cacheWriteInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly reasoningTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly totalTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++        }>>>, Schema.optionalKey<Schema.Struct<{
++            readonly inputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly outputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly nonCachedInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly cacheReadInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly cacheWriteInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly reasoningTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly totalTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++        }>>, never, never>;
++        readonly sessionID: Schema.brand<Schema.String, "SessionID"> & {
++            create: () => string & import("effect/Brand").Brand<"SessionID">;
++            descending: (id?: string) => string & import("effect/Brand").Brand<"SessionID">;
++        };
++    }>;
+ }, Schema.Struct<{
+     readonly id: Schema.brand<Schema.String, "Event.ID"> & {
+         create: () => string & import("effect/Brand").Brand<"Event.ID">;
+@@ -2400,6 +2513,7 @@ export declare const EventGroup: HttpApiGroup.HttpApiGroup<"server.event", HttpA
+         readonly finish: Schema.Literals<readonly ["stop", "length", "tool-calls", "content-filter", "error", "unknown"]>;
+         readonly rawFinish: Schema.decodeTo<Schema.optional<Schema.toType<Schema.String>>, Schema.optionalKey<Schema.String>, never, never>;
+         readonly providerState: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Record<Schema.String, Schema.Unknown>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Unknown>>, never, never>;
++        readonly credentialType: Schema.NullOr<Schema.Literals<readonly ["key", "oauth"]>>;
+         readonly cost: Schema.brand<Schema.Finite, "Money.USD"> & {
+             zero: number & import("effect/Brand").Brand<"Money.USD">;
+         };
+@@ -2412,6 +2526,7 @@ export declare const EventGroup: HttpApiGroup.HttpApiGroup<"server.event", HttpA
+                 readonly write: Schema.Finite;
+             }>;
+         }>;
++        readonly reportedUsage: Schema.decodeTo<Schema.optional<Schema.toType<typeof TokenUsage.Reported>>, Schema.optionalKey<typeof TokenUsage.Reported>, never, never>;
+         readonly snapshot: Schema.decodeTo<Schema.optional<Schema.toType<Schema.brand<Schema.String, "Snapshot.ID">>>, Schema.optionalKey<Schema.brand<Schema.String, "Snapshot.ID">>, never, never>;
+         readonly files: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Array<Schema.brand<Schema.String, "RelativePath">>>>, Schema.optionalKey<Schema.$Array<Schema.brand<Schema.String, "RelativePath">>>, never, never>;
+         readonly sessionID: Schema.brand<Schema.String, "SessionID"> & {
+@@ -2434,6 +2549,7 @@ export declare const EventGroup: HttpApiGroup.HttpApiGroup<"server.event", HttpA
+         readonly finish: Schema.Literals<readonly ["stop", "length", "tool-calls", "content-filter", "error", "unknown"]>;
+         readonly rawFinish: Schema.decodeTo<Schema.optional<Schema.toType<Schema.String>>, Schema.optionalKey<Schema.String>, never, never>;
+         readonly providerState: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Record<Schema.String, Schema.Unknown>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Unknown>>, never, never>;
++        readonly credentialType: Schema.NullOr<Schema.Literals<readonly ["key", "oauth"]>>;
+         readonly cost: Schema.brand<Schema.Finite, "Money.USD"> & {
+             zero: number & import("effect/Brand").Brand<"Money.USD">;
+         };
+@@ -2446,6 +2562,7 @@ export declare const EventGroup: HttpApiGroup.HttpApiGroup<"server.event", HttpA
+                 readonly write: Schema.Finite;
+             }>;
+         }>;
++        readonly reportedUsage: Schema.decodeTo<Schema.optional<Schema.toType<typeof TokenUsage.Reported>>, Schema.optionalKey<typeof TokenUsage.Reported>, never, never>;
+         readonly snapshot: Schema.decodeTo<Schema.optional<Schema.toType<Schema.brand<Schema.String, "Snapshot.ID">>>, Schema.optionalKey<Schema.brand<Schema.String, "Snapshot.ID">>, never, never>;
+         readonly files: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Array<Schema.brand<Schema.String, "RelativePath">>>>, Schema.optionalKey<Schema.$Array<Schema.brand<Schema.String, "RelativePath">>>, never, never>;
+         readonly sessionID: Schema.brand<Schema.String, "SessionID"> & {
+@@ -2497,6 +2614,7 @@ export declare const EventGroup: HttpApiGroup.HttpApiGroup<"server.event", HttpA
+         readonly finish: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Literals<readonly ["content-filter"]>>>, Schema.optionalKey<Schema.Literals<readonly ["content-filter"]>>, never, never>;
+         readonly rawFinish: Schema.decodeTo<Schema.optional<Schema.toType<Schema.String>>, Schema.optionalKey<Schema.String>, never, never>;
+         readonly providerState: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Record<Schema.String, Schema.Unknown>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Unknown>>, never, never>;
++        readonly credentialType: Schema.NullOr<Schema.Literals<readonly ["key", "oauth"]>>;
+         readonly cost: Schema.decodeTo<Schema.optional<Schema.toType<Schema.brand<Schema.Finite, "Money.USD"> & {
+             zero: number & import("effect/Brand").Brand<"Money.USD">;
+         }>>, Schema.optionalKey<Schema.brand<Schema.Finite, "Money.USD"> & {
+@@ -2519,6 +2637,7 @@ export declare const EventGroup: HttpApiGroup.HttpApiGroup<"server.event", HttpA
+                 readonly write: Schema.Finite;
+             }>;
+         }>>, never, never>;
++        readonly reportedUsage: Schema.decodeTo<Schema.optional<Schema.toType<typeof TokenUsage.Reported>>, Schema.optionalKey<typeof TokenUsage.Reported>, never, never>;
+         readonly snapshot: Schema.decodeTo<Schema.optional<Schema.toType<Schema.brand<Schema.String, "Snapshot.ID">>>, Schema.optionalKey<Schema.brand<Schema.String, "Snapshot.ID">>, never, never>;
+         readonly files: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Array<Schema.brand<Schema.String, "RelativePath">>>>, Schema.optionalKey<Schema.$Array<Schema.brand<Schema.String, "RelativePath">>>, never, never>;
+         readonly sessionID: Schema.brand<Schema.String, "SessionID"> & {
+@@ -2546,6 +2665,7 @@ export declare const EventGroup: HttpApiGroup.HttpApiGroup<"server.event", HttpA
+         readonly finish: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Literals<readonly ["content-filter"]>>>, Schema.optionalKey<Schema.Literals<readonly ["content-filter"]>>, never, never>;
+         readonly rawFinish: Schema.decodeTo<Schema.optional<Schema.toType<Schema.String>>, Schema.optionalKey<Schema.String>, never, never>;
+         readonly providerState: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Record<Schema.String, Schema.Unknown>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Unknown>>, never, never>;
++        readonly credentialType: Schema.NullOr<Schema.Literals<readonly ["key", "oauth"]>>;
+         readonly cost: Schema.decodeTo<Schema.optional<Schema.toType<Schema.brand<Schema.Finite, "Money.USD"> & {
+             zero: number & import("effect/Brand").Brand<"Money.USD">;
+         }>>, Schema.optionalKey<Schema.brand<Schema.Finite, "Money.USD"> & {
+@@ -2568,6 +2688,7 @@ export declare const EventGroup: HttpApiGroup.HttpApiGroup<"server.event", HttpA
+                 readonly write: Schema.Finite;
+             }>;
+         }>>, never, never>;
++        readonly reportedUsage: Schema.decodeTo<Schema.optional<Schema.toType<typeof TokenUsage.Reported>>, Schema.optionalKey<typeof TokenUsage.Reported>, never, never>;
+         readonly snapshot: Schema.decodeTo<Schema.optional<Schema.toType<Schema.brand<Schema.String, "Snapshot.ID">>>, Schema.optionalKey<Schema.brand<Schema.String, "Snapshot.ID">>, never, never>;
+         readonly files: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Array<Schema.brand<Schema.String, "RelativePath">>>>, Schema.optionalKey<Schema.$Array<Schema.brand<Schema.String, "RelativePath">>>, never, never>;
+         readonly sessionID: Schema.brand<Schema.String, "SessionID"> & {
+@@ -6789,6 +6910,46 @@ export declare const EventGroup: HttpApiGroup.HttpApiGroup<"server.event", HttpA
+     readonly metadata?: {
+         readonly [x: string]: unknown;
+     } | undefined;
++} | {
++    readonly id: string & import("effect/Brand").Brand<"Event.ID">;
++    readonly data: {
++        readonly sessionID: string & import("effect/Brand").Brand<"SessionID">;
++        readonly cost: number & import("effect/Brand").Brand<"Money.USD">;
++        readonly source: "title" | "compaction";
++        readonly tokens: {
++            readonly input: number;
++            readonly output: number;
++            readonly reasoning: number;
++            readonly cache: {
++                readonly read: number;
++                readonly write: number;
++            };
++        };
++        readonly credentialType: "key" | "oauth" | null;
++        readonly reportedUsage?: {
++            readonly totalTokens?: number | undefined;
++            readonly inputTokens?: number | undefined;
++            readonly outputTokens?: number | undefined;
++            readonly nonCachedInputTokens?: number | undefined;
++            readonly cacheReadInputTokens?: number | undefined;
++            readonly cacheWriteInputTokens?: number | undefined;
++            readonly reasoningTokens?: number | undefined;
++        } | undefined;
++    };
++    readonly durable: {
++        readonly aggregateID: string;
++        readonly seq: number & import("effect/Brand").Brand<"Event.Seq">;
++        readonly version: number & import("effect/Brand").Brand<"Event.Version">;
++    };
++    readonly type: "session.usage.recorded";
++    readonly created: number;
++    readonly location?: {
++        readonly directory: string & import("effect/Brand").Brand<"AbsolutePath">;
++        readonly workspaceID?: (string & import("effect/Brand").Brand<"Workspace.ID">) | undefined;
++    } | undefined;
++    readonly metadata?: {
++        readonly [x: string]: unknown;
++    } | undefined;
+ } | {
+     readonly id: string & import("effect/Brand").Brand<"Event.ID">;
+     readonly data: {
+@@ -7309,6 +7470,8 @@ export declare const EventGroup: HttpApiGroup.HttpApiGroup<"server.event", HttpA
+                 readonly write: number;
+             };
+         };
++        readonly reportedUsage?: TokenUsage.Reported | undefined;
++        readonly credentialType: "key" | "oauth" | null;
+         readonly assistantMessageID: string & import("effect/Brand").Brand<"Session.Message.ID">;
+         readonly files?: readonly (string & import("effect/Brand").Brand<"RelativePath">)[] | undefined;
+         readonly providerState?: {
+@@ -7340,6 +7503,7 @@ export declare const EventGroup: HttpApiGroup.HttpApiGroup<"server.event", HttpA
+             readonly message: string;
+             readonly status?: number | undefined;
+         };
++        readonly credentialType: "key" | "oauth" | null;
+         readonly assistantMessageID: string & import("effect/Brand").Brand<"Session.Message.ID">;
+         readonly cost?: (number & import("effect/Brand").Brand<"Money.USD">) | undefined;
+         readonly files?: readonly (string & import("effect/Brand").Brand<"RelativePath">)[] | undefined;
+@@ -7358,6 +7522,7 @@ export declare const EventGroup: HttpApiGroup.HttpApiGroup<"server.event", HttpA
+                 readonly write: number;
+             };
+         } | undefined;
++        readonly reportedUsage?: TokenUsage.Reported | undefined;
+     };
+     readonly durable: {
+         readonly aggregateID: string;
+@@ -9163,6 +9328,118 @@ export declare const OpenCodeEvent: Schema.Union<readonly [Schema.Struct<{
+             descending: (id?: string) => string & import("effect/Brand").Brand<"SessionID">;
+         };
+     }>;
++}, Schema.Struct<{
++    readonly id: Schema.brand<Schema.String, "Event.ID"> & {
++        create: () => string & import("effect/Brand").Brand<"Event.ID">;
++    };
++    readonly created: Schema.Finite;
++    readonly metadata: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Record<Schema.String, Schema.Unknown>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Unknown>>, never, never>;
++    readonly type: Schema.Literal<"session.usage.recorded">;
++    readonly durable: Schema.Struct<{
++        readonly aggregateID: Schema.String;
++        readonly seq: Schema.brand<Schema.Int, "Event.Seq">;
++        readonly version: Schema.decodeTo<Schema.toType<Schema.brand<Schema.Int, "Event.Version">>, Schema.Literal<number>, never, never>;
++    }>;
++    readonly location: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Struct<{
++        readonly directory: Schema.brand<Schema.String, "AbsolutePath">;
++        readonly workspaceID: Schema.decodeTo<Schema.optional<Schema.toType<Schema.brand<Schema.String, "Workspace.ID"> & {
++            ascending: (id?: string) => string & import("effect/Brand").Brand<"Workspace.ID">;
++            create: () => string & import("effect/Brand").Brand<"Workspace.ID">;
++        }>>, Schema.optionalKey<Schema.brand<Schema.String, "Workspace.ID"> & {
++            ascending: (id?: string) => string & import("effect/Brand").Brand<"Workspace.ID">;
++            create: () => string & import("effect/Brand").Brand<"Workspace.ID">;
++        }>, never, never>;
++    }>>>, Schema.optionalKey<Schema.Struct<{
++        readonly directory: Schema.brand<Schema.String, "AbsolutePath">;
++        readonly workspaceID: Schema.decodeTo<Schema.optional<Schema.toType<Schema.brand<Schema.String, "Workspace.ID"> & {
++            ascending: (id?: string) => string & import("effect/Brand").Brand<"Workspace.ID">;
++            create: () => string & import("effect/Brand").Brand<"Workspace.ID">;
++        }>>, Schema.optionalKey<Schema.brand<Schema.String, "Workspace.ID"> & {
++            ascending: (id?: string) => string & import("effect/Brand").Brand<"Workspace.ID">;
++            create: () => string & import("effect/Brand").Brand<"Workspace.ID">;
++        }>, never, never>;
++    }>>, never, never>;
++    readonly data: Schema.Struct<{
++        readonly source: Schema.Literals<readonly ["title", "compaction"]>;
++        readonly credentialType: Schema.NullOr<Schema.Literals<readonly ["key", "oauth"]>>;
++        readonly cost: Schema.brand<Schema.Finite, "Money.USD"> & {
++            zero: number & import("effect/Brand").Brand<"Money.USD">;
++        };
++        readonly tokens: Schema.Struct<{
++            readonly input: Schema.Finite;
++            readonly output: Schema.Finite;
++            readonly reasoning: Schema.Finite;
++            readonly cache: Schema.Struct<{
++                readonly read: Schema.Finite;
++                readonly write: Schema.Finite;
++            }>;
++        }>;
++        readonly reportedUsage: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Struct<{
++            readonly inputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly outputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly nonCachedInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly cacheReadInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly cacheWriteInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly reasoningTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly totalTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++        }>>>, Schema.optionalKey<Schema.Struct<{
++            readonly inputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly outputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly nonCachedInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly cacheReadInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly cacheWriteInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly reasoningTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly totalTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++        }>>, never, never>;
++        readonly sessionID: Schema.brand<Schema.String, "SessionID"> & {
++            create: () => string & import("effect/Brand").Brand<"SessionID">;
++            descending: (id?: string) => string & import("effect/Brand").Brand<"SessionID">;
++        };
++    }>;
++}> & {
++    type: "session.usage.recorded";
++    durability: "durable";
++    durable: {
++        readonly version: number;
++        readonly aggregate: string;
++    };
++    data: Schema.Struct<{
++        readonly source: Schema.Literals<readonly ["title", "compaction"]>;
++        readonly credentialType: Schema.NullOr<Schema.Literals<readonly ["key", "oauth"]>>;
++        readonly cost: Schema.brand<Schema.Finite, "Money.USD"> & {
++            zero: number & import("effect/Brand").Brand<"Money.USD">;
++        };
++        readonly tokens: Schema.Struct<{
++            readonly input: Schema.Finite;
++            readonly output: Schema.Finite;
++            readonly reasoning: Schema.Finite;
++            readonly cache: Schema.Struct<{
++                readonly read: Schema.Finite;
++                readonly write: Schema.Finite;
++            }>;
++        }>;
++        readonly reportedUsage: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Struct<{
++            readonly inputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly outputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly nonCachedInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly cacheReadInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly cacheWriteInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly reasoningTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly totalTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++        }>>>, Schema.optionalKey<Schema.Struct<{
++            readonly inputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly outputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly nonCachedInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly cacheReadInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly cacheWriteInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly reasoningTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly totalTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++        }>>, never, never>;
++        readonly sessionID: Schema.brand<Schema.String, "SessionID"> & {
++            create: () => string & import("effect/Brand").Brand<"SessionID">;
++            descending: (id?: string) => string & import("effect/Brand").Brand<"SessionID">;
++        };
++    }>;
+ }, Schema.Struct<{
+     readonly id: Schema.brand<Schema.String, "Event.ID"> & {
+         create: () => string & import("effect/Brand").Brand<"Event.ID">;
+@@ -10716,6 +10993,7 @@ export declare const OpenCodeEvent: Schema.Union<readonly [Schema.Struct<{
+         readonly finish: Schema.Literals<readonly ["stop", "length", "tool-calls", "content-filter", "error", "unknown"]>;
+         readonly rawFinish: Schema.decodeTo<Schema.optional<Schema.toType<Schema.String>>, Schema.optionalKey<Schema.String>, never, never>;
+         readonly providerState: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Record<Schema.String, Schema.Unknown>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Unknown>>, never, never>;
++        readonly credentialType: Schema.NullOr<Schema.Literals<readonly ["key", "oauth"]>>;
+         readonly cost: Schema.brand<Schema.Finite, "Money.USD"> & {
+             zero: number & import("effect/Brand").Brand<"Money.USD">;
+         };
+@@ -10728,6 +11006,7 @@ export declare const OpenCodeEvent: Schema.Union<readonly [Schema.Struct<{
+                 readonly write: Schema.Finite;
+             }>;
+         }>;
++        readonly reportedUsage: Schema.decodeTo<Schema.optional<Schema.toType<typeof TokenUsage.Reported>>, Schema.optionalKey<typeof TokenUsage.Reported>, never, never>;
+         readonly snapshot: Schema.decodeTo<Schema.optional<Schema.toType<Schema.brand<Schema.String, "Snapshot.ID">>>, Schema.optionalKey<Schema.brand<Schema.String, "Snapshot.ID">>, never, never>;
+         readonly files: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Array<Schema.brand<Schema.String, "RelativePath">>>>, Schema.optionalKey<Schema.$Array<Schema.brand<Schema.String, "RelativePath">>>, never, never>;
+         readonly sessionID: Schema.brand<Schema.String, "SessionID"> & {
+@@ -10750,6 +11029,7 @@ export declare const OpenCodeEvent: Schema.Union<readonly [Schema.Struct<{
+         readonly finish: Schema.Literals<readonly ["stop", "length", "tool-calls", "content-filter", "error", "unknown"]>;
+         readonly rawFinish: Schema.decodeTo<Schema.optional<Schema.toType<Schema.String>>, Schema.optionalKey<Schema.String>, never, never>;
+         readonly providerState: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Record<Schema.String, Schema.Unknown>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Unknown>>, never, never>;
++        readonly credentialType: Schema.NullOr<Schema.Literals<readonly ["key", "oauth"]>>;
+         readonly cost: Schema.brand<Schema.Finite, "Money.USD"> & {
+             zero: number & import("effect/Brand").Brand<"Money.USD">;
+         };
+@@ -10762,6 +11042,7 @@ export declare const OpenCodeEvent: Schema.Union<readonly [Schema.Struct<{
+                 readonly write: Schema.Finite;
+             }>;
+         }>;
++        readonly reportedUsage: Schema.decodeTo<Schema.optional<Schema.toType<typeof TokenUsage.Reported>>, Schema.optionalKey<typeof TokenUsage.Reported>, never, never>;
+         readonly snapshot: Schema.decodeTo<Schema.optional<Schema.toType<Schema.brand<Schema.String, "Snapshot.ID">>>, Schema.optionalKey<Schema.brand<Schema.String, "Snapshot.ID">>, never, never>;
+         readonly files: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Array<Schema.brand<Schema.String, "RelativePath">>>>, Schema.optionalKey<Schema.$Array<Schema.brand<Schema.String, "RelativePath">>>, never, never>;
+         readonly sessionID: Schema.brand<Schema.String, "SessionID"> & {
+@@ -10813,6 +11094,7 @@ export declare const OpenCodeEvent: Schema.Union<readonly [Schema.Struct<{
+         readonly finish: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Literals<readonly ["content-filter"]>>>, Schema.optionalKey<Schema.Literals<readonly ["content-filter"]>>, never, never>;
+         readonly rawFinish: Schema.decodeTo<Schema.optional<Schema.toType<Schema.String>>, Schema.optionalKey<Schema.String>, never, never>;
+         readonly providerState: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Record<Schema.String, Schema.Unknown>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Unknown>>, never, never>;
++        readonly credentialType: Schema.NullOr<Schema.Literals<readonly ["key", "oauth"]>>;
+         readonly cost: Schema.decodeTo<Schema.optional<Schema.toType<Schema.brand<Schema.Finite, "Money.USD"> & {
+             zero: number & import("effect/Brand").Brand<"Money.USD">;
+         }>>, Schema.optionalKey<Schema.brand<Schema.Finite, "Money.USD"> & {
+@@ -10835,6 +11117,7 @@ export declare const OpenCodeEvent: Schema.Union<readonly [Schema.Struct<{
+                 readonly write: Schema.Finite;
+             }>;
+         }>>, never, never>;
++        readonly reportedUsage: Schema.decodeTo<Schema.optional<Schema.toType<typeof TokenUsage.Reported>>, Schema.optionalKey<typeof TokenUsage.Reported>, never, never>;
+         readonly snapshot: Schema.decodeTo<Schema.optional<Schema.toType<Schema.brand<Schema.String, "Snapshot.ID">>>, Schema.optionalKey<Schema.brand<Schema.String, "Snapshot.ID">>, never, never>;
+         readonly files: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Array<Schema.brand<Schema.String, "RelativePath">>>>, Schema.optionalKey<Schema.$Array<Schema.brand<Schema.String, "RelativePath">>>, never, never>;
+         readonly sessionID: Schema.brand<Schema.String, "SessionID"> & {
+@@ -10862,6 +11145,7 @@ export declare const OpenCodeEvent: Schema.Union<readonly [Schema.Struct<{
+         readonly finish: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Literals<readonly ["content-filter"]>>>, Schema.optionalKey<Schema.Literals<readonly ["content-filter"]>>, never, never>;
+         readonly rawFinish: Schema.decodeTo<Schema.optional<Schema.toType<Schema.String>>, Schema.optionalKey<Schema.String>, never, never>;
+         readonly providerState: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Record<Schema.String, Schema.Unknown>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Unknown>>, never, never>;
++        readonly credentialType: Schema.NullOr<Schema.Literals<readonly ["key", "oauth"]>>;
+         readonly cost: Schema.decodeTo<Schema.optional<Schema.toType<Schema.brand<Schema.Finite, "Money.USD"> & {
+             zero: number & import("effect/Brand").Brand<"Money.USD">;
+         }>>, Schema.optionalKey<Schema.brand<Schema.Finite, "Money.USD"> & {
+@@ -10884,6 +11168,7 @@ export declare const OpenCodeEvent: Schema.Union<readonly [Schema.Struct<{
+                 readonly write: Schema.Finite;
+             }>;
+         }>>, never, never>;
++        readonly reportedUsage: Schema.decodeTo<Schema.optional<Schema.toType<typeof TokenUsage.Reported>>, Schema.optionalKey<typeof TokenUsage.Reported>, never, never>;
+         readonly snapshot: Schema.decodeTo<Schema.optional<Schema.toType<Schema.brand<Schema.String, "Snapshot.ID">>>, Schema.optionalKey<Schema.brand<Schema.String, "Snapshot.ID">>, never, never>;
+         readonly files: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Array<Schema.brand<Schema.String, "RelativePath">>>>, Schema.optionalKey<Schema.$Array<Schema.brand<Schema.String, "RelativePath">>>, never, never>;
+         readonly sessionID: Schema.brand<Schema.String, "SessionID"> & {
+diff --git a/dist/groups/generate.d.ts b/dist/groups/generate.d.ts
+index 029fc892bbd677b91ddb41ce71bd30b2161f4a60..8dfd6396fceaaa7009f90c18d954632f4efbc2f0 100644
+--- a/dist/groups/generate.d.ts
++++ b/dist/groups/generate.d.ts
+@@ -29,5 +29,6 @@ export declare const GenerateGroup: HttpApiGroup.HttpApiGroup<"server.generate",
+ }>>, never, Schema.toCodecJson<Schema.Struct<{
+     readonly data: Schema.Struct<{
+         readonly text: Schema.String;
++        readonly totalTokens: Schema.optional<Schema.Number>;
+     }>;
+ }>>, Schema.toCodecJson<typeof InvalidRequestError | typeof ServiceUnavailableError>, never, never>, false>;
+diff --git a/dist/groups/generate.js b/dist/groups/generate.js
+index e8331715f16304315c047ee6bc512bda6d5b49d9..d29736ab773a251f9c8f3657faedef9ef348f5a7 100644
+--- a/dist/groups/generate.js
++++ b/dist/groups/generate.js
+@@ -9,7 +9,10 @@ export const GenerateGroup = HttpApiGroup.make("server.generate")
+         model: Model.Ref.pipe(Schema.optional),
+     }),
+     success: Schema.Struct({
+-        data: Schema.Struct({ text: Schema.String }),
++        data: Schema.Struct({
++            text: Schema.String,
++            totalTokens: Schema.optional(Schema.Number),
++        }),
+     }).annotate({ identifier: "GenerateTextResponse" }),
+     error: [InvalidRequestError, ServiceUnavailableError],
+ }).annotateMerge(OpenApi.annotations({
+diff --git a/dist/groups/session.d.ts b/dist/groups/session.d.ts
+index 3f0f12bcf4575198cef48e3d5c7ed333527d8f7c..b98c69ccb4d39e8b1fab23bdd6560db2aa273b1a 100644
+--- a/dist/groups/session.d.ts
++++ b/dist/groups/session.d.ts
+@@ -5,6 +5,7 @@ import { Context, Effect, Schema } from "effect";
+ import { HttpApiEndpoint, HttpApiGroup, HttpApiMiddleware, HttpApiSchema } from "effect/unstable/httpapi";
+ import { ConflictError, CommandExecutionError, CommandNotFoundError, InvalidCursorError, InvalidRequestError, MessageNotFoundError, ServiceUnavailableError, SessionBusyError, SessionNotFoundError, SkillNotFoundError, UnknownError } from "../errors.js";
+ import { SessionEvent } from "@opencode-ai/schema/session-event";
++import { TokenUsage } from "@opencode-ai/schema/token-usage";
+ declare const SessionsCursorInput: Schema.Union<readonly [Schema.Struct<{
+     readonly directory: Schema.brand<Schema.String, "AbsolutePath">;
+     readonly parentID: Schema.optional<Schema.Union<readonly [Schema.brand<Schema.String, "SessionID"> & {
+@@ -1384,6 +1385,7 @@ export declare const makeSessionGroup: <I extends HttpApiMiddleware.AnyId, S>(se
+                 readonly write: Schema.Finite;
+             }>;
+         }>>, never, never>;
++        readonly reportedUsage: Schema.decodeTo<Schema.optional<Schema.toType<typeof TokenUsage.Reported>>, Schema.optionalKey<typeof TokenUsage.Reported>, never, never>;
+         readonly error: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Struct<{
+             readonly type: Schema.String;
+             readonly message: Schema.String;
+@@ -2312,6 +2314,7 @@ export declare const makeSessionGroup: <I extends HttpApiMiddleware.AnyId, S>(se
+                     readonly write: Schema.Finite;
+                 }>;
+             }>>, never, never>;
++            readonly reportedUsage: Schema.decodeTo<Schema.optional<Schema.toType<typeof TokenUsage.Reported>>, Schema.optionalKey<typeof TokenUsage.Reported>, never, never>;
+             readonly error: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Struct<{
+                 readonly type: Schema.String;
+                 readonly message: Schema.String;
+@@ -3817,6 +3820,7 @@ export declare const makeSessionGroup: <I extends HttpApiMiddleware.AnyId, S>(se
+                 readonly write: Schema.Finite;
+             }>;
+         }>>, never, never>;
++        readonly reportedUsage: Schema.decodeTo<Schema.optional<Schema.toType<typeof TokenUsage.Reported>>, Schema.optionalKey<typeof TokenUsage.Reported>, never, never>;
+         readonly error: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Struct<{
+             readonly type: Schema.String;
+             readonly message: Schema.String;
+@@ -4177,7 +4181,7 @@ export declare const makeSessionGroup: <I extends HttpApiMiddleware.AnyId, S>(se
+ }>>, Schema.toCodecStringTree<Schema.Struct<{
+     after: Schema.optional<Schema.compose<Schema.brand<Schema.Int, "Event.Seq">, Schema.NumberFromString>>;
+     follow: Schema.optional<Schema.decodeTo<Schema.Boolean, Schema.Literals<readonly ["true", "false"]>, never, never>>;
+-}>>, never, never, HttpApiSchema.StreamSse<HttpApiSchema.SseEventFromData<Schema.Union<readonly [Schema.Union<readonly [...((Schema.Struct<{
++}>>, never, never, HttpApiSchema.StreamSse<HttpApiSchema.SseEventFromData<Schema.Union<readonly [Schema.Union<readonly ((Schema.Struct<{
+     readonly id: Schema.brand<Schema.String, "Event.ID"> & {
+         create: () => string & import("effect/Brand").Brand<"Event.ID">;
+     };
+@@ -4999,6 +5003,118 @@ export declare const makeSessionGroup: <I extends HttpApiMiddleware.AnyId, S>(se
+             descending: (id?: string) => string & import("effect/Brand").Brand<"SessionID">;
+         };
+     }>;
++}) | (Schema.Struct<{
++    readonly id: Schema.brand<Schema.String, "Event.ID"> & {
++        create: () => string & import("effect/Brand").Brand<"Event.ID">;
++    };
++    readonly created: Schema.Finite;
++    readonly metadata: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Record<Schema.String, Schema.Unknown>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Unknown>>, never, never>;
++    readonly type: Schema.Literal<"session.usage.recorded">;
++    readonly durable: Schema.Struct<{
++        readonly aggregateID: Schema.String;
++        readonly seq: Schema.brand<Schema.Int, "Event.Seq">;
++        readonly version: Schema.decodeTo<Schema.toType<Schema.brand<Schema.Int, "Event.Version">>, Schema.Literal<number>, never, never>;
++    }>;
++    readonly location: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Struct<{
++        readonly directory: Schema.brand<Schema.String, "AbsolutePath">;
++        readonly workspaceID: Schema.decodeTo<Schema.optional<Schema.toType<Schema.brand<Schema.String, "Workspace.ID"> & {
++            ascending: (id?: string) => string & import("effect/Brand").Brand<"Workspace.ID">;
++            create: () => string & import("effect/Brand").Brand<"Workspace.ID">;
++        }>>, Schema.optionalKey<Schema.brand<Schema.String, "Workspace.ID"> & {
++            ascending: (id?: string) => string & import("effect/Brand").Brand<"Workspace.ID">;
++            create: () => string & import("effect/Brand").Brand<"Workspace.ID">;
++        }>, never, never>;
++    }>>>, Schema.optionalKey<Schema.Struct<{
++        readonly directory: Schema.brand<Schema.String, "AbsolutePath">;
++        readonly workspaceID: Schema.decodeTo<Schema.optional<Schema.toType<Schema.brand<Schema.String, "Workspace.ID"> & {
++            ascending: (id?: string) => string & import("effect/Brand").Brand<"Workspace.ID">;
++            create: () => string & import("effect/Brand").Brand<"Workspace.ID">;
++        }>>, Schema.optionalKey<Schema.brand<Schema.String, "Workspace.ID"> & {
++            ascending: (id?: string) => string & import("effect/Brand").Brand<"Workspace.ID">;
++            create: () => string & import("effect/Brand").Brand<"Workspace.ID">;
++        }>, never, never>;
++    }>>, never, never>;
++    readonly data: Schema.Struct<{
++        readonly source: Schema.Literals<readonly ["title", "compaction"]>;
++        readonly credentialType: Schema.NullOr<Schema.Literals<readonly ["key", "oauth"]>>;
++        readonly cost: Schema.brand<Schema.Finite, "Money.USD"> & {
++            zero: number & import("effect/Brand").Brand<"Money.USD">;
++        };
++        readonly tokens: Schema.Struct<{
++            readonly input: Schema.Finite;
++            readonly output: Schema.Finite;
++            readonly reasoning: Schema.Finite;
++            readonly cache: Schema.Struct<{
++                readonly read: Schema.Finite;
++                readonly write: Schema.Finite;
++            }>;
++        }>;
++        readonly reportedUsage: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Struct<{
++            readonly inputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly outputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly nonCachedInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly cacheReadInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly cacheWriteInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly reasoningTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly totalTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++        }>>>, Schema.optionalKey<Schema.Struct<{
++            readonly inputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly outputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly nonCachedInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly cacheReadInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly cacheWriteInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly reasoningTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly totalTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++        }>>, never, never>;
++        readonly sessionID: Schema.brand<Schema.String, "SessionID"> & {
++            create: () => string & import("effect/Brand").Brand<"SessionID">;
++            descending: (id?: string) => string & import("effect/Brand").Brand<"SessionID">;
++        };
++    }>;
++}> & {
++    type: "session.usage.recorded";
++    durability: "durable";
++    durable: {
++        readonly version: number;
++        readonly aggregate: string;
++    };
++    data: Schema.Struct<{
++        readonly source: Schema.Literals<readonly ["title", "compaction"]>;
++        readonly credentialType: Schema.NullOr<Schema.Literals<readonly ["key", "oauth"]>>;
++        readonly cost: Schema.brand<Schema.Finite, "Money.USD"> & {
++            zero: number & import("effect/Brand").Brand<"Money.USD">;
++        };
++        readonly tokens: Schema.Struct<{
++            readonly input: Schema.Finite;
++            readonly output: Schema.Finite;
++            readonly reasoning: Schema.Finite;
++            readonly cache: Schema.Struct<{
++                readonly read: Schema.Finite;
++                readonly write: Schema.Finite;
++            }>;
++        }>;
++        readonly reportedUsage: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Struct<{
++            readonly inputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly outputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly nonCachedInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly cacheReadInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly cacheWriteInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly reasoningTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly totalTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++        }>>>, Schema.optionalKey<Schema.Struct<{
++            readonly inputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly outputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly nonCachedInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly cacheReadInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly cacheWriteInputTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly reasoningTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++            readonly totalTokens: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Finite>>, Schema.optionalKey<Schema.Finite>, never, never>;
++        }>>, never, never>;
++        readonly sessionID: Schema.brand<Schema.String, "SessionID"> & {
++            create: () => string & import("effect/Brand").Brand<"SessionID">;
++            descending: (id?: string) => string & import("effect/Brand").Brand<"SessionID">;
++        };
++    }>;
+ }) | (Schema.Struct<{
+     readonly id: Schema.brand<Schema.String, "Event.ID"> & {
+         create: () => string & import("effect/Brand").Brand<"Event.ID">;
+@@ -6486,6 +6602,7 @@ export declare const makeSessionGroup: <I extends HttpApiMiddleware.AnyId, S>(se
+         readonly finish: Schema.Literals<readonly ["stop", "length", "tool-calls", "content-filter", "error", "unknown"]>;
+         readonly rawFinish: Schema.decodeTo<Schema.optional<Schema.toType<Schema.String>>, Schema.optionalKey<Schema.String>, never, never>;
+         readonly providerState: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Record<Schema.String, Schema.Unknown>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Unknown>>, never, never>;
++        readonly credentialType: Schema.NullOr<Schema.Literals<readonly ["key", "oauth"]>>;
+         readonly cost: Schema.brand<Schema.Finite, "Money.USD"> & {
+             zero: number & import("effect/Brand").Brand<"Money.USD">;
+         };
+@@ -6498,6 +6615,7 @@ export declare const makeSessionGroup: <I extends HttpApiMiddleware.AnyId, S>(se
+                 readonly write: Schema.Finite;
+             }>;
+         }>;
++        readonly reportedUsage: Schema.decodeTo<Schema.optional<Schema.toType<typeof TokenUsage.Reported>>, Schema.optionalKey<typeof TokenUsage.Reported>, never, never>;
+         readonly snapshot: Schema.decodeTo<Schema.optional<Schema.toType<Schema.brand<Schema.String, "Snapshot.ID">>>, Schema.optionalKey<Schema.brand<Schema.String, "Snapshot.ID">>, never, never>;
+         readonly files: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Array<Schema.brand<Schema.String, "RelativePath">>>>, Schema.optionalKey<Schema.$Array<Schema.brand<Schema.String, "RelativePath">>>, never, never>;
+         readonly sessionID: Schema.brand<Schema.String, "SessionID"> & {
+@@ -6520,6 +6638,7 @@ export declare const makeSessionGroup: <I extends HttpApiMiddleware.AnyId, S>(se
+         readonly finish: Schema.Literals<readonly ["stop", "length", "tool-calls", "content-filter", "error", "unknown"]>;
+         readonly rawFinish: Schema.decodeTo<Schema.optional<Schema.toType<Schema.String>>, Schema.optionalKey<Schema.String>, never, never>;
+         readonly providerState: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Record<Schema.String, Schema.Unknown>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Unknown>>, never, never>;
++        readonly credentialType: Schema.NullOr<Schema.Literals<readonly ["key", "oauth"]>>;
+         readonly cost: Schema.brand<Schema.Finite, "Money.USD"> & {
+             zero: number & import("effect/Brand").Brand<"Money.USD">;
+         };
+@@ -6532,6 +6651,7 @@ export declare const makeSessionGroup: <I extends HttpApiMiddleware.AnyId, S>(se
+                 readonly write: Schema.Finite;
+             }>;
+         }>;
++        readonly reportedUsage: Schema.decodeTo<Schema.optional<Schema.toType<typeof TokenUsage.Reported>>, Schema.optionalKey<typeof TokenUsage.Reported>, never, never>;
+         readonly snapshot: Schema.decodeTo<Schema.optional<Schema.toType<Schema.brand<Schema.String, "Snapshot.ID">>>, Schema.optionalKey<Schema.brand<Schema.String, "Snapshot.ID">>, never, never>;
+         readonly files: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Array<Schema.brand<Schema.String, "RelativePath">>>>, Schema.optionalKey<Schema.$Array<Schema.brand<Schema.String, "RelativePath">>>, never, never>;
+         readonly sessionID: Schema.brand<Schema.String, "SessionID"> & {
+@@ -6583,6 +6703,7 @@ export declare const makeSessionGroup: <I extends HttpApiMiddleware.AnyId, S>(se
+         readonly finish: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Literals<readonly ["content-filter"]>>>, Schema.optionalKey<Schema.Literals<readonly ["content-filter"]>>, never, never>;
+         readonly rawFinish: Schema.decodeTo<Schema.optional<Schema.toType<Schema.String>>, Schema.optionalKey<Schema.String>, never, never>;
+         readonly providerState: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Record<Schema.String, Schema.Unknown>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Unknown>>, never, never>;
++        readonly credentialType: Schema.NullOr<Schema.Literals<readonly ["key", "oauth"]>>;
+         readonly cost: Schema.decodeTo<Schema.optional<Schema.toType<Schema.brand<Schema.Finite, "Money.USD"> & {
+             zero: number & import("effect/Brand").Brand<"Money.USD">;
+         }>>, Schema.optionalKey<Schema.brand<Schema.Finite, "Money.USD"> & {
+@@ -6605,6 +6726,7 @@ export declare const makeSessionGroup: <I extends HttpApiMiddleware.AnyId, S>(se
+                 readonly write: Schema.Finite;
+             }>;
+         }>>, never, never>;
++        readonly reportedUsage: Schema.decodeTo<Schema.optional<Schema.toType<typeof TokenUsage.Reported>>, Schema.optionalKey<typeof TokenUsage.Reported>, never, never>;
+         readonly snapshot: Schema.decodeTo<Schema.optional<Schema.toType<Schema.brand<Schema.String, "Snapshot.ID">>>, Schema.optionalKey<Schema.brand<Schema.String, "Snapshot.ID">>, never, never>;
+         readonly files: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Array<Schema.brand<Schema.String, "RelativePath">>>>, Schema.optionalKey<Schema.$Array<Schema.brand<Schema.String, "RelativePath">>>, never, never>;
+         readonly sessionID: Schema.brand<Schema.String, "SessionID"> & {
+@@ -6632,6 +6754,7 @@ export declare const makeSessionGroup: <I extends HttpApiMiddleware.AnyId, S>(se
+         readonly finish: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Literals<readonly ["content-filter"]>>>, Schema.optionalKey<Schema.Literals<readonly ["content-filter"]>>, never, never>;
+         readonly rawFinish: Schema.decodeTo<Schema.optional<Schema.toType<Schema.String>>, Schema.optionalKey<Schema.String>, never, never>;
+         readonly providerState: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Record<Schema.String, Schema.Unknown>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Unknown>>, never, never>;
++        readonly credentialType: Schema.NullOr<Schema.Literals<readonly ["key", "oauth"]>>;
+         readonly cost: Schema.decodeTo<Schema.optional<Schema.toType<Schema.brand<Schema.Finite, "Money.USD"> & {
+             zero: number & import("effect/Brand").Brand<"Money.USD">;
+         }>>, Schema.optionalKey<Schema.brand<Schema.Finite, "Money.USD"> & {
+@@ -6654,6 +6777,7 @@ export declare const makeSessionGroup: <I extends HttpApiMiddleware.AnyId, S>(se
+                 readonly write: Schema.Finite;
+             }>;
+         }>>, never, never>;
++        readonly reportedUsage: Schema.decodeTo<Schema.optional<Schema.toType<typeof TokenUsage.Reported>>, Schema.optionalKey<typeof TokenUsage.Reported>, never, never>;
+         readonly snapshot: Schema.decodeTo<Schema.optional<Schema.toType<Schema.brand<Schema.String, "Snapshot.ID">>>, Schema.optionalKey<Schema.brand<Schema.String, "Snapshot.ID">>, never, never>;
+         readonly files: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Array<Schema.brand<Schema.String, "RelativePath">>>>, Schema.optionalKey<Schema.$Array<Schema.brand<Schema.String, "RelativePath">>>, never, never>;
+         readonly sessionID: Schema.brand<Schema.String, "SessionID"> & {
+@@ -7767,83 +7891,7 @@ export declare const makeSessionGroup: <I extends HttpApiMiddleware.AnyId, S>(se
+             descending: (id?: string) => string & import("effect/Brand").Brand<"SessionID">;
+         };
+     }>;
+-}))[], Schema.Struct<{
+-    readonly id: Schema.brand<Schema.String, "Event.ID"> & {
+-        create: () => string & import("effect/Brand").Brand<"Event.ID">;
+-    };
+-    readonly created: Schema.Finite;
+-    readonly metadata: Schema.decodeTo<Schema.optional<Schema.toType<Schema.$Record<Schema.String, Schema.Unknown>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Unknown>>, never, never>;
+-    readonly type: Schema.Literal<"session.usage.recorded">;
+-    readonly durable: Schema.Struct<{
+-        readonly aggregateID: Schema.String;
+-        readonly seq: Schema.brand<Schema.Int, "Event.Seq">;
+-        readonly version: Schema.decodeTo<Schema.toType<Schema.brand<Schema.Int, "Event.Version">>, Schema.Literal<number>, never, never>;
+-    }>;
+-    readonly location: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Struct<{
+-        readonly directory: Schema.brand<Schema.String, "AbsolutePath">;
+-        readonly workspaceID: Schema.decodeTo<Schema.optional<Schema.toType<Schema.brand<Schema.String, "Workspace.ID"> & {
+-            ascending: (id?: string) => string & import("effect/Brand").Brand<"Workspace.ID">;
+-            create: () => string & import("effect/Brand").Brand<"Workspace.ID">;
+-        }>>, Schema.optionalKey<Schema.brand<Schema.String, "Workspace.ID"> & {
+-            ascending: (id?: string) => string & import("effect/Brand").Brand<"Workspace.ID">;
+-            create: () => string & import("effect/Brand").Brand<"Workspace.ID">;
+-        }>, never, never>;
+-    }>>>, Schema.optionalKey<Schema.Struct<{
+-        readonly directory: Schema.brand<Schema.String, "AbsolutePath">;
+-        readonly workspaceID: Schema.decodeTo<Schema.optional<Schema.toType<Schema.brand<Schema.String, "Workspace.ID"> & {
+-            ascending: (id?: string) => string & import("effect/Brand").Brand<"Workspace.ID">;
+-            create: () => string & import("effect/Brand").Brand<"Workspace.ID">;
+-        }>>, Schema.optionalKey<Schema.brand<Schema.String, "Workspace.ID"> & {
+-            ascending: (id?: string) => string & import("effect/Brand").Brand<"Workspace.ID">;
+-            create: () => string & import("effect/Brand").Brand<"Workspace.ID">;
+-        }>, never, never>;
+-    }>>, never, never>;
+-    readonly data: Schema.Struct<{
+-        readonly source: Schema.Literals<readonly ["title", "compaction"]>;
+-        readonly cost: Schema.brand<Schema.Finite, "Money.USD"> & {
+-            zero: number & import("effect/Brand").Brand<"Money.USD">;
+-        };
+-        readonly tokens: Schema.Struct<{
+-            readonly input: Schema.Finite;
+-            readonly output: Schema.Finite;
+-            readonly reasoning: Schema.Finite;
+-            readonly cache: Schema.Struct<{
+-                readonly read: Schema.Finite;
+-                readonly write: Schema.Finite;
+-            }>;
+-        }>;
+-        readonly sessionID: Schema.brand<Schema.String, "SessionID"> & {
+-            create: () => string & import("effect/Brand").Brand<"SessionID">;
+-            descending: (id?: string) => string & import("effect/Brand").Brand<"SessionID">;
+-        };
+-    }>;
+-}> & {
+-    type: "session.usage.recorded";
+-    durability: "durable";
+-    durable: {
+-        readonly version: number;
+-        readonly aggregate: string;
+-    };
+-    data: Schema.Struct<{
+-        readonly source: Schema.Literals<readonly ["title", "compaction"]>;
+-        readonly cost: Schema.brand<Schema.Finite, "Money.USD"> & {
+-            zero: number & import("effect/Brand").Brand<"Money.USD">;
+-        };
+-        readonly tokens: Schema.Struct<{
+-            readonly input: Schema.Finite;
+-            readonly output: Schema.Finite;
+-            readonly reasoning: Schema.Finite;
+-            readonly cache: Schema.Struct<{
+-                readonly read: Schema.Finite;
+-                readonly write: Schema.Finite;
+-            }>;
+-        }>;
+-        readonly sessionID: Schema.brand<Schema.String, "SessionID"> & {
+-            create: () => string & import("effect/Brand").Brand<"SessionID">;
+-            descending: (id?: string) => string & import("effect/Brand").Brand<"SessionID">;
+-        };
+-    }>;
+-}]>, Schema.Struct<{
++}))[]>, Schema.Struct<{
+     readonly type: Schema.Literal<"log.synced">;
+     readonly aggregateID: Schema.String;
+     readonly seq: Schema.decodeTo<Schema.optional<Schema.toType<Schema.brand<Schema.Int, "Event.Seq">>>, Schema.optionalKey<Schema.brand<Schema.Int, "Event.Seq">>, never, never>;
+@@ -8134,6 +8182,8 @@ export declare const makeSessionGroup: <I extends HttpApiMiddleware.AnyId, S>(se
+                 readonly write: number;
+             };
+         };
++        readonly credentialType: "key" | "oauth" | null;
++        readonly reportedUsage?: TokenUsage.Reported | undefined;
+         readonly sessionID: string & import("effect/Brand").Brand<"SessionID">;
+     };
+     readonly durable: {
+@@ -8646,6 +8696,8 @@ export declare const makeSessionGroup: <I extends HttpApiMiddleware.AnyId, S>(se
+                 readonly write: number;
+             };
+         };
++        readonly reportedUsage?: TokenUsage.Reported | undefined;
++        readonly credentialType: "key" | "oauth" | null;
+         readonly assistantMessageID: string & import("effect/Brand").Brand<"Session.Message.ID">;
+         readonly files?: readonly (string & import("effect/Brand").Brand<"RelativePath">)[] | undefined;
+         readonly providerState?: {
+@@ -8677,6 +8729,7 @@ export declare const makeSessionGroup: <I extends HttpApiMiddleware.AnyId, S>(se
+             readonly message: string;
+             readonly status?: number | undefined;
+         };
++        readonly credentialType: "key" | "oauth" | null;
+         readonly assistantMessageID: string & import("effect/Brand").Brand<"Session.Message.ID">;
+         readonly cost?: (number & import("effect/Brand").Brand<"Money.USD">) | undefined;
+         readonly files?: readonly (string & import("effect/Brand").Brand<"RelativePath">)[] | undefined;
+@@ -8695,6 +8748,7 @@ export declare const makeSessionGroup: <I extends HttpApiMiddleware.AnyId, S>(se
+                 readonly write: number;
+             };
+         } | undefined;
++        readonly reportedUsage?: TokenUsage.Reported | undefined;
+     };
+     readonly durable: {
+         readonly aggregateID: string;
+@@ -9657,6 +9711,7 @@ export declare const makeSessionGroup: <I extends HttpApiMiddleware.AnyId, S>(se
+                 readonly write: Schema.Finite;
+             }>;
+         }>>, never, never>;
++        readonly reportedUsage: Schema.decodeTo<Schema.optional<Schema.toType<typeof TokenUsage.Reported>>, Schema.optionalKey<typeof TokenUsage.Reported>, never, never>;
+         readonly error: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Struct<{
+             readonly type: Schema.String;
+             readonly message: Schema.String;
+@@ -9960,6 +10015,7 @@ export declare const makeSessionGroup: <I extends HttpApiMiddleware.AnyId, S>(se
+                 readonly write: Schema.Finite;
+             }>;
+         }>>, never, never>;
++        readonly reportedUsage: Schema.decodeTo<Schema.optional<Schema.toType<typeof TokenUsage.Reported>>, Schema.optionalKey<typeof TokenUsage.Reported>, never, never>;
+         readonly error: Schema.decodeTo<Schema.optional<Schema.toType<Schema.Struct<{
+             readonly type: Schema.String;
+             readonly message: Schema.String;

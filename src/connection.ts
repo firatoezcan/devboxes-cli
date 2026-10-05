@@ -2,7 +2,7 @@ import {
   loadContext,
   type DevboxesCliOptions,
   type DevboxesContext,
-} from "@firops/connections/local/config";
+} from "./connections/config";
 
 import { defaultApiOrigin } from "./api";
 import { apiOrigin, CommandError, type CommandConnection } from "./commands";

@@ -1,0 +1,14 @@
+diff --git a/photon_rs.js b/photon_rs.js
+index ccf9c37f21fb815ec730bca09357b674f931e544..4b0d1dcb51ad1743d80f00000b050b98b5f3f589 100644
+--- a/photon_rs.js
++++ b/photon_rs.js
+@@ -4509,7 +4509,8 @@ module.exports.__wbindgen_init_externref_table = function() {
+     ;
+ };
+ 
+-const path = require('path').join(__dirname, 'photon_rs_bg.wasm');
++const path = globalThis.__OPENCODE_PHOTON_WASM_PATH;
++if (!path) throw new Error('Photon WASM path was not configured');
+ const bytes = require('fs').readFileSync(path);
+ 
+ const wasmModule = new WebAssembly.Module(bytes);
