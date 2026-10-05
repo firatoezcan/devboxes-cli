@@ -1,5 +1,11 @@
 # devboxes
 
+## 0.4.1
+
+### Patch Changes
+
+- Ship the native binary as an executable again. The 0.4.0 native packages stored `bin/devboxes.exe` without execute permission, so the CLI could not start.
+
 ## 0.4.0
 
 ### Minor Changes
