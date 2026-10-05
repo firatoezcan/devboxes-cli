@@ -1,25 +1,41 @@
 #!/usr/bin/env bun
 
-import { Command, Option } from "commander";
+import { Command } from "commander";
 
-import { addAccountCommands, cliVersion } from "./devboxes";
+import { cliVersion, defaultApiOrigin } from "./api";
+import { addAuthenticationCommands } from "./auth";
+import { CommandError } from "./commands";
+import { addAccountCommands } from "./devboxes";
 import { addRunnerCommands } from "./runner/runner";
-import { addTelemetryCommands, captureCliTelemetryError } from "./telemetry";
 
 export const createDevboxesCommand = () => {
   const program = new Command()
     .name("devboxes")
-    .description("Run coding tasks, follow sessions, and connect execution machines")
+    .description("Discover and invoke Devboxes application commands")
     .version(cliVersion)
     .showHelpAfterError()
+    .configureOutput({
+      writeErr: (text) => {
+        if (!program.opts<{ json?: boolean }>().json) process.stderr.write(text);
+      },
+    })
+    .exitOverride((error) => {
+      if (error.exitCode !== 0 && program.opts<{ json?: boolean }>().json) {
+        throw new CommandError("INVALID_USAGE", error.message.replace(/^error: /, ""));
+      }
+    })
     .option("--config <path>", "Path to the Devboxes configuration file")
-    .addOption(new Option("--api <url>", "Devboxes API base URL").hideHelp())
-    .addOption(new Option("--auth <url>", "Devboxes auth base URL").hideHelp())
-    .option("--organization <id>", "Organization ID to use for this command");
+    .option(
+      "--api <url>",
+      defaultApiOrigin
+        ? `API origin; defaults to the saved account's origin, then ${defaultApiOrigin}`
+        : "API origin; required for the first signup or login",
+    )
+    .option("--json", "Write machine-readable results and errors");
 
-  addAccountCommands(program);
   addRunnerCommands(program);
-  addTelemetryCommands(program);
+  addAccountCommands(program);
+  addAuthenticationCommands(program);
   program.action(() => program.outputHelp());
   return program;
 };
@@ -40,12 +56,14 @@ if (import.meta.main) {
       )) as typeof stream.write;
   }
 
+  const program = createDevboxesCommand();
   try {
-    await createDevboxesCommand().parseAsync(Bun.argv, { from: "node" });
+    await program.parseAsync(Bun.argv, { from: "node" });
   } catch (error) {
-    await captureCliTelemetryError(error);
-    // User-facing failures end as one readable line, not a stack trace.
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exit(process.exitCode && process.exitCode !== 0 ? Number(process.exitCode) : 1);
+    const failure = CommandError.from(error);
+    console.error(
+      program.opts<{ json?: boolean }>().json ? JSON.stringify(failure.toJSON()) : String(failure),
+    );
+    process.exit(1);
   }
 }

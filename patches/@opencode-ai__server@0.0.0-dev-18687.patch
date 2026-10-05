@@ -1,0 +1,13 @@
+diff --git a/dist/handlers/generate.js b/dist/handlers/generate.js
+index 935216ad63a0e7c9f6ee93d49021b152732631f3..b038b00db1ebf3e0fa60512dfa4edd3e4ef003ef 100644
+--- a/dist/handlers/generate.js
++++ b/dist/handlers/generate.js
+@@ -16,6 +16,7 @@ export const GenerateHandler = HttpApiBuilder.group(Api, "server.generate", (han
+   const global = yield* Global.Service, services = (yield* LocationServiceMap.Service).get(Location.Ref.make({ directory: AbsolutePath.make(global.config) }));
+   return handlers.handle("generate.text", Effect.fn("server.generate.text")(function* (request) {
+     yield* flushPlugins;
+-    return { data: { text: yield* (yield* Generate.Service).text(request.payload).pipe(Effect.mapError((error) => error._tag === "Generate.ModelSelectionError" ? new InvalidRequestError({ message: error.message }) : new ServiceUnavailableError({ message: error.message, service: error.service }))) } };
++    const response = yield* (yield* Generate.Service).text(request.payload).pipe(Effect.mapError((error) => error._tag === "Generate.ModelSelectionError" ? new InvalidRequestError({ message: error.message }) : new ServiceUnavailableError({ message: error.message, service: error.service })));
++    return { data: response };
+   }, Effect.provide(services)));
+ }));

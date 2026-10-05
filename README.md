@@ -1,108 +1,129 @@
 # Devboxes CLI
 
-Start coding tasks, check their results, and run a Docker-based Devboxes runner from your terminal. The CLI can also expose task commands to an agent through MCP.
+The CLI discovers and invokes the application's API-owned commands. Its MCP
+server exposes the same discovery and invocation implementation to agents.
 
-## Install and sign in
+The package launcher requires Bun 1.4.2 or later. Published native binaries
+include their runtime and do not require a separate JavaScript runtime.
+
+## Run from this checkout
 
 ```sh
-pnpm add --global devboxes
-devboxes --version
+bun apps/devboxes-cli/src/cli.ts --help
+pnpm vp run devboxes#build:smoke
+```
+
+Start the API with `pnpm vp run dev:api` and use the printed HTTP origin on
+`127.0.0.1` with its assigned port. Local startup needs no DNS or certificate
+setup. Remote API connections require HTTPS.
+
+## Create an account or sign in
+
+```sh
+devboxes signup
 devboxes login
 ```
 
-Approve the terminal in your browser. You need an active Devboxes organization; owners and admins can start runs. See the [installation guide](https://docs.devboxes.ai/guide/installation) for native downloads and checksum verification.
+[Install the CLI and run operations](../docs/content/guides/cli.mdx#sign-in) describes the
+sign-in methods, the flags for scripts and agents, email verification, and
+two-factor completion.
 
-To use the native installer on macOS or glibc-based Linux, download it before running it:
+Released binaries embed `https://api.devboxes.ai` as the default API origin
+through `scripts/build-cli-binaries.ts`. A source run has no default and
+requires `--api`. `--api` and `DEVBOXES_API_URL` override the default, and a
+saved configuration keeps the origin it was created for.
 
-```sh
-curl --fail --location https://devboxes.ai/install -o devboxes-install
-```
+Credentials are saved atomically with file mode `0600`. Use `--config <path>` to
+keep separate API origins or accounts in separate files. `devboxes logout`
+revokes the current session and clears its saved credential.
 
-On macOS, verify the download with:
+`devboxes auth` reads Better Auth's generated schema and exposes the installed
+two-factor, password recovery, email verification, account, session, and
+factor-management endpoints. An endpoint that accepts both GET and POST requires `--method GET` or
+`--method POST`. GET input supplies query parameters; template-path parameters
+use the same JSON object. Authentication operations follow the native owner's
+semantics. Enrollment results contain authenticator secrets and backup codes;
+store them privately.
 
-```sh
-echo "35f4c98f35cbb7b1e1773ea523acccf0e4c5472d297195e0fe01dd965910ba32  devboxes-install" | shasum -a 256 --check
-```
+The CLI redacts session tokens from its output. To revoke one session, submit
+`{"id":"<session id>"}` from `/list-sessions` to `/revoke-session`. An
+administrator revokes another user's session by submitting
+`{"userId":"<user id>","id":"<session id>"}` from `/admin/list-user-sessions` to
+`/admin/revoke-user-session`. The CLI resolves that session's token itself and
+fails with `SESSION_NOT_FOUND` when the listing has no session with that id.
+Describing either operation shows this id input.
 
-On Linux, use `sha256sum --check` in place of `shasum -a 256 --check`. Continue only if the check reports `devboxes-install: OK`:
-
-```sh
-sh devboxes-install
-```
-
-## Start a task
-
-Use an existing project and a branch that exists in its repository:
-
-```sh
-devboxes dispatch --repo your-team/your-repository --branch main \
-  https://github.com/your-team/your-repository/issues/123
-```
-
-The default blueprint is **Implement GitHub Issue**. The CLI recognizes issue URLs and `owner/repo#123` references and supplies their issue instructions. For another workflow, pass its exact `--blueprint-version` ID. Set `--project` to choose a project directly; it overrides `--repo`.
-
-The response includes a session ID. Use that ID, not the run ID, for these commands:
+## Discover and invoke application commands
 
 ```sh
-devboxes status <agentSessionId>
-devboxes result <agentSessionId>
-devboxes continue <agentSessionId> "Address the review feedback and rerun the relevant tests."
+devboxes commands
+devboxes describe organizations.create
+devboxes invoke organizations.create --input @organization.json
+devboxes invoke organizations.list --input @empty.json
 ```
 
-`status` reads once. `result` exits with status 1 while work is unfinished. A terminal run can succeed, fail, or be cancelled; inspect `runStatus` and the outcome. A successful execution is not merge approval.
+`organization.json` contains the documented command input, such as
+`{"name":"Example team","slug":"example-team"}`. `empty.json` contains `{}`.
+Use `--input -` to read JSON from stdin. `--json` selects machine-readable output.
+The API's OpenAPI contract defines inputs, results, authority, and errors.
 
-## Run tasks on this machine
+## Join an Organization
 
-With Docker running:
+An owner uses `invitations.create` to record an invitation for an email address.
+The intended recipient verifies that email through the native authentication
+flow, discovers the invitation with `invitations.received`, and accepts or
+declines with `invitations.respond`. Owners inspect and cancel invitations with
+`invitations.list` and `invitations.cancel`.
 
-```sh
-devboxes connect
-devboxes credentials setup
-devboxes doctor
-devboxes listen
-```
+Invitation creation does not send a notification email. Account-verification
+and password-recovery email remain available. Admission requires the inviter to
+remain an active owner and cannot replace an active or suspended membership.
 
-Keep the listener running to accept work. It defaults to one concurrent task; use `--max-concurrent` to change the limit. Local credentials remain local unless you explicitly run `devboxes credentials sync`, which shares supported credentials through encrypted organization storage.
-
-## Use with an agent
+## Use the same commands through MCP
 
 ```sh
 devboxes mcp
 ```
 
-This bridges the authenticated, API-owned Devboxes MCP catalog over stdio. Pass `--project <projectId>` to admit Run dispatch for one fixed Project. The [automation reference](https://docs.devboxes.ai/reference/automation) defines inputs and result handling. Terminal commands also support `--json` where listed by `--help`.
+The stdio server exposes `devboxes_describe` and `devboxes_invoke`. It calls the
+same API commands as the terminal. It does not proxy a separate API MCP catalog.
 
-## Error telemetry
+For an agent, issue a bounded grant with `delegations.create`, then supply
+`DEVBOXES_API_URL` and `DEVBOXES_TOKEN` to the child process. Both variables are
+required; an incomplete scoped connection never loads a personal credential.
+Scoped connections cannot manage personal account authentication, and
+`devboxes logout` refuses them. Revoke the grant with `delegations.revoke` when
+its work ends.
 
-The CLI sends no error telemetry unless you enable it with a self-hosted Sentry
-DSN and an environment name:
+## Run execution capacity
+
+Register a Runner through the discovered `capacity.register` application command.
+Use `devboxes runner listen --help` for credential-file, Docker socket, state
+directory, and container-reachable API options.
+
+## Native OpenCode daemon
+
+The public source checkout builds `devboxes-daemon`, the standalone native
+OpenCode HTTP server. Sessions and the durable event log persist in `opencode.db`
+under its data directory. On Linux, that directory is `$XDG_DATA_HOME/opencode`,
+or `$HOME/.local/share/opencode` when `XDG_DATA_HOME` is unset or empty. Preserve
+this directory across daemon restarts to retain Sessions and replay stored events.
+
+## Verify the CLI
+
+In the Dashboard workspace, run:
 
 ```sh
-devboxes telemetry enable \
-  --dsn https://PUBLIC_KEY@sentry.devboxes.ai/PROJECT_ID \
-  --environment production
+pnpm vp run devboxes#test
+pnpm vp run devboxes#test:full
+pnpm vp run devboxes#build:smoke
 ```
 
-Disable it through the same CLI setting:
+The tests use Bun and need no PostgreSQL or ClickHouse service. The smoke command
+compiles and executes the host binary. It does not prove another platform's
+binary can run.
 
-```sh
-devboxes telemetry disable
-```
-
-Enabled events contain a fixed CLI error marker, the CLI runtime, version, and
-the environment name you supplied. They exclude command arguments, credentials,
-environment-variable values, prompts, transcripts, cookies, authorization
-headers, OAuth codes, task tokens, request data, breadcrumbs, and user context.
-The organization running the self-hosted Sentry instance controls storage and
-retention.
-
-Telemetry initialization or delivery failures append a local record containing
-only the timestamp, CLI runtime, version, and failure class to
-`<config path>.telemetry.log`. They do not change command output or exit status.
-An initialization failure or command-error report gets one second in total
-before the CLI continues.
-
-See the [Devboxes documentation](https://docs.devboxes.ai) for the user guide.
-Report bugs on the [issue tracker](https://github.com/firatoezcan/devboxes-cli/issues)
-and security concerns through the
-[security policy](https://github.com/firatoezcan/devboxes-cli/blob/main/SECURITY.md).
+In the standalone public source checkout, `bun run test` and `bun run test:full`
+run the Bun suite without a private workspace runner or an `origin/dev` branch.
+The source export retains the local-config, provider-connection, and Docker
+socket contracts beside their exported implementations.

@@ -2,8 +2,6 @@ import { afterEach, describe, expect, it } from "bun:test";
 
 import { dockerSocketPath } from "./docker-socket";
 
-// The wire client is dockerode; what stays ours — and needs pinning — is the
-// policy for WHICH socket the runner may drive.
 describe("docker socket policy", () => {
   const originalEnv = {
     DEVBOX_OPENCODE_DOCKER_SOCKET_PATH: process.env.DEVBOX_OPENCODE_DOCKER_SOCKET_PATH,

@@ -1,0 +1,14 @@
+diff --git a/index.js b/index.js
+index 54cb91916cb5107598ca45b3f95e80efed073f76..031bb74d11e90a60ff2d94532df71d3aef1e326f 100644
+--- a/index.js
++++ b/index.js
+@@ -8,6 +8,7 @@ const libc = process.platform === "linux" ? (process.report.getReport().header.g
+ const suffix = [process.platform, arch, libc].filter(Boolean).join("-")
+ 
+ export const binaryPath =
+-  supported && arch
++  process.env.OPENCODE_PTY_BIN ||
++  (supported && arch
+     ? path.join(path.dirname(require.resolve(`@opencode-ai/pty-${suffix}/package.json`)), "bin", "opencode-pty")
+-    : undefined
++    : undefined)

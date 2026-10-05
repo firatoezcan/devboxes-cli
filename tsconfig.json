@@ -17,15 +17,7 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "types": ["bun-types", "node"],
-    "noEmit": true,
-    // Monorepo-only wiring: maps the type-only #monorepo/* imports and the
-    // test harness onto private workspace sources. In the public source
-    // mirror these targets do not exist — the shipped runtime never resolves
-    // them (all uses are erased `import type` / test-only imports).
-    "paths": {
-      "@/*": ["../firops-api/src/*"],
-      "#monorepo/api": ["../firops-api/src/app.ts"]
-    }
+    "noEmit": true
   },
-  "include": ["src/**/*.ts", "scripts/**/*.ts", "../firops-api/types/**/*.d.ts"]
+  "include": ["src/**/*.ts", "scripts/**/*.ts", "../../packages/platform/types/**/*.d.ts"]
 }

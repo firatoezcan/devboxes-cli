@@ -54,26 +54,7 @@ try {
   }
 
   if (Test-Path $destination) {
-    $sharingViolationHResult = [int]0x80070020
-    $replaceRetryDelaysMilliseconds = @(50, 100, 200)
-    $firstSharingViolation = $null
-    for ($attempt = 0; $attempt -le $replaceRetryDelaysMilliseconds.Count; $attempt += 1) {
-      try {
-        [IO.File]::Replace($staged, $destination, [NullString]::Value)
-        break
-      } catch [IO.IOException] {
-        if ($_.Exception.HResult -ne $sharingViolationHResult) {
-          throw
-        }
-        if (-not $firstSharingViolation) {
-          $firstSharingViolation = $_
-        }
-        if ($attempt -ge $replaceRetryDelaysMilliseconds.Count) {
-          throw $firstSharingViolation
-        }
-        Start-Sleep -Milliseconds $replaceRetryDelaysMilliseconds[$attempt]
-      }
-    }
+    [IO.File]::Replace($staged, $destination, [NullString]::Value)
   } else {
     [IO.File]::Move($staged, $destination)
   }

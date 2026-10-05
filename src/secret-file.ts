@@ -2,13 +2,6 @@ import { randomUUID } from "node:crypto";
 import { chmod, mkdir, open, readdir, rename, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-// Atomic owner-only persistence for the unified config's session/API keys and
-// the age-encrypted credential store. tmp + fsync + rename prevents a crash or
-// power loss from tearing either file, and owner-only modes keep other local
-// users out.
-
-// A tmp file this old cannot be a live concurrent writer's work-in-progress —
-// writes finish in milliseconds — so it is a crash leftover to sweep.
 const staleTmpMs = 60 * 60 * 1000;
 
 export const writeSecretFile = async (input: {
@@ -36,11 +29,8 @@ export const writeSecretFile = async (input: {
       await handle.close();
     }
     await rename(tmpPath, input.path);
-    // writeFile's mode only applies on creation; a pre-existing target or a
-    // permissive umask must not widen the secret.
     await chmod(input.path, 0o600);
-  } catch (error) {
+  } finally {
     await rm(tmpPath, { force: true }).catch(() => {});
-    throw error;
   }
 };

@@ -1,6 +1,4 @@
-import { createHash } from "node:crypto";
-
-import Type, { type Static } from "typebox";
+import Type from "typebox";
 import Value from "typebox/value";
 
 type OpencodeApiAuth = {
@@ -27,19 +25,6 @@ export type OpencodeOauthAuth = {
   enterpriseUrl?: string;
 };
 
-type OpencodeWellKnownAuth = {
-  type: "wellknown";
-  key: string;
-  token: string;
-};
-
-export type OpencodeProviderAuthJson = Record<
-  string,
-  OpencodeApiAuth | OpencodeOauthAuth | OpencodeWellKnownAuth
->;
-
-// What validation actually admits: opencode's wellknown entries never pass
-// this boundary, so downstream code can rely on the api/oauth split.
 export type OpencodeProviderAuth = OpencodeApiAuth | OpencodeOauthAuth;
 export type OpencodeRuntimeProviderAuth =
   | { type: "api"; key: string; settings?: Record<string, string> }
@@ -55,7 +40,6 @@ export type WorkspaceImageQualificationProviderAuthLease = {
   modelID: string;
   auth: OpencodeProviderAuth;
 };
-export const workspaceImageQualificationProviderAuthTtlMs = 40 * 60_000;
 
 export type OpencodeProviderAuthSourceValue =
   | string
@@ -63,22 +47,10 @@ export type OpencodeProviderAuthSourceValue =
   | boolean
   | null
   | undefined
-  | OpencodeProviderAuthSourceValue[]
-  | { [key: string]: OpencodeProviderAuthSourceValue };
+  | readonly OpencodeProviderAuthSourceValue[]
+  | { readonly [key: string]: OpencodeProviderAuthSourceValue };
 
-// Task provider-auth endpoints serve this route shape with a per-task bearer
-// token, and the in-container daemon talks to whichever base URL launched it.
-// Workspace Image qualification validates the same envelope at its dedicated
-// builder-authenticated route.
-export const opencodeProviderAuthPath = "/opencode-tasks/:taskId/provider-auth";
-
-export const OpencodeProviderAuthResponseSchema = Type.Record(
-  Type.String({ minLength: 1 }),
-  Type.Object({ type: Type.String({ minLength: 1 }) }, { additionalProperties: true }),
-);
-export type OpencodeProviderAuthResponse = Static<typeof OpencodeProviderAuthResponseSchema>;
-
-const ProviderAuthRecordSchema = Type.Object(
+export const ProviderAuthRecordSchema = Type.Object(
   { type: Type.String({ minLength: 1 }) },
   { additionalProperties: true },
 );
@@ -137,10 +109,8 @@ const OauthProviderAuthSchema = Type.Object(
   },
   { additionalProperties: true },
 );
-// Deliberately narrow charset: provider ids reach container env, broker route
-// matching, and the opencode_dispatch_tasks/opencode_provider_credentials
-// check constraints, so dots, slashes, and uppercase are rejected rather than
-// escaped. Must stay in sync with those database check constraints.
+// Matches the provider_id check constraints in schema.ts, which also require
+// the stored id to be trimmed and lowercase.
 const providerIdPattern = /^[a-z0-9][a-z0-9_-]*$/;
 
 export const normalizeOpencodeProviderId = (providerId: string) => {
@@ -155,31 +125,17 @@ export const validateOpencodeProviderAuth = (
   providerId: string,
   auth: OpencodeProviderAuthSourceValue,
 ): OpencodeProviderAuth => {
-  let candidate: { type: string };
-  try {
-    candidate = Value.Parse(ProviderAuthRecordSchema, auth);
-  } catch {
-    throw new Error(`Opencode credentials for provider ${providerId} are invalid.`);
-  }
+  const candidate = Value.Parse(ProviderAuthRecordSchema, auth);
 
   if (candidate.type === "api") {
-    let apiAuth: Static<typeof ApiProviderAuthSchema>;
-    try {
-      apiAuth = Value.Parse(ApiProviderAuthSchema, auth);
-    } catch {
-      throw new Error(`Opencode API credentials for provider ${providerId} are invalid.`);
-    }
+    const apiAuth = Value.Parse(ApiProviderAuthSchema, auth);
     if (!apiAuth.key?.trim()) {
       throw new Error(`Opencode API credentials for provider ${providerId} are invalid.`);
     }
-    let metadata: Record<string, string> | undefined;
-    if (apiAuth.metadata !== undefined) {
-      try {
-        metadata = Value.Parse(ApiProviderAuthMetadataSchema, apiAuth.metadata);
-      } catch {
-        throw new Error(`Opencode API credential metadata for provider ${providerId} is invalid.`);
-      }
-    }
+    const metadata =
+      apiAuth.metadata === undefined
+        ? undefined
+        : Value.Parse(ApiProviderAuthMetadataSchema, apiAuth.metadata);
     const validatedAuth: OpencodeApiAuth = {
       type: "api",
       key: apiAuth.key.trim(),
@@ -189,12 +145,7 @@ export const validateOpencodeProviderAuth = (
   }
 
   if (candidate.type === "oauth") {
-    let oauthAuth: Static<typeof OauthProviderAuthSchema>;
-    try {
-      oauthAuth = Value.Parse(OauthProviderAuthSchema, auth);
-    } catch {
-      throw new Error(`Opencode OAuth credentials for provider ${providerId} are invalid.`);
-    }
+    const oauthAuth = Value.Parse(OauthProviderAuthSchema, auth);
     const validatedAuth: OpencodeOauthAuth = {
       type: "oauth",
       refresh: oauthAuth.refresh,
@@ -215,7 +166,7 @@ export const validateOpencodeProviderAuth = (
 };
 
 export const validateWorkspaceImageQualificationProviderAuthLease = (
-  source: WorkspaceImageQualificationProviderAuthLease,
+  source: OpencodeProviderAuthSourceValue,
 ): WorkspaceImageQualificationProviderAuthLease => {
   const lease = Value.Parse(WorkspaceImageQualificationProviderAuthLeaseSchema, source);
   const providerID = normalizeOpencodeProviderId(lease.providerID);
@@ -227,13 +178,6 @@ export const validateWorkspaceImageQualificationProviderAuthLease = (
     throw new Error("Workspace Image qualification model id is invalid.");
   }
   const auth = validateOpencodeProviderAuth(providerID, lease.auth);
-  if (
-    auth.type === "oauth" &&
-    auth.expires !== 0 &&
-    auth.expires <= Date.now() + workspaceImageQualificationProviderAuthTtlMs
-  ) {
-    throw new Error("Workspace Image qualification OAuth lease expires too soon.");
-  }
   return {
     providerID,
     modelID,
@@ -259,33 +203,4 @@ export const hydrateOpencodeProviderAuth = (
     metadata,
     refresh: auth.refresh,
   };
-};
-
-export const opencodeProviderAuthFingerprint = (providerId: string, auth: OpencodeProviderAuth) => {
-  let canonicalAuth: OpencodeProviderAuth;
-  if (auth.type === "api") {
-    canonicalAuth = { type: auth.type, key: auth.key };
-    if (auth.metadata) {
-      canonicalAuth.metadata = Object.fromEntries(
-        Object.entries(auth.metadata).sort(([left], [right]) => left.localeCompare(right)),
-      );
-    }
-  } else {
-    canonicalAuth = {
-      type: auth.type,
-      refresh: auth.refresh,
-      access: auth.access,
-      expires: auth.expires,
-    };
-    if (auth.accountId !== undefined) canonicalAuth.accountId = auth.accountId;
-    if (auth.enterpriseUrl !== undefined) canonicalAuth.enterpriseUrl = auth.enterpriseUrl;
-    if (auth.metadata !== undefined) {
-      canonicalAuth.metadata = Object.fromEntries(
-        Object.entries(auth.metadata).sort(([left], [right]) => left.localeCompare(right)),
-      );
-    }
-  }
-  return createHash("sha256")
-    .update(`${normalizeOpencodeProviderId(providerId)}\0${JSON.stringify(canonicalAuth)}`)
-    .digest("hex");
 };

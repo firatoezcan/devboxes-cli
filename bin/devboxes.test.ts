@@ -69,7 +69,7 @@ const createInstalledLauncher = async (
     );
     if ((await compiler.exited) !== 0) throw new Error("Failed to compile the native fixture.");
   } else {
-    await writeFile(nativeBinary, `#!/usr/bin/env node\n${nativeProgram}\n`);
+    await writeFile(nativeBinary, `#!${process.execPath}\n${nativeProgram}\n`);
     await chmod(nativeBinary, 0o755);
   }
 
@@ -104,9 +104,13 @@ process.stdin.on("end", () => {
   process.exit(23);
 });
 `);
-    const child = spawn("node", [launcher, "dispatch", "task with spaces"], {
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const child = spawn(
+      process.execPath,
+      ["--no-install", launcher, "dispatch", "task with spaces"],
+      {
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");
@@ -136,7 +140,9 @@ process.on("SIGINT", () => {
 process.stdout.write("ready");
 setInterval(() => {}, 1_000);
 `);
-    const child = spawn("node", [launcher], { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, ["--no-install", launcher], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let stdout = "";
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
@@ -161,7 +167,7 @@ process.on("SIGINT", () => {
 process.stdout.write("ready\\n");
 setInterval(() => {}, 1_000);
 `);
-    const child = spawn("node", [launcher], {
+    const child = spawn(process.execPath, ["--no-install", launcher], {
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -196,7 +202,7 @@ setInterval(() => {}, 1_000);
 `);
     let output = "";
     let sentInterrupt = false;
-    const child = Bun.spawn(["node", launcher], {
+    const child = Bun.spawn([process.execPath, "--no-install", launcher], {
       terminal: {
         data(terminal, data) {
           output += new TextDecoder().decode(data);
@@ -226,7 +232,7 @@ setTimeout(() => process.exit(97), 500);
 `);
     let output = "";
     let sentSignal = false;
-    const child = Bun.spawn(["node", launcher], {
+    const child = Bun.spawn([process.execPath, "--no-install", launcher], {
       terminal: {
         data(_terminal, data) {
           output += new TextDecoder().decode(data);
@@ -246,7 +252,7 @@ setTimeout(() => process.exit(97), 500);
 
   it("preserves native termination", async () => {
     const launcher = await createInstalledLauncher(nativeTermination.program);
-    const child = spawn("node", [launcher], { stdio: "ignore" });
+    const child = spawn(process.execPath, ["--no-install", launcher], { stdio: "ignore" });
 
     await expect(waitForExit(child)).resolves.toEqual(nativeTermination.result);
   });
@@ -256,7 +262,9 @@ setTimeout(() => process.exit(97), 500);
       'process.stdout.write("must not run");',
       "1.2.2",
     );
-    const child = spawn("node", [launcher], { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, ["--no-install", launcher], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");
@@ -280,7 +288,9 @@ setTimeout(() => process.exit(97), 500);
       "1.2.3",
       false,
     );
-    const child = spawn("node", [launcher], { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, ["--no-install", launcher], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");
