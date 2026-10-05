@@ -26,7 +26,7 @@ export const loadAccountContext = async (
   ) {
     throw new CommandError(
       "LEGACY_CONNECTION",
-      "Use DEVBOXES_API_URL and DEVBOXES_TOKEN for a scoped connection, or --api and a saved account configuration.",
+      "Use DEVBOXES_TOKEN for a scoped connection, or a saved account configuration.",
     );
   }
   const context = await loadContext(options);
@@ -35,18 +35,19 @@ export const loadAccountContext = async (
     throw new CommandError("INVALID_CONFIG", "A saved credential must have its own API origin.");
   }
   const storedOrigin = config.apiBaseUrl ? apiOrigin(config.apiBaseUrl, "account") : undefined;
-  const api = options.api ?? (storedOrigin ? undefined : defaultApiOrigin);
+  const api =
+    options.api ?? process.env.DEVBOXES_API_URL ?? (storedOrigin ? undefined : defaultApiOrigin);
   const origin = api === undefined ? storedOrigin : apiOrigin(api, "account");
   if (!origin) {
     throw new CommandError(
       "API_URL_REQUIRED",
-      "Select an API origin with --api when signing up or logging in.",
+      "Select an API origin with --api or DEVBOXES_API_URL.",
     );
   }
   if (storedOrigin && storedOrigin !== origin) {
     throw new CommandError(
       "API_ORIGIN_MISMATCH",
-      "This configuration belongs to another API origin. Select a different --config file for this origin.",
+      `This configuration belongs to another API origin than ${options.api === undefined ? "DEVBOXES_API_URL" : "--api"} selects. Select a different --config file for this origin.`,
     );
   }
   return { ...context, config: { ...config, apiBaseUrl: `${origin}/api` } };
@@ -55,23 +56,22 @@ export const loadAccountContext = async (
 export const loadCommandConnection = async (
   options: Pick<DevboxesCliOptions, "config" | "api">,
 ): Promise<CommandConnection> => {
-  const api = process.env.DEVBOXES_API_URL;
   const token = process.env.DEVBOXES_TOKEN;
-  if (api !== undefined || token !== undefined) {
-    if (!api || !token || !/^[\x21-\x7e]+$/.test(token)) {
+  if (token !== undefined) {
+    if (!/^[\x21-\x7e]+$/.test(token)) {
       throw new CommandError(
-        "INCOMPLETE_SCOPED_CONNECTION",
-        "A scoped connection requires both DEVBOXES_API_URL and DEVBOXES_TOKEN. No personal configuration was loaded.",
+        "INVALID_DEVBOXES_TOKEN",
+        "DEVBOXES_TOKEN must contain a delegation token. No personal configuration was loaded.",
       );
     }
-    const origin = apiOrigin(api);
-    if (options.api !== undefined && apiOrigin(options.api) !== origin) {
+    const api = options.api ?? process.env.DEVBOXES_API_URL ?? defaultApiOrigin;
+    if (api === undefined) {
       throw new CommandError(
-        "API_ORIGIN_MISMATCH",
-        "--api must match DEVBOXES_API_URL for a scoped connection.",
+        "API_URL_REQUIRED",
+        "Select an API origin with --api or DEVBOXES_API_URL.",
       );
     }
-    return { origin, token };
+    return { origin: apiOrigin(api), token };
   }
   const context = await loadAccountContext(options);
   const tokenFromConfig = context.config.sessionToken;

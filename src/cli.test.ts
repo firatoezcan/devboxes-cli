@@ -5,8 +5,16 @@ import { join } from "node:path";
 
 import { apiOrigin } from "./commands";
 
-const runCli = async (args: string[], env: Record<string, string | undefined> = {}) => {
-  const child = Bun.spawn([process.execPath, "src/cli.ts", ...args], {
+const runCli = async (
+  args: string[],
+  env: Record<string, string | undefined> = {},
+  embeddedApiOrigin?: string,
+) => {
+  const define =
+    embeddedApiOrigin === undefined
+      ? []
+      : ["--define", `globalThis.DEVBOXES_DEFAULT_API_ORIGIN=${JSON.stringify(embeddedApiOrigin)}`];
+  const child = Bun.spawn([process.execPath, ...define, "src/cli.ts", ...args], {
     cwd: join(import.meta.dir, ".."),
     env: { ...process.env, ...env },
     stdin: "ignore",
@@ -37,6 +45,7 @@ await writeFile(emptyTokenFile, "\n");
 await chmod(emptyTokenFile, 0o600);
 await writeFile(malformedInput, "{ not json");
 const scoped = { DEVBOXES_API_URL: "https://api.example.com", DEVBOXES_TOKEN: "scoped" };
+const unusedOrigin = "http://127.0.0.1:9";
 const listen = ["--json", "--api", "https://api.example.com", "runner", "listen"];
 const localDocker = { DOCKER_HOST: undefined, DEVBOX_OPENCODE_DOCKER_SOCKET_PATH: undefined };
 
@@ -113,8 +122,23 @@ describe("devboxes entrypoint", () => {
       { ...scoped, DEVBOXES_API_URL: "not a url" },
       "INVALID_API_URL",
     ],
+    [
+      "an empty delegation token",
+      ["--json", "commands"],
+      { DEVBOXES_API_URL: undefined, DEVBOXES_TOKEN: "" },
+      "INVALID_DEVBOXES_TOKEN",
+    ],
+    [
+      "a delegation token without an API origin in a source run",
+      ["--json", "commands"],
+      { DEVBOXES_API_URL: undefined, DEVBOXES_TOKEN: "scoped" },
+      "API_URL_REQUIRED",
+    ],
   ])("reports %s with its own error code", async (_case, args, env, code) => {
-    const result = await runCli(args, env);
+    const result = await runCli(
+      ["--config", join(fixtureDirectory, "absent-config.json"), ...args],
+      env,
+    );
 
     expect(result.exitCode).toBe(1);
     expect(JSON.parse(result.stderr)).toMatchObject({ error: { code } });
@@ -123,12 +147,14 @@ describe("devboxes entrypoint", () => {
 
 describe("devboxes invoke", () => {
   const traceparents: (string | null)[] = [];
+  const authorizations: (string | null)[] = [];
   const api = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     fetch: (request) => {
       const { pathname } = new URL(request.url);
       traceparents.push(request.headers.get("traceparent"));
+      authorizations.push(request.headers.get("authorization"));
       if (pathname === "/api/openapi/json")
         return Response.json({
           openapi: "3.0.3",
@@ -179,6 +205,40 @@ describe("devboxes invoke", () => {
   const connection = { DEVBOXES_API_URL: api.url.origin, DEVBOXES_TOKEN: "scoped" };
   const dispatch = ["invoke", "sessions.dispatch", "--input", `@${dispatchInput}`];
   const warning = "This token never expires. Revoke it when you no longer need it.";
+
+  it("connects with only DEVBOXES_TOKEN to --api or the embedded API origin", async () => {
+    await writeFile(dispatchInput, "{}");
+    const list = ["--json", "invoke", "sessions.list", "--input", `@${dispatchInput}`];
+    const tokenOnly = { DEVBOXES_API_URL: undefined, DEVBOXES_TOKEN: "devboxes_delegate_ci" };
+    authorizations.length = 0;
+    const selected = await runCli(["--api", api.url.origin, ...list], tokenOnly);
+    const embedded = await runCli(list, tokenOnly, api.url.origin);
+
+    for (const result of [selected, embedded]) {
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({ status: 200, data: [] });
+    }
+    expect(new Set(authorizations)).toEqual(new Set(["Bearer devboxes_delegate_ci"]));
+  });
+
+  it("sends a delegation token to --api ahead of DEVBOXES_API_URL", async () => {
+    await writeFile(dispatchInput, "{}");
+    const result = await runCli(
+      [
+        "--json",
+        "--api",
+        api.url.origin,
+        "invoke",
+        "sessions.list",
+        "--input",
+        `@${dispatchInput}`,
+      ],
+      { DEVBOXES_API_URL: unusedOrigin, DEVBOXES_TOKEN: "devboxes_delegate_ci" },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ status: 200, data: [] });
+  });
 
   it("reports a concurrent modification as retryable", async () => {
     await writeFile(dispatchInput, "{}");
@@ -482,31 +542,50 @@ describe("devboxes signup and login", () => {
       },
     });
     try {
-      const child = Bun.spawn(
-        [
-          process.execPath,
-          "--define",
-          `globalThis.DEVBOXES_DEFAULT_API_ORIGIN=${JSON.stringify(api.url.origin)}`,
-          "src/cli.ts",
-          "--json",
-          "--config",
-          join(fixtureDirectory, "default-origin.json"),
-          "login",
-          "--github",
-        ],
-        {
-          cwd: join(import.meta.dir, ".."),
-          env: { ...process.env, DEVBOXES_API_URL: undefined },
-          stdin: "ignore",
-          stderr: "pipe",
-        },
+      const result = await runCli(
+        ["--json", "--config", join(fixtureDirectory, "default-origin.json"), "login", "--github"],
+        { DEVBOXES_API_URL: undefined },
+        api.url.origin,
       );
 
-      expect(await child.exited).toBe(1);
-      expect(JSON.parse(await new Response(child.stderr).text())).toMatchObject({
+      expect(result.exitCode).toBe(1);
+      expect(JSON.parse(result.stderr)).toMatchObject({
         error: { code: "invalid_client" },
       });
       expect(requests).toEqual(["/api/auth/device/code"]);
+    } finally {
+      await api.stop(true);
+    }
+  });
+  it("starts a browser sign-in at DEVBOXES_API_URL, and at --api ahead of it", async () => {
+    const requests: string[] = [];
+    const api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request) => {
+        requests.push(new URL(request.url).pathname);
+        return Response.json(
+          { error: "invalid_client", error_description: "Invalid client ID" },
+          { status: 400 },
+        );
+      },
+    });
+    try {
+      const login = ["--json", "login", "--github"];
+      const fromEnvironment = await runCli(
+        ["--config", join(fixtureDirectory, "environment-origin.json"), ...login],
+        { DEVBOXES_API_URL: api.url.origin, DEVBOXES_TOKEN: undefined },
+      );
+      const fromFlag = await runCli(
+        ["--config", join(fixtureDirectory, "flag-origin.json"), "--api", api.url.origin, ...login],
+        { DEVBOXES_API_URL: unusedOrigin, DEVBOXES_TOKEN: undefined },
+      );
+
+      for (const result of [fromEnvironment, fromFlag]) {
+        expect(result.exitCode).toBe(1);
+        expect(JSON.parse(result.stderr)).toMatchObject({ error: { code: "invalid_client" } });
+      }
+      expect(requests).toEqual(["/api/auth/device/code", "/api/auth/device/code"]);
     } finally {
       await api.stop(true);
     }
