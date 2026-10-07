@@ -33,7 +33,19 @@ The Runner stages the SHA-256-verified executor and mounts it read-only at
 The Run token is supplied as `DEVBOX_BACKEND_TOKEN` in Docker Env and is visible
 to anyone with Docker access. The private executor captures its configuration,
 sanitizes the process environment, and drops to uid 1001 before importing the
-native execution module.
+native execution module. The in-process uid change makes the executor
+non-dumpable under Docker, so other uid 1001 processes cannot read its
+environment or memory. Non-dumpability under gVisor, the managed runtime, is
+unverified until the post-release drill Run.
+
+The executor's Git children do not receive the token. For each Git transfer,
+the executor opens a loopback listener that adds the token and forwards only Git
+fetch requests to the Task repository. While a transfer runs, any local process
+can fetch the same repository through that listener.
+
+The executor starts OpenCode with project configuration, so a repository's
+OpenCode plugins load inside the executor process and can reach the Run token.
+Follow-up issue #1556 tracks closing that path.
 
 The existing Workspace Image qualification owner verifies the native runtime
 against the selected image. Runner, callback, and native qualification tests
