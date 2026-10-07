@@ -43,9 +43,23 @@ the executor opens a loopback listener that adds the token and forwards only Git
 fetch requests to the Task repository. While a transfer runs, any local process
 can fetch the same repository through that listener.
 
-The executor starts OpenCode with project configuration, so a repository's
-OpenCode plugins load inside the executor process and can reach the Run token.
-Follow-up issue #1556 tracks closing that path.
+The executor embeds OpenCode with the repository's project configuration, so a
+repository can define agents and other OpenCode settings. OpenCode in the
+executor runs only its built-in plugins and the executor's own plugin. It
+ignores `plugins` entries in configuration documents and files in `plugin` and
+`plugins` configuration directories, including those the agent writes during
+the Run. Project marker discovery imports no plugin.
+
+The executor also turns off configured providers. A configuration cannot name a
+provider package or send the provider credential to another endpoint. The
+payload's model catalog defines the provider. A dependency patch removes
+OpenCode's `{file:...}` expansion, so a configuration cannot copy a file's
+contents into a value. `{env:...}` reads the executor's sanitized environment.
+
+Configured local MCP servers and formatters run as separate uid 1001 processes.
+The executor itself connects to configured remote MCP servers and downloads
+skills from configured URLs. Those requests carry only values from the
+configuration and the agent.
 
 The existing Workspace Image qualification owner verifies the native runtime
 against the selected image. Runner, callback, and native qualification tests
