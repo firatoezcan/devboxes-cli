@@ -33,7 +33,7 @@ export const failureSchema = z.object({
   message: z.string(),
   details: z.json().optional(),
 });
-const errorSchema = z.object({ error: failureSchema });
+export const errorSchema = z.object({ error: failureSchema });
 const systemErrorSchema = z.object({ code: z.string() });
 const responseTextSchema = z.string();
 
