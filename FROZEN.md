@@ -58,8 +58,9 @@ contents into a value. `{env:...}` reads the executor's sanitized environment.
 
 Configured local MCP servers and formatters run as separate uid 1001 processes.
 The executor itself connects to configured remote MCP servers and downloads
-skills from configured URLs. Those requests carry only values from the
-configuration and the agent.
+skills from configured URLs. On a Runner, it also sends the agent's web searches
+to Exa at `mcp.exa.ai`. Those requests carry only values from the configuration
+and the agent.
 
 The existing Workspace Image qualification owner verifies the native runtime
 against the selected image. Runner, callback, and native qualification tests
