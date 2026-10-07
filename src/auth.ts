@@ -16,6 +16,7 @@ import {
   failureSchema,
   invocationTrace,
   readCommandInput,
+  writeOutput,
 } from "./commands";
 import { loadAccountContext, type AccountContext } from "./connection";
 
@@ -220,8 +221,7 @@ export const addAuthenticationCommands = (program: Command) => {
         choice = selected;
       }
       const report = async (user: z.infer<typeof userSchema>, signedIn: boolean) => {
-        await Bun.write(
-          Bun.stdout,
+        await writeOutput(
           `${
             options.json
               ? JSON.stringify({ user, signedIn })
@@ -390,8 +390,7 @@ export const addAuthenticationCommands = (program: Command) => {
         delete context.config.sessionToken;
         await writeConfig(context);
         if (!interactive) {
-          await Bun.write(
-            Bun.stdout,
+          await writeOutput(
             `${
               options.json
                 ? JSON.stringify({
@@ -456,8 +455,7 @@ export const addAuthenticationCommands = (program: Command) => {
     delete context.config.cookieJar;
     delete context.config.sessionToken;
     await writeConfig(context);
-    await Bun.write(
-      Bun.stdout,
+    await writeOutput(
       `${
         options.json
           ? JSON.stringify({ signedOut: true })
@@ -521,8 +519,7 @@ export const addAuthenticationCommands = (program: Command) => {
       }
     }
     if (!endpoint) {
-      await Bun.write(
-        Bun.stdout,
+      await writeOutput(
         `${JSON.stringify(
           { operations, components: document.components },
           null,
@@ -548,8 +545,7 @@ export const addAuthenticationCommands = (program: Command) => {
         "This endpoint accepts GET and POST. Select one with --method.",
       );
     if (!options.input) {
-      await Bun.write(
-        Bun.stdout,
+      await writeOutput(
         `${JSON.stringify(
           { operation, components: document.components },
           null,
@@ -642,8 +638,7 @@ export const addAuthenticationCommands = (program: Command) => {
       query: query?.data,
     });
     const authentication = authenticationSchema.safeParse(result.data);
-    await Bun.write(
-      Bun.stdout,
+    await writeOutput(
       `${JSON.stringify(
         {
           status: result.status,

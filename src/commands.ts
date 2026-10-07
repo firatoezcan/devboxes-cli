@@ -209,6 +209,18 @@ export const requestJson = async (
   );
 };
 
+/**
+ * Writes command output to stdout and resolves once stdout accepted all of it. All CLI output goes
+ * through `process.stdout`, which the entrypoint, Commander, and the MCP transport also write to.
+ * Once `process.stdout` exists, `Bun.write(Bun.stdout, ...)` restarts from the first byte when a
+ * pipe fills, so a slow reader receives the first 64 KiB twice. The output is written as bytes, which
+ * the entrypoint's ANSI filter passes through, so a result's text keeps its C1 control characters.
+ */
+export const writeOutput = (text: string) =>
+  new Promise<void>((resolve, reject) =>
+    process.stdout.write(Buffer.from(text), (error) => (error ? reject(error) : resolve())),
+  );
+
 export const readCommandInput = async (source: string): Promise<z.core.util.JSONType> => {
   let text: string;
   if (source === "-") {

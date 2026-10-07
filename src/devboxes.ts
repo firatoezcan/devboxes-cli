@@ -1,7 +1,7 @@
 import type { Command } from "commander";
 import { z } from "zod";
 
-import { describeCommands, invokeCommand, readCommandInput } from "./commands";
+import { describeCommands, invokeCommand, readCommandInput, writeOutput } from "./commands";
 import { loadCommandConnection } from "./connection";
 import { runDevboxesMcpServer } from "./mcp";
 
@@ -14,11 +14,10 @@ export const addAccountCommands = (program: Command) => {
     const connection = await loadCommandConnection(options);
     const description = await describeCommands(connection);
     if (options.json) {
-      await Bun.write(Bun.stdout, `${JSON.stringify(description)}\n`);
+      await writeOutput(`${JSON.stringify(description)}\n`);
     } else {
       for (const operation of description.commands) {
-        await Bun.write(
-          Bun.stdout,
+        await writeOutput(
           `${[
             operation.operationId,
             operation["x-devboxes"].effect,
@@ -36,8 +35,7 @@ export const addAccountCommands = (program: Command) => {
   describe.action(async (operationId: string) => {
     const options = describe.optsWithGlobals<{ api?: string; config?: string; json?: boolean }>();
     const connection = await loadCommandConnection(options);
-    await Bun.write(
-      Bun.stdout,
+    await writeOutput(
       `${JSON.stringify(
         await describeCommands(connection, operationId),
         null,
@@ -67,7 +65,7 @@ export const addAccountCommands = (program: Command) => {
       command: operationId,
       input,
     });
-    await Bun.write(Bun.stdout, `${JSON.stringify(result, null, options.json ? undefined : 2)}\n`);
+    await writeOutput(`${JSON.stringify(result, null, options.json ? undefined : 2)}\n`);
     const warned = z.object({ warning: z.string() }).safeParse(result.data);
     if (!options.json && warned.success) process.stderr.write(`Warning: ${warned.data.warning}\n`);
   });

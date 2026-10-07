@@ -148,6 +148,13 @@ describe("devboxes entrypoint", () => {
 describe("devboxes invoke", () => {
   const traceparents: (string | null)[] = [];
   const authorizations: (string | null)[] = [];
+  // About 150 KB of output, like the Production failure. Bun 1.4.2 writes 256 KiB and more another way.
+  // Each text starts with a C1 control sequence, which JSON.stringify leaves unescaped.
+  const events = Array.from({ length: 600 }, (_, index) => ({
+    index,
+    text: `\u009b1m${"x".repeat(200)}`,
+  }));
+  let eventsServed = Promise.withResolvers<void>();
   const api = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -180,8 +187,19 @@ describe("devboxes invoke", () => {
                 responses: {},
               },
             },
+            "/api/commands/sessions/events": {
+              post: {
+                operationId: "sessions.events",
+                "x-devboxes": { effect: "read", authority: "Organization member" },
+                responses: {},
+              },
+            },
           },
         });
+      if (pathname === "/api/commands/sessions/events") {
+        eventsServed.resolve();
+        return Response.json(events, { headers: { "x-request-id": "request-events" } });
+      }
       if (pathname === "/api/commands/sessions/list")
         return Response.json([], { headers: { "x-request-id": "request-list" } });
       if (pathname === "/api/commands/delegations/create")
@@ -266,6 +284,57 @@ describe("devboxes invoke", () => {
     expect(json.exitCode).toBe(0);
     expect(json.stderr).toBe("");
     expect(JSON.parse(json.stdout).data.warning).toBe(warning);
+  });
+
+  // Bun.spawn gives a child a socket pair, so the CLI writes into a shell pipe to cat instead. The
+  // test reads cat a second after the API answered, so the CLI's write meets a full pipe.
+  it("writes output larger than a pipe buffer exactly once to a reader that starts late", async () => {
+    await writeFile(dispatchInput, "{}");
+    const outputFile = join(fixtureDirectory, "events.json");
+    const statusFile = join(fixtureDirectory, "events.status");
+    const command = [
+      process.execPath,
+      "src/cli.ts",
+      "invoke",
+      "sessions.events",
+      "--input",
+      `@${dispatchInput}`,
+    ];
+    const options = {
+      cwd: join(import.meta.dir, ".."),
+      env: {
+        ...process.env,
+        ...connection,
+        TRACEPARENT: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+      },
+      stdin: "ignore",
+      stderr: "ignore",
+    } as const;
+    const toFile = Bun.spawn(command, { ...options, stdout: Bun.file(outputFile) });
+    expect(await toFile.exited).toBe(0);
+    const expected = await Bun.file(outputFile).bytes();
+    eventsServed = Promise.withResolvers<void>();
+    const toPipe = Bun.spawn(
+      [
+        "sh",
+        "-c",
+        'status_file=$1; shift; { "$@"; echo $? > "$status_file"; } | cat',
+        "sh",
+        statusFile,
+        ...command,
+      ],
+      { ...options, stdout: "pipe" },
+    );
+    await eventsServed.promise;
+    await Bun.sleep(1_000);
+    const received = await new Response(toPipe.stdout).bytes();
+
+    await toPipe.exited;
+    expect((await Bun.file(statusFile).text()).trim()).toBe("0");
+    expect(expected.length).toBeGreaterThan(64 * 1024);
+    expect(JSON.parse(new TextDecoder().decode(expected)).data).toEqual(events);
+    expect(received.length).toBe(expected.length);
+    expect(Buffer.from(received).equals(Buffer.from(expected))).toBe(true);
   });
 
   it("sends a traceparent that joins TRACEPARENT or starts a trace, and reports it", async () => {
