@@ -13,6 +13,15 @@ boundaries, not compatibility guarantees for retired protocols.
   executor sends on every callback and Git request.
 - `packages/platform/src/protocol/runner-payload.ts` defines the native Task
   payload, execution snapshot, inputs, and Review results.
+- `packages/platform/src/protocol/task-runtime.ts` defines the Task container
+  layout: the uids and gid, the home and workspace paths, the managed executor
+  path, the executor environment, the executor drain time, and Runner heartbeat
+  expiry.
+- `packages/platform/src/protocol/task-environment.ts` defines the environment
+  keys the executor passes through to the agent, and the reserved Task keys.
+- `packages/platform/src/protocol/daemon-artifact.ts` defines the daemon
+  release's bootstrap protocol and platforms. The API takes the executor digest
+  that a Runner claim returns from that release.
 - `apps/firops-api/src/execution/runners.ts` owns
   `/api/internal/execution/runners` claims, assignments, stop reports, and
   Runner heartbeat expiry.
@@ -22,6 +31,10 @@ boundaries, not compatibility guarantees for retired protocols.
 - `packages/devbox/src/runner/docker-task-runtime.ts` owns Docker launch.
   The container name is `devboxes-task-<taskId>` and its identity label is
   `devboxes.task`. Launch reuses the existing named container when present.
+- `packages/devbox/src/runner/executor-artifact.ts` downloads the executor over
+  HTTPS and verifies its SHA-256 digest before the Runner mounts it.
+- `apps/firops-api/src/execution/managed.ts` owns managed launch of the Task
+  Pod from the `devboxes-task` SandboxTemplate.
 
 ## Native execution isolation
 
@@ -63,5 +76,6 @@ to Exa at `mcp.exa.ai`. Those requests carry only values from the configuration
 and the agent.
 
 The existing Workspace Image qualification owner verifies the native runtime
-against the selected image. Runner, callback, and native qualification tests
-must exercise these boundaries rather than pin retired implementation constants.
+against the selected image. Prove a contract change with Runner, callback, and
+native qualification tests that exercise actual CLI-to-API and executor-to-API
+behavior. Do not add tests that pin protocol values.
