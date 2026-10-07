@@ -302,3 +302,44 @@ export const invokeCommand = async (
   if (!operation) throw new CommandError("UNKNOWN_COMMAND", "The command is unavailable.");
   return requestJson(connection, operation.path, commandTrace, invocation.input);
 };
+
+const commandToolOutcome = async <Result>(operation: () => Promise<Result>) => {
+  try {
+    return { isError: false, result: await operation() };
+  } catch (error) {
+    return { isError: true, result: CommandError.from(error).toJSON() };
+  }
+};
+
+/**
+ * The Devboxes command tools. `devboxes mcp` serves them over stdio, and the Chat native host
+ * runs them in its own process. A command failure becomes an error result the agent reads.
+ */
+export const devboxesCommandTools = (connection: CommandConnection) => ({
+  describe: {
+    name: "devboxes_describe",
+    description:
+      "List Devboxes command IDs, effects, and summaries when command is omitted. Pass an exact command ID to read its OpenAPI input, response, and authority contract before using devboxes_invoke. Discovery does not grant authority.",
+    input: z.object({ command: z.string().min(1).optional() }),
+    run: ({ command }: { command?: string }) =>
+      commandToolOutcome(async () => {
+        const description = await describeCommands(connection, command);
+        if (command !== undefined) return description;
+        return {
+          commands: description.commands.map((operation) => ({
+            operationId: operation.operationId,
+            effect: operation["x-devboxes"].effect,
+            summary: operation.summary,
+          })),
+        };
+      }),
+  },
+  invoke: {
+    name: "devboxes_invoke",
+    description:
+      "Invoke an advertised Devboxes command. Supply JSON input directly, never a local file reference. HTTP acceptance is not evidence that asynchronous work completed.",
+    input: z.object({ command: z.string().min(1), input: z.json() }),
+    run: (invocation: { command: string; input: z.core.util.JSONType }) =>
+      commandToolOutcome(() => invokeCommand(connection, invocation)),
+  },
+});
