@@ -7,7 +7,11 @@ import { z } from "zod";
 
 import { cliUserAgent } from "./api";
 
-export type CommandConnection = { origin: string; token: string };
+/**
+ * `organizationId` is the one Organization the token is bound to, such as a Chat turn's. Every
+ * command that takes an `organizationId` receives it in place of the one its input names.
+ */
+export type CommandConnection = { origin: string; token: string; organizationId?: string };
 
 const operationSchema = z
   .object({
@@ -21,6 +25,17 @@ const operationSchema = z
     responses: z.record(z.string(), z.unknown()),
   })
   .passthrough();
+
+const organizationScopedOperationSchema = z.object({
+  requestBody: z.object({
+    content: z.object({
+      "application/json": z.object({
+        schema: z.object({ properties: z.object({ organizationId: z.object({}) }) }),
+      }),
+    }),
+  }),
+});
+const commandObjectInputSchema = z.record(z.string(), z.json());
 
 const documentSchema = z.object({
   openapi: z.string(),
@@ -300,7 +315,12 @@ export const invokeCommand = async (
   const description = await describeCommands(connection, invocation.command, commandTrace);
   const operation = description.commands[0];
   if (!operation) throw new CommandError("UNKNOWN_COMMAND", "The command is unavailable.");
-  return requestJson(connection, operation.path, commandTrace, invocation.input);
+  let input = invocation.input;
+  if (connection.organizationId && organizationScopedOperationSchema.safeParse(operation).success) {
+    const object = commandObjectInputSchema.safeParse(input);
+    if (object.success) input = { ...object.data, organizationId: connection.organizationId };
+  }
+  return requestJson(connection, operation.path, commandTrace, input);
 };
 
 const commandToolOutcome = async <Result>(operation: () => Promise<Result>) => {
