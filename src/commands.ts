@@ -52,9 +52,10 @@ export const errorSchema = z.object({ error: failureSchema });
 const systemErrorSchema = z.object({ code: z.string() });
 const responseTextSchema = z.string();
 
+type Command = z.infer<typeof operationSchema> & { path: string; method: "POST" };
 export type CommandDescription = {
   openapi: string;
-  commands: (z.infer<typeof operationSchema> & { path: string; method: "POST" })[];
+  commands: Command[];
   components: NonNullable<z.infer<typeof documentSchema>["components"]>;
 };
 type RequestCorrelation = { traceId: string; requestId: string | null };
@@ -266,7 +267,6 @@ export const readCommandInput = async (source: string): Promise<z.core.util.JSON
 
 export const describeCommands = async (
   connection: CommandConnection,
-  command?: string,
   commandTrace = invocationTrace(),
 ): Promise<CommandDescription> => {
   const response = await requestJson(connection, "/api/openapi/json", commandTrace);
@@ -292,29 +292,38 @@ export const describeCommands = async (
     ids.add(parsed.data.operationId);
     commands.push({ ...parsed.data, path, method: "POST" as const });
   }
-  if (command !== undefined && !ids.has(command)) {
+  return {
+    openapi: document.data.openapi,
+    commands,
+    components: document.data.components ?? {},
+  };
+};
+
+/** The advertised commands narrowed to one, or a refusal of a command the API does not advertise. */
+export const describeCommand = (
+  description: CommandDescription,
+  command: string,
+): CommandDescription & { commands: [Command] } => {
+  const operation = description.commands.find((candidate) => candidate.operationId === command);
+  if (!operation) {
     throw new CommandError(
       "UNKNOWN_COMMAND",
       "This operation is not advertised by the configured API. Use devboxes commands to discover available operations.",
     );
   }
-  return {
-    openapi: document.data.openapi,
-    commands: commands.filter(
-      (operation) => command === undefined || operation.operationId === command,
-    ),
-    components: document.data.components ?? {},
-  };
+  return { ...description, commands: [operation] };
 };
 
 export const invokeCommand = async (
   connection: CommandConnection,
   invocation: { command: string; input: z.core.util.JSONType },
+  readCommands = describeCommands,
 ): Promise<CommandResponse> => {
   const commandTrace = invocationTrace();
-  const description = await describeCommands(connection, invocation.command, commandTrace);
-  const operation = description.commands[0];
-  if (!operation) throw new CommandError("UNKNOWN_COMMAND", "The command is unavailable.");
+  const [operation] = describeCommand(
+    await readCommands(connection, commandTrace),
+    invocation.command,
+  ).commands;
   let input = invocation.input;
   if (connection.organizationId && organizationScopedOperationSchema.safeParse(operation).success) {
     const object = commandObjectInputSchema.safeParse(input);
@@ -333,9 +342,13 @@ const commandToolOutcome = async <Result>(operation: () => Promise<Result>) => {
 
 /**
  * The Devboxes command tools. `devboxes mcp` serves them over stdio, and the Chat native host
- * runs them in its own process. A command failure becomes an error result the agent reads.
+ * runs them in its own process. A command failure becomes an error result the agent reads. Each
+ * call reads the advertised commands with `readCommands`, which by default asks the API again.
  */
-export const devboxesCommandTools = (connection: CommandConnection) => ({
+export const devboxesCommandTools = (
+  connection: CommandConnection,
+  readCommands = describeCommands,
+) => ({
   describe: {
     name: "devboxes_describe",
     description:
@@ -343,8 +356,8 @@ export const devboxesCommandTools = (connection: CommandConnection) => ({
     input: z.object({ command: z.string().min(1).optional() }),
     run: ({ command }: { command?: string }) =>
       commandToolOutcome(async () => {
-        const description = await describeCommands(connection, command);
-        if (command !== undefined) return description;
+        const description = await readCommands(connection);
+        if (command !== undefined) return describeCommand(description, command);
         return {
           commands: description.commands.map((operation) => ({
             operationId: operation.operationId,
@@ -360,6 +373,6 @@ export const devboxesCommandTools = (connection: CommandConnection) => ({
       "Invoke an advertised Devboxes command. Supply JSON input directly, never a local file reference. HTTP acceptance is not evidence that asynchronous work completed.",
     input: z.object({ command: z.string().min(1), input: z.json() }),
     run: (invocation: { command: string; input: z.core.util.JSONType }) =>
-      commandToolOutcome(() => invokeCommand(connection, invocation)),
+      commandToolOutcome(() => invokeCommand(connection, invocation, readCommands)),
   },
 });

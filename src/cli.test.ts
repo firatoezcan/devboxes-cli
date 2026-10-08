@@ -3,6 +3,9 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+
 import { apiOrigin } from "./commands";
 
 const runCli = async (
@@ -546,6 +549,64 @@ describe("devboxes runner listen", () => {
       expect(JSON.parse(json.stderr)).toMatchObject({ error: { code }, status });
     } finally {
       await api.stop(true);
+    }
+  });
+});
+
+describe("devboxes mcp", () => {
+  it("invokes an operation the API starts advertising after the server's first discovery", async () => {
+    const operation = (operationId: string) => ({
+      post: {
+        operationId,
+        "x-devboxes": { effect: "read", authority: "Organization member" },
+        responses: {},
+      },
+    });
+    const paths = new Map([["/api/commands/sessions/list", operation("sessions.list")]]);
+    const invoked: string[] = [];
+    using api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request) => {
+        const { pathname } = new URL(request.url);
+        if (pathname === "/api/openapi/json")
+          return Response.json({ openapi: "3.0.3", paths: Object.fromEntries(paths) });
+        invoked.push(pathname);
+        return Response.json({ sessionId: "session-1" });
+      },
+    });
+    const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
+    await client.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: ["src/cli.ts", "mcp"],
+        cwd: join(import.meta.dir, ".."),
+        env: {
+          PATH: process.env.PATH ?? "",
+          DEVBOXES_API_URL: api.url.origin,
+          DEVBOXES_TOKEN: "scoped",
+        },
+      }),
+    );
+    try {
+      const listed = await client.callTool({ name: "devboxes_describe", arguments: {} });
+      paths.set("/api/commands/sessions/inspect", operation("sessions.inspect"));
+      const inspected = await client.callTool({
+        name: "devboxes_invoke",
+        arguments: { command: "sessions.inspect", input: {} },
+      });
+
+      expect(listed.structuredContent).toEqual({
+        commands: [{ operationId: "sessions.list", effect: "read" }],
+      });
+      expect(inspected.isError).toBeUndefined();
+      expect(inspected.structuredContent).toMatchObject({
+        status: 200,
+        data: { sessionId: "session-1" },
+      });
+      expect(invoked).toEqual(["/api/commands/sessions/inspect"]);
+    } finally {
+      await client.close();
     }
   });
 });

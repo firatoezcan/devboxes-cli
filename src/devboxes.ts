@@ -1,7 +1,13 @@
 import type { Command } from "commander";
 import { z } from "zod";
 
-import { describeCommands, invokeCommand, readCommandInput, writeOutput } from "./commands";
+import {
+  describeCommand,
+  describeCommands,
+  invokeCommand,
+  readCommandInput,
+  writeOutput,
+} from "./commands";
 import { loadCommandConnection } from "./connection";
 import { runDevboxesMcpServer } from "./mcp";
 
@@ -37,7 +43,7 @@ export const addAccountCommands = (program: Command) => {
     const connection = await loadCommandConnection(options);
     await writeOutput(
       `${JSON.stringify(
-        await describeCommands(connection, operationId),
+        describeCommand(await describeCommands(connection), operationId),
         null,
         options.json ? undefined : 2,
       )}\n`,
