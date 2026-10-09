@@ -54,9 +54,14 @@ environment or memory. Non-dumpability under gVisor, the managed runtime, is
 unverified until the post-release drill Run.
 
 The executor's Git children do not receive the token. For each Git transfer,
-the executor opens a loopback listener that adds the token and forwards only Git
-fetch requests to the Task repository. While a transfer runs, any local process
-can fetch the same repository through that listener.
+the executor opens a loopback listener that adds the token and forwards only that
+transfer's Git service to the Task repository: fetch, or the publish node's push.
+While a transfer runs, any local process can use that service through the
+listener. The API forwards a push only while the publish node runs, and only as
+the creation of one staging ref `refs/devboxes/push/<Run>/<UUID>`. It then
+moves the Session's branch to that commit with GitHub's `updateRefs`, from the
+Run's expected head and without force, and deletes the staging ref. When the
+branch does not exist yet, the commit must build on the Run's start head.
 
 The executor embeds OpenCode with the repository's project configuration, so a
 repository can define agents and other OpenCode settings. OpenCode in the
