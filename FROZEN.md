@@ -53,21 +53,25 @@ non-dumpable under Docker, so other uid 1001 processes cannot read its
 environment or memory. Non-dumpability under gVisor, the managed runtime, is
 unverified until the post-release drill Run.
 
-The executor's Git children do not receive the token. For each Git transfer,
-the executor opens a loopback listener that adds the token and forwards only that
-transfer's Git service to the Task repository: fetch, or the publish node's push.
-While a transfer runs, any local process can use that service through the
-listener. The API forwards a push only while the publish node runs, and only as
-the creation of one staging ref `refs/devboxes/push/<Run>/<UUID>`. It then
-moves the Session's branch to that commit with GitHub's `updateRefs`, from the
-Run's expected head and without force, and deletes the staging ref. When the
-branch does not exist yet, the commit must build on the Run's start head. The
-publish node succeeds only when the status report that the listener received
-from the API accepts the staging ref. A push that the workspace's Git
-configuration sends elsewhere fails the node, although Git reports success. The
-report does not identify the commit the API recorded. The listener therefore
-forwards only a push whose one command creates that staging ref at the commit
-the publish node pushes.
+The executor's Git children do not receive the token. For each Git transfer, the
+executor opens a loopback listener that adds the token and forwards only that
+transfer's Git service to the Task repository: fetch, or the publish node's
+push. While a transfer runs, any local process can use that service through the
+listener. The API accepts a push only while the publish node runs, and only as
+the creation of one ref `refs/devboxes/push/<Run>/<UUID>`. It sends that commit
+to the Session's branch instead, from the branch head it read, so GitHub refuses
+the update if the branch moved meanwhile. GitHub accepts the update whether or
+not it is a fast-forward. The publish node succeeds only when the status report
+that the listener received from the API accepts that ref. A push that the
+workspace's Git configuration sends elsewhere fails the node, although Git
+reports success. The report does not identify the commit the API recorded. The
+listener therefore forwards only a push whose one command creates that ref at
+the commit the publish node pushes. When GitHub refuses the update of a
+teammate's pull request branch and branch protection or a ruleset that the App
+cannot bypass forbids its direct updates, the API moves the Session to its own
+branch. The executor pushes once more after any failed push. When the branch
+already holds the pushed commit, before or after GitHub's refusal, the API
+records it without updating the branch.
 
 The executor embeds OpenCode with the repository's project configuration, so a
 repository can define agents and other OpenCode settings. OpenCode in the
