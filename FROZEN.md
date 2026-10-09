@@ -61,7 +61,13 @@ listener. The API forwards a push only while the publish node runs, and only as
 the creation of one staging ref `refs/devboxes/push/<Run>/<UUID>`. It then
 moves the Session's branch to that commit with GitHub's `updateRefs`, from the
 Run's expected head and without force, and deletes the staging ref. When the
-branch does not exist yet, the commit must build on the Run's start head.
+branch does not exist yet, the commit must build on the Run's start head. The
+publish node succeeds only when the status report that the listener received
+from the API accepts the staging ref. A push that the workspace's Git
+configuration sends elsewhere fails the node, although Git reports success. The
+report does not identify the commit the API recorded. The listener therefore
+forwards only a push whose one command creates that staging ref at the commit
+the publish node pushes.
 
 The executor embeds OpenCode with the repository's project configuration, so a
 repository can define agents and other OpenCode settings. OpenCode in the
