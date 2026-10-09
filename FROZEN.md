@@ -25,7 +25,9 @@ boundaries, not compatibility guarantees for retired protocols.
 - `apps/firops-api/src/execution/runners.ts` owns
   `/api/internal/execution/runners` claims, assignments, stop reports, and
   Runner heartbeat expiry.
-- `apps/firops-api/src/execution/callbacks.ts` owns Task callbacks.
+- `apps/firops-api/src/execution/callbacks.ts` owns Task callbacks. The hidden
+  `runtime-*` routes in `apps/firops-api/src/routes/commands/providers.ts` are
+  Task callbacks for the Run's Provider Account.
   `execution/authority.ts` validates the signed Run token against the Task,
   Run, Organization, and current actor authority.
 - `packages/devbox/src/runner/docker-task-runtime.ts` owns Docker launch.
