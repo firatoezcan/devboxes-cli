@@ -71,7 +71,20 @@ teammate's pull request branch and branch protection or a ruleset that the App
 cannot bypass forbids its direct updates, the API moves the Session to its own
 branch. The executor pushes once more after any failed push. When the branch
 already holds the pushed commit, before or after GitHub's refusal, the API
-records it without updating the branch.
+records it without updating the branch. When a work or fix Run pauses at its
+model account's usage limit before its publish node runs, the executor runs that
+node before it saves the checkpoint. The node commits the uncommitted changes as
+`Pause at the <provider> usage limit: checkpoint of <Session title>` and pushes
+to `refs/devboxes/checkpoint/<Run>/<UUID>` instead of the push ref. With nothing
+to push, the node is skipped. The API publishes that ref to the Session's branch
+in the same way but opens no pull request. An API from before this contract
+refuses the ref, so nothing is published and the checkpoint keeps the work. A
+Run that starts from such a checkpoint owes the pull request until a Run after
+the paused one pushes, or records a pull request or GitHub's refusal of one:
+when its publish node succeeds without a push and the Session's branch is still
+at the checkpoint, the API records the branch's open pull request or opens one
+with the Session's title. A failed request to GitHub there records nothing and
+does not fail the node, so the next such Run tries again.
 
 The executor embeds OpenCode with the repository's project configuration, so a
 repository can define agents and other OpenCode settings. OpenCode in the
