@@ -19,7 +19,7 @@
     "test:full": "bun ../../scripts/run-workspace-tests.ts --task=test:full --timeout=60000"
   },
   "dependencies": {
-    "@better-fetch/fetch": "1.1.21",
+    "@better-fetch/fetch": "catalog:",
     "@clack/prompts": "^1.7.0",
     "@firops/connections": "workspace:*",
     "@firops/devbox": "workspace:*",
@@ -27,7 +27,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@opentelemetry/api": "catalog:",
     "@opentelemetry/core": "catalog:",
-    "better-auth": "1.6.9",
+    "better-auth": "catalog:",
     "commander": "^14.0.3",
     "dockerode": "catalog:",
     "elysia": "catalog:",
@@ -35,7 +35,7 @@
     "oauth4webapi": "catalog:",
     "tough-cookie": "6.0.1",
     "typebox": "catalog:",
-    "zod": "^4.3.6"
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@types/dockerode": "catalog:",
