@@ -6,7 +6,7 @@ import Type, { type Static, type TSchema } from "typebox";
 import Value from "typebox/value";
 import type { z } from "zod";
 
-import { CommandError, invocationTrace, requestJson } from "../commands";
+import { CommandError, requestJson } from "../commands";
 
 const taskSchema = Type.Object({
   id: Type.String({ format: "uuid" }),
@@ -60,7 +60,6 @@ export const listen = async (options: {
     const { data } = await requestJson(
       { origin: options.apiOrigin, token },
       `/api/internal/execution/runners/${operation}`,
-      invocationTrace(),
       body,
     );
     if (Value.Check(schema, data)) return data;

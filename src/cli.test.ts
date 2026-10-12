@@ -150,6 +150,7 @@ describe("devboxes entrypoint", () => {
 
 describe("devboxes invoke", () => {
   const traceparents: (string | null)[] = [];
+  const apiTraceresponse = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
   const authorizations: (string | null)[] = [];
   // About 150 KB of output, like the Production failure. Bun 1.4.2 writes 256 KiB and more another way.
   // Each text starts with a C1 control sequence, which JSON.stringify leaves unescaped.
@@ -204,7 +205,9 @@ describe("devboxes invoke", () => {
         return Response.json(events, { headers: { "x-request-id": "request-events" } });
       }
       if (pathname === "/api/commands/sessions/list")
-        return Response.json([], { headers: { "x-request-id": "request-list" } });
+        return Response.json([], {
+          headers: { "x-request-id": "request-list", traceresponse: apiTraceresponse },
+        });
       if (pathname === "/api/commands/delegations/create")
         return Response.json(
           { delegation: { expiresAt: null }, token: "devboxes_delegate_ci", warning },
@@ -340,29 +343,26 @@ describe("devboxes invoke", () => {
     expect(Buffer.from(received).equals(Buffer.from(expected))).toBe(true);
   });
 
-  it("sends a traceparent that joins TRACEPARENT or starts a trace, and reports it", async () => {
+  it("joins TRACEPARENT, sends no traceparent without one, and reports the trace the API names", async () => {
     await writeFile(dispatchInput, "{}");
     const list = ["--json", "invoke", "sessions.list", "--input", `@${dispatchInput}`];
     const callerTraceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
     traceparents.length = 0;
     const joined = await runCli(list, { ...connection, TRACEPARENT: callerTraceparent });
     const joinedTraceparents = traceparents.splice(0);
-    const started = await runCli(list, { ...connection, TRACEPARENT: undefined });
+    const unjoined = await runCli(list, { ...connection, TRACEPARENT: undefined });
 
     expect(joinedTraceparents.length).toBeGreaterThan(0);
     expect(new Set(joinedTraceparents)).toEqual(new Set([callerTraceparent]));
-    expect(JSON.parse(joined.stdout)).toEqual({
-      status: 200,
-      data: [],
-      traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
-      requestId: "request-list",
-    });
-    const { traceId } = JSON.parse(started.stdout);
-    expect(traceId).toMatch(/^[0-9a-f]{32}$/);
-    expect(traceId).not.toBe("4bf92f3577b34da6a3ce929d0e0e4736");
     expect(traceparents.length).toBeGreaterThan(0);
-    for (const traceparent of traceparents)
-      expect(traceparent).toMatch(new RegExp(`^00-${traceId}-[0-9a-f]{16}-00$`));
+    expect(new Set(traceparents)).toEqual(new Set([null]));
+    for (const result of [joined, unjoined])
+      expect(JSON.parse(result.stdout)).toEqual({
+        status: 200,
+        data: [],
+        traceId: "0af7651916cd43dd8448eb211c80319c",
+        requestId: "request-list",
+      });
   });
 });
 

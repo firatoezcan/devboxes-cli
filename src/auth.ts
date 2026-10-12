@@ -14,7 +14,7 @@ import {
   CommandError,
   credentialSafeJson,
   failureSchema,
-  invocationTrace,
+  injectCallerTrace,
   readCommandInput,
   writeOutput,
 } from "./commands";
@@ -97,7 +97,6 @@ const authenticationResponse = async (
     ? CookieJar.deserializeSync(context.config.cookieJar)
     : new CookieJar();
   const secrets = [context.config.sessionToken];
-  const commandTrace = invocationTrace();
   let result: { status: number; data: unknown } | undefined;
   const client = createAuthClient({
     baseURL: origin,
@@ -116,7 +115,7 @@ const authenticationResponse = async (
         }
         const cookie = cookies.getCookieStringSync(String(url));
         if (cookie) headers.set("Cookie", cookie);
-        commandTrace.inject(headers);
+        injectCallerTrace(headers);
       },
       onResponse: async ({ response, request }) => {
         const setCookies = response.headers.getSetCookie();

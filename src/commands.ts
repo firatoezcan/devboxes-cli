@@ -1,7 +1,5 @@
-import { randomBytes } from "node:crypto";
-
 import { betterFetch } from "@better-fetch/fetch";
-import { defaultTextMapGetter, ROOT_CONTEXT, trace, TraceFlags } from "@opentelemetry/api";
+import { defaultTextMapGetter, ROOT_CONTEXT, trace } from "@opentelemetry/api";
 import { W3CTraceContextPropagator } from "@opentelemetry/core";
 import { z } from "zod";
 
@@ -58,7 +56,7 @@ export type CommandDescription = {
   commands: Command[];
   components: NonNullable<z.infer<typeof documentSchema>["components"]>;
 };
-type RequestCorrelation = { traceId: string; requestId: string | null };
+type RequestCorrelation = { traceId: string | null; requestId: string | null };
 export type CommandResponse = { status: number; data: z.core.util.JSONType } & RequestCorrelation;
 
 export class CommandError extends Error {
@@ -114,29 +112,19 @@ export class CommandError extends Error {
 
 const w3cTraceContext = new W3CTraceContextPropagator();
 
-// One CLI invocation joins the caller's W3C trace from TRACEPARENT, or starts a
-// new trace, and sends it as the traceparent of each of its requests. A new
-// trace leaves sampling to the API.
-export const invocationTrace = () => {
-  const spanContext = trace.getSpanContext(
-    w3cTraceContext.extract(
-      ROOT_CONTEXT,
-      { traceparent: process.env.TRACEPARENT },
-      defaultTextMapGetter,
-    ),
-  ) ?? {
-    traceId: randomBytes(16).toString("hex"),
-    spanId: randomBytes(8).toString("hex"),
-    traceFlags: TraceFlags.NONE,
-  };
-  return {
-    traceId: spanContext.traceId,
-    inject: (headers: Headers) =>
-      w3cTraceContext.inject(trace.setSpanContext(ROOT_CONTEXT, spanContext), headers, {
-        set: (carrier, key, value) => carrier.set(key, value),
-      }),
-  };
-};
+// The CLI joins the caller's W3C trace from TRACEPARENT. Without one it sends no traceparent, so
+// the API starts each request's trace, and a result reports the trace the API names in its
+// traceresponse.
+const callerTrace = w3cTraceContext.extract(
+  ROOT_CONTEXT,
+  { traceparent: process.env.TRACEPARENT },
+  defaultTextMapGetter,
+);
+
+export const injectCallerTrace = (headers: Headers) =>
+  w3cTraceContext.inject(callerTrace, headers, {
+    set: (carrier, key, value) => carrier.set(key, value),
+  });
 
 export const apiOrigin = (value: string, identity: "account" | "scoped" = "scoped"): string => {
   const url = URL.parse(value);
@@ -182,11 +170,11 @@ export const credentialSafeJson = (
 export const requestJson = async (
   connection: CommandConnection,
   path: string,
-  { traceId, inject }: ReturnType<typeof invocationTrace>,
   body?: z.core.util.JSONType,
 ): Promise<CommandResponse> => {
   const headers = new Headers({ Accept: "application/json", "User-Agent": cliUserAgent });
-  inject(headers);
+  injectCallerTrace(headers);
+  let traceId: string | null = null;
   let requestId: string | null = null;
   let result: CommandResponse | undefined;
   const { error } = await betterFetch<z.core.util.JSONType>(path, {
@@ -198,6 +186,14 @@ export const requestJson = async (
     redirect: "error",
     jsonParser: (text) => credentialSafeJson(text, [connection.token]),
     onResponse: ({ response }) => {
+      traceId =
+        trace.getSpanContext(
+          w3cTraceContext.extract(
+            ROOT_CONTEXT,
+            { traceparent: response.headers.get("traceresponse") ?? undefined },
+            defaultTextMapGetter,
+          ),
+        )?.traceId ?? null;
       requestId = response.headers.get("x-request-id");
     },
     onSuccess: ({ data, response }) => {
@@ -267,9 +263,8 @@ export const readCommandInput = async (source: string): Promise<z.core.util.JSON
 
 export const describeCommands = async (
   connection: CommandConnection,
-  commandTrace = invocationTrace(),
 ): Promise<CommandDescription> => {
-  const response = await requestJson(connection, "/api/openapi/json", commandTrace);
+  const response = await requestJson(connection, "/api/openapi/json");
   const document = documentSchema.safeParse(response.data);
   if (!document.success) {
     throw new CommandError("INVALID_DISCOVERY", "The API returned an invalid OpenAPI document.");
@@ -319,17 +314,13 @@ export const invokeCommand = async (
   invocation: { command: string; input: z.core.util.JSONType },
   readCommands = describeCommands,
 ): Promise<CommandResponse> => {
-  const commandTrace = invocationTrace();
-  const [operation] = describeCommand(
-    await readCommands(connection, commandTrace),
-    invocation.command,
-  ).commands;
+  const [operation] = describeCommand(await readCommands(connection), invocation.command).commands;
   let input = invocation.input;
   if (connection.organizationId && organizationScopedOperationSchema.safeParse(operation).success) {
     const object = commandObjectInputSchema.safeParse(input);
     if (object.success) input = { ...object.data, organizationId: connection.organizationId };
   }
-  return requestJson(connection, operation.path, commandTrace, input);
+  return requestJson(connection, operation.path, input);
 };
 
 const commandToolOutcome = async <Result>(operation: () => Promise<Result>) => {
