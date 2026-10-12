@@ -649,7 +649,6 @@ describe("devboxes signup and login", () => {
           details: {
             methods: [
               { method: "github", flag: "--github" },
-              { method: "vercel", flag: "--vercel" },
               { method: "email", flag: "--email <email>" },
             ],
           },

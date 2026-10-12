@@ -52,9 +52,8 @@ const authenticationFailureSchema = z
   ])
   .pipe(failureSchema);
 
-const signInMethods: { method: "github" | "vercel" | "email"; flag: string; label: string }[] = [
+const signInMethods: { method: "github" | "email"; flag: string; label: string }[] = [
   { method: "github", flag: "--github", label: "GitHub" },
-  { method: "vercel", flag: "--vercel", label: "Vercel" },
   { method: "email", flag: "--email <email>", label: "Email and password" },
 ];
 const deviceClientId = "devboxes-cli";
@@ -63,7 +62,6 @@ type AccountOptions = {
   api?: string;
   config?: string;
   github?: boolean;
-  vercel?: boolean;
   email?: string;
   name?: string;
   passwordStdin?: boolean;
@@ -170,19 +168,11 @@ export const addAuthenticationCommands = (program: Command) => {
       .command(action)
       .description(
         action === "signup"
-          ? "create an account with GitHub, Vercel, or email and password"
-          : "sign in with GitHub, Vercel, or email and password",
+          ? "create an account with GitHub or email and password"
+          : "sign in with GitHub or email and password",
       )
       .addOption(
         new Option("--github", "Continue with GitHub in a browser").conflicts([
-          "vercel",
-          "email",
-          "name",
-          "passwordStdin",
-        ]),
-      )
-      .addOption(
-        new Option("--vercel", "Continue with Vercel in a browser").conflicts([
           "email",
           "name",
           "passwordStdin",
@@ -208,7 +198,7 @@ export const addAuthenticationCommands = (program: Command) => {
         if (!interactive) {
           throw new CommandError(
             "SIGN_IN_METHOD_REQUIRED",
-            "Choose a sign-in method: --github, --vercel, or --email <email>.",
+            "Choose a sign-in method: --github or --email <email>.",
             { details: { methods: signInMethods.map(({ method, flag }) => ({ method, flag })) } },
           );
         }
