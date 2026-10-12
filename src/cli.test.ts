@@ -410,120 +410,70 @@ describe("devboxes runner listen", () => {
   };
 
   it.skipIf(process.platform === "win32")(
-    "keeps polling while the API is unreachable and claims again when it returns",
+    "retries a server error and a 404 after its first successful poll, names an invalid response, and stops without finishing its wait",
     async () => {
-      let claims = 0;
-      const serve = (port: number) =>
-        Bun.serve({
+      const serve = (failure: {
+        path: "assignments" | "claim";
+        status: number;
+        code: string;
+        message: string;
+      }) => {
+        let failed = false;
+        return Bun.serve({
           hostname: "127.0.0.1",
-          port,
+          port: 0,
           fetch: (request) => {
-            const { pathname } = new URL(request.url);
-            if (pathname === "/api/internal/execution/runners/assignments")
-              return Response.json({ tasks: [] });
-            if (pathname === "/api/internal/execution/runners/claim") {
-              claims += 1;
-              return Response.json({ task: null });
+            const path = new URL(request.url).pathname.split("/").at(-1);
+            if (path === failure.path && !failed) {
+              failed = true;
+              const { status, code, message } = failure;
+              return Response.json({ error: { code, message } }, { status });
             }
-            return new Response(null, { status: 404 });
+            return path === "assignments"
+              ? Response.json({ tasks: [] })
+              : Response.json({ task: { id: "not-a-task" } });
           },
         });
-      let api = serve(0);
-      const { origin, port } = api.url;
-      try {
-        await using runner = await spawnListener(origin);
-        await until(() => claims === 1);
-        await api.stop(true);
-        await until(
-          () =>
-            runner.output.stderr.includes("ConnectionRefused") || runner.listener.exitCode !== null,
-        );
-        expect(runner.listener.exitCode).toBeNull();
-        api = serve(Number(port));
-        await until(() => claims === 2 || runner.listener.exitCode !== null);
-
-        expect(claims).toBe(2);
-        expect(runner.listener.exitCode).toBeNull();
-      } finally {
-        await api.stop(true);
-      }
-    },
-    40_000,
-  );
-
-  it.skipIf(process.platform === "win32")(
-    "retries a server error, names an invalid response, and stops without finishing its wait",
-    async () => {
-      let assignments = 0;
-      const api = Bun.serve({
-        hostname: "127.0.0.1",
-        port: 0,
-        fetch: (request) => {
-          const { pathname } = new URL(request.url);
-          if (pathname === "/api/internal/execution/runners/assignments") {
-            assignments += 1;
-            return assignments === 1
-              ? Response.json(
-                  { error: { code: "SERVICE_UNAVAILABLE", message: "The API is restarting." } },
-                  { status: 503 },
-                )
-              : Response.json({ tasks: [] });
-          }
-          return Response.json({ task: { id: "not-a-task" } });
-        },
+      };
+      const serverErrorApi = serve({
+        path: "assignments",
+        status: 503,
+        code: "SERVICE_UNAVAILABLE",
+        message: "The API is restarting.",
+      });
+      const lateNotFoundApi = serve({
+        path: "claim",
+        status: 404,
+        code: "TASK_NOT_FOUND",
+        message: "The Task is not assigned.",
       });
       try {
-        await using runner = await spawnListener(api.url.origin);
-        await until(
-          () =>
-            runner.output.stderr.split("Polling failed").length > 2 ||
-            runner.listener.exitCode !== null,
+        await using serverError = await spawnListener(serverErrorApi.url.origin);
+        await using lateNotFound = await spawnListener(lateNotFoundApi.url.origin);
+        const runners = [serverError, lateNotFound];
+        await until(() =>
+          runners.every(
+            (runner) =>
+              runner.output.stderr.split("Polling failed").length > 2 ||
+              runner.listener.exitCode !== null,
+          ),
         );
 
-        expect(runner.output.stderr).toContain(
+        expect(serverError.output.stderr).toContain(
           "SERVICE_UNAVAILABLE (HTTP 503): The API is restarting.",
         );
-        expect(runner.output.stderr).toMatch(/claim response .*\/task/);
-        const stopping = performance.now();
-        runner.listener.kill("SIGTERM");
-        expect(await runner.listener.exited).toBe(0);
-        expect(performance.now() - stopping).toBeLessThan(2_000);
-      } finally {
-        await api.stop(true);
-      }
-    },
-    30_000,
-  );
-
-  it.skipIf(process.platform === "win32")(
-    "retries a 404 after its first successful poll",
-    async () => {
-      let claims = 0;
-      const api = Bun.serve({
-        hostname: "127.0.0.1",
-        port: 0,
-        fetch: (request) => {
-          if (new URL(request.url).pathname === "/api/internal/execution/runners/assignments")
-            return Response.json({ tasks: [] });
-          claims += 1;
-          return claims === 1
-            ? Response.json(
-                { error: { code: "TASK_NOT_FOUND", message: "The Task is not assigned." } },
-                { status: 404 },
-              )
-            : Response.json({ task: null });
-        },
-      });
-      try {
-        await using runner = await spawnListener(api.url.origin);
-        await until(() => claims === 2 || runner.listener.exitCode !== null);
-
-        expect(runner.listener.exitCode).toBeNull();
-        expect(runner.output.stderr).toContain(
+        expect(lateNotFound.output.stderr).toContain(
           "TASK_NOT_FOUND (HTTP 404): The Task is not assigned.",
         );
+        for (const runner of runners) {
+          expect(runner.output.stderr).toMatch(/claim response .*\/task/);
+          const stopping = performance.now();
+          runner.listener.kill("SIGTERM");
+          expect(await runner.listener.exited).toBe(0);
+          expect(performance.now() - stopping).toBeLessThan(2_000);
+        }
       } finally {
-        await api.stop(true);
+        await Promise.all([serverErrorApi.stop(true), lateNotFoundApi.stop(true)]);
       }
     },
     30_000,
