@@ -331,6 +331,14 @@ const commandToolOutcome = async <Result>(operation: () => Promise<Result>) => {
   }
 };
 
+/** A Devboxes command tool: its input schema, and the run that takes the parsed input. */
+export type CommandTool<Input> = {
+  name: string;
+  description: string;
+  input: z.ZodType<Input>;
+  run: (input: Input) => Promise<{ isError: boolean; result: unknown }>;
+};
+
 /**
  * The Devboxes command tools. `devboxes mcp` serves them over stdio, and the Chat native host
  * runs them in its own process. A command failure becomes an error result the agent reads. Each
@@ -345,7 +353,7 @@ export const devboxesCommandTools = (
     description:
       "List Devboxes command IDs, effects, and summaries when command is omitted. Pass an exact command ID to read its OpenAPI input, response, and authority contract before using devboxes_invoke. Discovery does not grant authority.",
     input: z.object({ command: z.string().min(1).optional() }),
-    run: ({ command }: { command?: string }) =>
+    run: ({ command }) =>
       commandToolOutcome(async () => {
         const description = await readCommands(connection);
         if (command !== undefined) return describeCommand(description, command);
@@ -357,13 +365,13 @@ export const devboxesCommandTools = (
           })),
         };
       }),
-  },
+  } satisfies CommandTool<{ command?: string }>,
   invoke: {
     name: "devboxes_invoke",
     description:
       "Invoke an advertised Devboxes command. Supply JSON input directly, never a local file reference. HTTP acceptance is not evidence that asynchronous work completed.",
     input: z.object({ command: z.string().min(1), input: z.json() }),
-    run: (invocation: { command: string; input: z.core.util.JSONType }) =>
+    run: (invocation) =>
       commandToolOutcome(() => invokeCommand(connection, invocation, readCommands)),
-  },
+  } satisfies CommandTool<{ command: string; input: z.core.util.JSONType }>,
 });
