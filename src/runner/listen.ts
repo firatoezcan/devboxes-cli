@@ -121,6 +121,7 @@ export const listen = async (options: {
           if (
             task.status === "succeeded" ||
             task.status === "cancelled" ||
+            task.status === "paused" ||
             task.status === "cancel_requested"
           )
             await rm(join(directory, task.id), { recursive: true, force: true });
@@ -151,7 +152,11 @@ export const listen = async (options: {
               }),
         });
         if (!executor.State.Running) {
-          if (result.status === "succeeded" || result.status === "cancelled") {
+          if (
+            result.status === "succeeded" ||
+            result.status === "cancelled" ||
+            result.status === "paused"
+          ) {
             await runtime.docker.getContainer(executor.Id).remove();
             await rm(join(directory, task.id), { recursive: true, force: true });
           } else console.error(`Retained failed executor ${executorId} for inspection.`);
