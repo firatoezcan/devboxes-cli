@@ -138,7 +138,7 @@ describe("validateOpencodeProviderAuth", () => {
       expect(() => validateOpencodeProviderAuth("openai", { type: "api", key })).toThrow(Error);
     }
     expect(() => validateOpencodeProviderAuth("openai", { type: "api", key: "   " })).toThrow(
-      "Opencode API credentials for provider openai are invalid.",
+      "Opencode credentials for provider openai must be valid API-key or OAuth entries.",
     );
   });
 
@@ -207,7 +207,7 @@ describe("validateOpencodeProviderAuth", () => {
   it("rejects auth types opencode providers cannot consume here", () => {
     for (const type of ["session", "wellknown"]) {
       expect(() => validateOpencodeProviderAuth("openai", { type, key: "sk-live" })).toThrow(
-        "Opencode credentials for provider openai must be API-key or OAuth entries.",
+        "Opencode credentials for provider openai must be valid API-key or OAuth entries.",
       );
     }
   });
