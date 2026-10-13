@@ -34,8 +34,7 @@
     "jose": "catalog:",
     "oauth4webapi": "catalog:",
     "tough-cookie": "6.0.1",
-    "typebox": "catalog:",
-    "zod": "catalog:"
+    "typebox": "catalog:"
   },
   "devDependencies": {
     "@types/dockerode": "catalog:",

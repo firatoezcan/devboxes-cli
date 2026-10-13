@@ -1,5 +1,6 @@
 import type { Command } from "commander";
-import { z } from "zod";
+import Type from "typebox";
+import Value from "typebox/value";
 
 import {
   describeCommand,
@@ -72,8 +73,8 @@ export const addAccountCommands = (program: Command) => {
       input,
     });
     await writeOutput(`${JSON.stringify(result, null, options.json ? undefined : 2)}\n`);
-    const warned = z.object({ warning: z.string() }).safeParse(result.data);
-    if (!options.json && warned.success) process.stderr.write(`Warning: ${warned.data.warning}\n`);
+    if (!options.json && Value.Check(Type.Object({ warning: Type.String() }), result.data))
+      process.stderr.write(`Warning: ${result.data.warning}\n`);
   });
 
   const mcp = program

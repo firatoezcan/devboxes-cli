@@ -2,11 +2,10 @@ import { readFile, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { DockerOpencodeTaskRuntime } from "@firops/devbox/runner/docker-task-runtime";
+import { JsonValueSchema } from "@firops/platform/protocol/provider-auth";
 import Type, { type Static, type TSchema } from "typebox";
-import Value from "typebox/value";
-import type { z } from "zod";
 
-import { CommandError, requestJson } from "../commands";
+import { CommandError, parseResponse, requestJson } from "../commands";
 
 const taskSchema = Type.Object({
   id: Type.String({ format: "uuid" }),
@@ -55,19 +54,14 @@ export const listen = async (options: {
   const api = async <Schema extends TSchema>(
     operation: string,
     schema: Schema,
-    body: z.core.util.JSONType,
+    body: Static<typeof JsonValueSchema>,
   ): Promise<Static<Schema>> => {
     const { data } = await requestJson(
       { origin: options.apiOrigin, token },
       `/api/internal/execution/runners/${operation}`,
       body,
     );
-    if (Value.Check(schema, data)) return data;
-    const [invalid] = Value.Errors(schema, data);
-    throw new CommandError(
-      "INVALID_RESPONSE",
-      `The ${operation} response is invalid at ${invalid?.instancePath || "/"}: ${invalid?.message}.`,
-    );
+    return parseResponse(schema, data, operation);
   };
   let stopping = false;
   const interrupt = () => {

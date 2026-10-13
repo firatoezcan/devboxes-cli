@@ -1,6 +1,12 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import {
+  CallToolRequestSchema,
+  type CallToolResult,
+  ErrorCode,
+  ListToolsRequestSchema,
+  McpError,
+} from "@modelcontextprotocol/sdk/types.js";
 
 import { cliVersion } from "./api";
 import { devboxesCommandTools, type CommandConnection } from "./commands";
@@ -19,28 +25,34 @@ const mcpResult = ({
 
 export const runDevboxesMcpServer = async (connection: CommandConnection) => {
   const { describe, invoke } = devboxesCommandTools(connection);
-  const server = new McpServer({ name: "devboxes", version: cliVersion });
-  server.registerTool(
-    describe.name,
-    {
-      description: describe.description,
-      inputSchema: describe.input,
-      annotations: { readOnlyHint: true, openWorldHint: true },
-    },
-    async (input) => mcpResult(await describe.run(input)),
+  const server = new Server(
+    { name: "devboxes", version: cliVersion },
+    { capabilities: { tools: {} } },
   );
-  server.registerTool(
-    invoke.name,
-    {
-      description: invoke.description,
-      inputSchema: invoke.input,
-      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
-    },
-    async (input) => mcpResult(await invoke.run(input)),
-  );
+  server.setRequestHandler(ListToolsRequestSchema, () => ({
+    tools: [
+      {
+        name: describe.name,
+        description: describe.description,
+        inputSchema: describe.input,
+        annotations: { readOnlyHint: true, openWorldHint: true },
+      },
+      {
+        name: invoke.name,
+        description: invoke.description,
+        inputSchema: invoke.input,
+        annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+      },
+    ],
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
+    if (params.name === describe.name) return mcpResult(await describe.run(params.arguments));
+    if (params.name === invoke.name) return mcpResult(await invoke.run(params.arguments));
+    throw new McpError(ErrorCode.InvalidParams, `Tool ${params.name} not found`);
+  });
 
   const { promise: closed, resolve: finish } = Promise.withResolvers<void>();
-  server.server.onclose = finish;
+  server.onclose = finish;
   process.stdin.once("end", finish);
   process.stdin.once("close", finish);
   try {

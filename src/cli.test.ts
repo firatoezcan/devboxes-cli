@@ -559,6 +559,64 @@ describe("devboxes mcp", () => {
       await client.close();
     }
   });
+
+  it("lists its tools, refuses invalid arguments with every problem, and rejects an unknown tool", async () => {
+    const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
+    await client.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: ["src/cli.ts", "mcp"],
+        cwd: join(import.meta.dir, ".."),
+        env: {
+          PATH: process.env.PATH ?? "",
+          DEVBOXES_API_URL: "http://127.0.0.1:9",
+          DEVBOXES_TOKEN: "scoped",
+        },
+      }),
+    );
+    try {
+      expect((await client.listTools()).tools).toEqual([
+        {
+          name: "devboxes_describe",
+          description: expect.any(String),
+          inputSchema: {
+            type: "object",
+            properties: { command: { type: "string", minLength: 1 } },
+          },
+          annotations: { readOnlyHint: true, openWorldHint: true },
+        },
+        {
+          name: "devboxes_invoke",
+          description: expect.any(String),
+          inputSchema: {
+            type: "object",
+            required: ["command", "input"],
+            properties: { command: { type: "string", minLength: 1 }, input: {} },
+          },
+          annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+        },
+      ]);
+      expect(
+        await client.callTool({ name: "devboxes_invoke", arguments: { command: "" } }),
+      ).toMatchObject({
+        isError: true,
+        structuredContent: {
+          error: {
+            code: "INVALID_INPUT",
+            message:
+              "The devboxes_invoke input is invalid: / must have required properties input; /command must not have fewer than 1 characters.",
+          },
+        },
+      });
+      await expect(
+        client.callTool({ name: "devboxes_unknown", arguments: {} }),
+      ).rejects.toMatchObject({
+        code: -32602,
+      });
+    } finally {
+      await client.close();
+    }
+  });
 });
 
 describe("devboxes failure report", () => {
