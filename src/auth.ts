@@ -18,6 +18,7 @@ import {
   credentialSafeJson,
   failureSchema,
   injectCallerTrace,
+  openInBrowser,
   parseResponse,
   readCommandInput,
   writeOutput,
@@ -271,20 +272,7 @@ export const addAuthenticationCommands = (program: Command) => {
               : `Open ${verification.href} to continue with ${choice.label}.\nConfirm that the page shows code ${device.user_code}. Waiting for approval...`
           }\n`,
         );
-        if (interactive) {
-          try {
-            Bun.spawn(
-              process.platform === "darwin"
-                ? ["open", verification.href]
-                : process.platform === "win32"
-                  ? ["rundll32", "url.dll,FileProtocolHandler", verification.href]
-                  : ["xdg-open", verification.href],
-              { stdio: ["ignore", "ignore", "ignore"] },
-            ).unref();
-          } catch {
-            process.stderr.write("Open the URL above in a browser.\n");
-          }
-        }
+        if (interactive) openInBrowser(verification.href);
         const expiresAt = Date.now() + device.expires_in * 1000;
         let interval = device.interval;
         let wait = interval;

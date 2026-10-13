@@ -12,6 +12,7 @@ const runCli = async (
   args: string[],
   env: Record<string, string | undefined> = {},
   embeddedApiOrigin?: string,
+  stdin?: string,
 ) => {
   const define =
     embeddedApiOrigin === undefined
@@ -20,7 +21,7 @@ const runCli = async (
   const child = Bun.spawn([process.execPath, ...define, "src/cli.ts", ...args], {
     cwd: join(import.meta.dir, ".."),
     env: { ...process.env, ...env },
-    stdin: "ignore",
+    stdin: stdin === undefined ? "ignore" : new Blob([stdin]),
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -363,6 +364,336 @@ describe("devboxes invoke", () => {
         traceId: "0af7651916cd43dd8448eb211c80319c",
         requestId: "request-list",
       });
+  });
+});
+
+describe("devboxes connect", () => {
+  const organizationId = "0198a0b0-0000-7000-8000-000000000001";
+  const code = `pasted-code-${crypto.randomUUID()}#state`;
+  const key = `sk-ant-api03-${crypto.randomUUID()}`;
+  const ownerOnly = "Only an Organization owner can connect a Provider Account.";
+  let owner = true;
+  let completeAnswers: object[] = [];
+  const starts: unknown[] = [];
+  const completions: unknown[] = [];
+  const accountWrites: { operation: string; body: unknown }[] = [];
+  const operation = (operationId: string) => ({
+    post: {
+      operationId,
+      "x-devboxes": { effect: "write", authority: "Organization owner" },
+      responses: {},
+    },
+  });
+  const api = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: async (request) => {
+      const { pathname } = new URL(request.url);
+      if (pathname === "/api/openapi/json")
+        return Response.json({
+          openapi: "3.0.3",
+          paths: Object.fromEntries(
+            [
+              "providers.list",
+              "providers.connect-start",
+              "providers.connect-complete",
+              "connections.add",
+              "connections.update",
+            ].map((operationId) => [
+              `/api/commands/${operationId.replace(".", "/")}`,
+              operation(operationId),
+            ]),
+          ),
+        });
+      if (pathname === "/api/commands/providers/list") {
+        const unavailable = owner ? null : ownerOnly;
+        return Response.json([
+          { id: "openai", name: "OpenAI", deviceFlow: true, apiKey: true, unavailable },
+          {
+            id: "claude-subscription",
+            name: "Claude subscription",
+            deviceFlow: true,
+            apiKey: false,
+            unavailable,
+          },
+          { id: "anthropic", name: "Anthropic", deviceFlow: false, apiKey: true, unavailable },
+          { id: "xai", name: "xAI", deviceFlow: true, apiKey: true, unavailable: ownerOnly },
+        ]);
+      }
+      if (pathname === "/api/commands/providers/connect-start") {
+        const body = await request.json();
+        starts.push(body);
+        return Response.json({
+          attemptId: "attempt-1",
+          userCode: body.providerId === "openai" ? "ABCD-1234" : null,
+          verificationUrl: `https://sign-in.example/${body.providerId}?state=state`,
+          intervalSeconds: 0,
+          expiresAt: null,
+        });
+      }
+      if (pathname === "/api/commands/providers/connect-complete") {
+        completions.push(await request.json());
+        return Response.json(
+          completeAnswers.shift() ?? { status: "completed", accountId: "account-1" },
+        );
+      }
+      accountWrites.push({ operation: pathname, body: await request.json() });
+      return Response.json({
+        id: "account-2",
+        providerId: "anthropic",
+        label: "Anthropic",
+        authType: "api",
+        accountLabel: null,
+        version: 1,
+      });
+    },
+  });
+  afterAll(() => api.stop(true));
+  const connectTo = (...args: string[]) => [
+    "connect",
+    ...args,
+    "--organization",
+    organizationId,
+    "--label",
+    "Claude",
+  ];
+  const connection = { DEVBOXES_API_URL: api.url.origin, DEVBOXES_TOKEN: "connect-token" };
+  const reset = () => {
+    owner = true;
+    completeAnswers = [];
+    starts.length = 0;
+    completions.length = 0;
+    accountWrites.length = 0;
+  };
+  /** Runs the CLI in a pseudo-terminal, with an `open` on PATH that only records its calls. */
+  const inTerminal = async (args: string[]) => {
+    const bin = await mkdtemp(join(fixtureDirectory, "bin-"));
+    const opened = join(bin, "opened");
+    await writeFile(join(bin, "open"), `#!/bin/sh\necho "$@" >> ${opened}\n`);
+    await chmod(join(bin, "open"), 0o755);
+    let screen = "";
+    const child = Bun.spawn([process.execPath, "src/cli.ts", ...args], {
+      cwd: join(import.meta.dir, ".."),
+      env: { ...process.env, ...connection, PATH: `${bin}:${process.env.PATH}` },
+      terminal: {
+        cols: 120,
+        rows: 40,
+        data: (_terminal, data) => {
+          screen += new TextDecoder().decode(data);
+        },
+      },
+    });
+    return {
+      screen: () => screen,
+      shows: async (text: string) => {
+        for (let waited = 0; !screen.includes(text) && waited < 10_000; waited += 50)
+          await Bun.sleep(50);
+        return screen.includes(text);
+      },
+      type: (text: string) => child.terminal?.write(text),
+      exited: (milliseconds = 10_000) =>
+        Promise.race([child.exited, Bun.sleep(milliseconds).then(() => null)]),
+      kill: () => child.kill(),
+      opened: () => Bun.file(opened).exists(),
+    };
+  };
+
+  it("shows the sign-in URL, sends the pasted code, and never prints the code", async () => {
+    reset();
+    const result = await runCli(
+      connectTo("claude-subscription"),
+      connection,
+      undefined,
+      `${code}\n`,
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toContain("Open https://sign-in.example/claude-subscription?state=state");
+    expect(result.stdout).toBe("Connected Claude as Provider Account account-1.\n");
+    expect(`${result.stdout}${result.stderr}`).not.toContain(code);
+    expect(completions).toEqual([{ organizationId, attemptId: "attempt-1", code }]);
+  });
+
+  it("refuses a provider the person can't connect, with the reason, before it starts a sign-in or reads a key", async () => {
+    reset();
+    owner = false;
+    const signIn = await runCli(
+      connectTo("claude-subscription"),
+      connection,
+      undefined,
+      `${code}\n`,
+    );
+    const apiKey = await runCli(connectTo("anthropic"), connection, undefined, `${key}\n`);
+
+    for (const result of [signIn, apiKey]) {
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toStartWith(`PROVIDER_UNAVAILABLE: ${ownerOnly}`);
+      expect(result.stderr).not.toContain("Open ");
+    }
+    expect(starts).toEqual([]);
+    expect(accountWrites).toEqual([]);
+  });
+
+  it("polls a device sign-in until the provider approves it, and fails when the provider refuses", async () => {
+    reset();
+    completeAnswers = [
+      { status: "pending", intervalSeconds: 0 },
+      { status: "pending", intervalSeconds: 0 },
+    ];
+    const approved = await runCli(connectTo("openai"), connection);
+    const approvals = completions.length;
+    completeAnswers = [{ status: "pending", intervalSeconds: 0 }, { status: "failed" }];
+    const refused = await runCli(connectTo("openai"), connection);
+
+    expect(approved.exitCode).toBe(0);
+    expect(approved.stderr).toContain(
+      "Open https://sign-in.example/openai?state=state to sign in. Confirm that the page shows code ABCD-1234.",
+    );
+    expect(approved.stdout).toBe("Connected Claude as Provider Account account-1.\n");
+    expect(approvals).toBe(3);
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stderr).toContain("CONNECTION_FAILED: The provider refused the sign-in.");
+    expect(completions).toHaveLength(5);
+  });
+
+  it("connects an API key from stdin through connections.add, also to a provider with a sign-in, replaces one with --account, and never prints it", async () => {
+    reset();
+    const added = await runCli(connectTo("anthropic"), connection, undefined, `${key}\n`);
+    const replaced = await runCli(
+      [...connectTo("anthropic"), "--account", "account-2"],
+      connection,
+      undefined,
+      `${key}\n`,
+    );
+    const instead = await runCli(
+      [...connectTo("openai"), "--api-key"],
+      connection,
+      undefined,
+      `${key}\n`,
+    );
+    const signInOnly = await runCli(
+      [...connectTo("claude-subscription"), "--api-key"],
+      connection,
+      undefined,
+      `${key}\n`,
+    );
+
+    expect(signInOnly.exitCode).toBe(1);
+    expect(signInOnly.stderr).toStartWith(
+      "API_KEY_UNSUPPORTED: Claude subscription takes no API key: run devboxes connect claude-subscription to sign in.",
+    );
+    expect(starts).toEqual([]);
+    for (const result of [added, replaced, instead]) {
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe("Connected Claude as Provider Account account-2.\n");
+      expect(`${result.stdout}${result.stderr}`).not.toContain(key);
+    }
+    expect(accountWrites).toEqual([
+      {
+        operation: "/api/commands/connections/add",
+        body: {
+          organizationId,
+          providerId: "anthropic",
+          label: "Claude",
+          auth: { type: "api", key },
+        },
+      },
+      {
+        operation: "/api/commands/connections/update",
+        body: {
+          organizationId,
+          accountId: "account-2",
+          label: "Claude",
+          auth: { type: "api", key },
+        },
+      },
+      {
+        operation: "/api/commands/connections/add",
+        body: {
+          organizationId,
+          providerId: "openai",
+          label: "Claude",
+          auth: { type: "api", key },
+        },
+      },
+    ]);
+  });
+
+  it("refuses to read a key or code from a terminal that shows what is typed", async () => {
+    reset();
+    const cli = await inTerminal([...connectTo("anthropic"), "--json"]);
+
+    if ((await cli.exited(5_000)) === null) cli.type(`${key}\r\x04`);
+    const exitCode = await cli.exited();
+    cli.kill();
+
+    expect(exitCode).toBe(1);
+    expect(cli.screen()).toContain("INPUT_REQUIRED");
+    expect(cli.screen()).not.toContain(key);
+    expect(accountWrites).toEqual([]);
+  });
+
+  it("asks for a provider without a terminal to choose one in", async () => {
+    reset();
+    const result = await runCli(connectTo(), connection);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toStartWith("PROVIDER_REQUIRED");
+  });
+
+  it("lets a person choose every provider's sign-in or API key, greys out what they can't connect, and masks the key", async () => {
+    reset();
+    const cli = await inTerminal(connectTo());
+
+    expect(await cli.shows("xAI API key")).toBe(true);
+    cli.type("\x1b[B\r");
+    expect(await cli.shows("Paste the OpenAI API key")).toBe(true);
+    cli.type(`${key}\r`);
+    const exitCode = await cli.exited();
+    cli.kill();
+
+    expect(exitCode).toBe(0);
+    for (const option of [
+      "OpenAI (browser sign-in)",
+      "OpenAI API key",
+      "Claude subscription (browser sign-in)",
+      "Anthropic API key",
+      "xAI (browser sign-in)",
+      ownerOnly,
+    ])
+      expect(cli.screen()).toContain(option);
+    expect(cli.screen()).not.toContain("Claude subscription API key");
+    expect(cli.screen()).toContain("Connected Claude as Provider Account account-2.");
+    expect(cli.screen()).not.toContain(key);
+    expect(accountWrites).toEqual([
+      {
+        operation: "/api/commands/connections/add",
+        body: {
+          organizationId,
+          providerId: "openai",
+          label: "Claude",
+          auth: { type: "api", key },
+        },
+      },
+    ]);
+    expect(await cli.opened()).toBe(false);
+  });
+
+  it("won't connect a greyed-out option that Enter chose", async () => {
+    reset();
+    owner = false;
+    const cli = await inTerminal(connectTo());
+
+    expect(await cli.shows("xAI (browser sign-in)")).toBe(true);
+    cli.type("\r");
+    const exitCode = await cli.exited();
+    cli.kill();
+
+    expect(exitCode).toBe(1);
+    expect(cli.screen()).toContain(`PROVIDER_UNAVAILABLE: ${ownerOnly}`);
+    expect(cli.screen()).not.toContain("Open ");
+    expect(starts).toEqual([]);
+    expect(await cli.opened()).toBe(false);
   });
 });
 

@@ -234,6 +234,22 @@ export const requestJson = async (
   );
 };
 
+/** Opens `url` in the default browser, or asks the person to open it when that fails. */
+export const openInBrowser = (url: string) => {
+  try {
+    Bun.spawn(
+      process.platform === "darwin"
+        ? ["open", url]
+        : process.platform === "win32"
+          ? ["rundll32", "url.dll,FileProtocolHandler", url]
+          : ["xdg-open", url],
+      { stdio: ["ignore", "ignore", "ignore"] },
+    ).unref();
+  } catch {
+    process.stderr.write("Open the URL above in a browser.\n");
+  }
+};
+
 /**
  * Writes command output to stdout and resolves once stdout accepted all of it. All CLI output goes
  * through `process.stdout`, which the entrypoint, Commander, and the MCP transport also write to.
