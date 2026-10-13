@@ -8,7 +8,7 @@ import Type, { type Static, type TSchema } from "typebox";
 import { CommandError, parseResponse, requestJson } from "../commands";
 
 const taskSchema = Type.Object({
-  id: Type.String({ format: "uuid" }),
+  id: Type.String(),
   executorId: Type.Union([Type.String(), Type.Null()]),
   containerId: Type.Union([Type.String(), Type.Null()]),
   token: Type.String(),
@@ -19,7 +19,7 @@ const taskSchema = Type.Object({
   status: Type.String(),
 });
 const assignmentSchema = Type.Object({
-  id: Type.String({ format: "uuid" }),
+  id: Type.String(),
   executorId: Type.Union([Type.String(), Type.Null()]),
   containerId: Type.Union([Type.String(), Type.Null()]),
   status: Type.String(),
