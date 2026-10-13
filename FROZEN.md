@@ -108,6 +108,7 @@ to Exa at `mcp.exa.ai`. Those requests carry only values from the configuration
 and the agent.
 
 The existing Workspace Image qualification owner verifies the native runtime
-against the selected image. Prove a contract change with Runner, callback, and
+against the images Worker's reference image for each daemon release, and
+against any build on request. Prove a contract change with Runner, callback, and
 native qualification tests that exercise actual CLI-to-API and executor-to-API
 behavior. Do not add tests that pin protocol values.
