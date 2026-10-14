@@ -30,6 +30,10 @@ boundaries, not compatibility guarantees for retired protocols.
   Task callbacks for the Run's Provider Account.
   `execution/authority.ts` validates the signed Run token against the Task,
   Run, Organization, and current actor authority.
+- `apps/firops-api/src/execution/tool-cache.ts` owns the tool cache callbacks:
+  `/tool-cache`, `/tool-cache-upload` and `/tool-cache-ack`.
+  `apps/firops-api/src/execution/native/execution.ts` restores and saves the
+  tool cache.
 - `packages/devbox/src/runner/docker-task-runtime.ts` owns Docker launch.
   The container name is `devboxes-task-<taskId>` and its identity label is
   `devboxes.task`. Launch reuses the existing named container when present.
@@ -112,3 +116,17 @@ against the images Worker's reference image for each daemon release, and
 against any build on request. Prove a contract change with Runner, callback, and
 native qualification tests that exercise actual CLI-to-API and executor-to-API
 behavior. Do not add tests that pin protocol values.
+
+## Tool cache
+
+A work or fix Run restores its Project's tool cache after the repository
+checkout and before any node. After its last node it takes its final checkpoint
+first and then saves the paths that changed. A SIGTERM interrupts the save, and
+the API refuses the save of a cancelled Run. `/tool-cache` returns each cached
+home path with a signed read URL for its current archive on the executor's
+platform. `/tool-cache-upload` signs an archive's upload, and `/tool-cache-ack`
+makes it the path's current archive only while the archive the Run restored, or
+the absence of one, is still current. Review and recheck Runs get no paths.
+Every tool cache failure, including an API without these routes, becomes a
+notice in the native Session and never fails the Run. `verify:workspace-image`
+proves the restore, the save after the checkpoint, and a SIGTERM during a save.
