@@ -37,8 +37,13 @@ boundaries, not compatibility guarantees for retired protocols.
 - `packages/devbox/src/runner/docker-task-runtime.ts` owns Docker launch.
   The container name is `devboxes-task-<taskId>` and its identity label is
   `devboxes.task`. Launch reuses the existing named container when present.
+  It also owns the Claude Code volume of a Claude subscription Run.
 - `packages/devbox/src/runner/executor-artifact.ts` downloads the executor over
-  HTTPS and verifies its SHA-256 digest before the Runner mounts it.
+  HTTPS and verifies its SHA-256 digest before the Runner mounts it, and
+  verifies Claude Code's npm tarball and the binary in it against the SHA-512
+  values that `apps/firops-api/src/execution/claude-code-artifact.ts` pins.
+- `apps/firops-api/src/execution/native/claude-code-launcher.ts` owns the
+  launcher that runs a Claude subscription Run's Claude Code as its own uid.
 - `apps/firops-api/src/execution/managed.ts` owns managed launch of the Task
   Pod from the `devboxes-task` SandboxTemplate.
 
@@ -53,9 +58,38 @@ The Run token is supplied as `DEVBOX_BACKEND_TOKEN` in Docker Env and is visible
 to anyone with Docker access. The private executor captures its configuration,
 sanitizes the process environment, and drops to uid 1001 before importing the
 native execution module. The in-process uid change makes the executor
-non-dumpable under Docker, so other uid 1001 processes cannot read its
-environment or memory. Non-dumpability under gVisor, the managed runtime, is
-unverified until the post-release drill Run.
+non-dumpable under Docker and under gVisor, the managed runtime, so other uid
+1001 processes cannot read its environment, memory or file descriptors.
+
+A Claude subscription Run's Claude Code runs as uid 1002, which the agent can't
+read, signal or trace:
+
+- The Task container has the official Claude Code binary at
+  `/run/devboxes/claude-code/claude`, owned by 1002:1002 with mode 0500, on a
+  read-only mount. A Docker Runner mounts the named volume
+  `devboxes-claude-code-<binary digest>`. On every Claude subscription Task it
+  hashes the volume's binary against the pin and fills the volume again from
+  the verified npm tarball when they differ, without the Task image's content
+  at the mount point. A managed Pod mounts an `emptyDir` that its `claude-code`
+  init container fills with `install` from the API image, as root with only
+  `CHOWN`, because only root, the owner of the API image's Claude Code, can
+  read it.
+- Before the privilege drop, and only when `/run/devboxes/claude-code` is a
+  read-only mount, which a Task image can't add, bootstrap opens the binary and
+  starts the executor again as the launcher with that file descriptor. The
+  launcher drops itself to uid 1002 and runs Claude Code through the
+  descriptor, so a later change at the binary's path changes nothing. The
+  daemon starts each Claude Code process through the launcher's standard input
+  and output, which only the daemon holds. When that channel fails, every
+  running and later Claude Code request fails with the error, and the daemon
+  closes the launcher's input, which ends it.
+- Before a Claude subscription Run uses Claude Code, the executor checks that
+  the binary is a regular file of uid 1002 that the agent can neither read nor
+  run.
+- Every Task container mounts an empty read-only directory at
+  `/etc/claude-code`. It is Claude Code's home and where Claude Code reads
+  policy settings that no flag turns off, so the Task image can't configure
+  Claude Code.
 
 The executor's Git children do not receive the token. For each Git transfer, the
 executor opens a loopback listener that adds the token and forwards only that

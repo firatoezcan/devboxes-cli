@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 
 import { DockerOpencodeTaskRuntime } from "@firops/devbox/runner/docker-task-runtime";
 import { JsonValueSchema } from "@firops/platform/protocol/provider-auth";
+import { ClaudeCodeArtifactSchema } from "@firops/platform/protocol/task-runtime";
 import Type, { type Static, type TSchema } from "typebox";
 
 import { CommandError, parseResponse, requestJson } from "../commands";
@@ -15,6 +16,7 @@ const taskSchema = Type.Object({
   image: Type.String(),
   platform: Type.Union([Type.Literal("linux/amd64"), Type.Literal("linux/arm64")]),
   daemon: Type.Object({ sha256: Type.String(), version: Type.String(), url: Type.String() }),
+  claudeCode: Type.Union([ClaudeCodeArtifactSchema, Type.Null()]),
   traceparent: Type.String({ minLength: 1 }),
   status: Type.String(),
 });
