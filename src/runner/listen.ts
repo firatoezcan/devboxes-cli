@@ -1,9 +1,9 @@
 import { readFile, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-import { DockerOpencodeTaskRuntime } from "@firops/devbox/runner/docker-task-runtime";
-import { JsonValueSchema } from "@firops/platform/protocol/provider-auth";
-import { ClaudeCodeArtifactSchema } from "@firops/platform/protocol/task-runtime";
+import { DockerOpencodeTaskRuntime } from "./docker-task-runtime";
+import { JsonValueSchema } from "../protocol/provider-auth";
+import { ClaudeCodeArtifactSchema } from "../protocol/task-runtime";
 import Type, { type Static, type TSchema } from "typebox";
 
 import { CommandError, parseResponse, requestJson } from "../commands";

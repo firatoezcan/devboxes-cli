@@ -1,6 +1,6 @@
 import { betterFetch } from "@better-fetch/fetch";
-import { JsonValueSchema } from "@firops/platform/protocol/provider-auth";
-import { describeErrors } from "@firops/platform/values/validation-errors";
+import { JsonValueSchema } from "./protocol/provider-auth";
+import { describeErrors } from "./values/validation-errors";
 import { defaultTextMapGetter, ROOT_CONTEXT, trace } from "@opentelemetry/api";
 import { W3CTraceContextPropagator } from "@opentelemetry/core";
 import Type, { type Static, type TObject, type TSchema } from "typebox";
