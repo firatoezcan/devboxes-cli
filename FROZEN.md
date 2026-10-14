@@ -161,6 +161,8 @@ home path with a signed read URL for its current archive on the executor's
 platform. `/tool-cache-upload` signs an archive's upload, and `/tool-cache-ack`
 makes it the path's current archive only while the archive the Run restored, or
 the absence of one, is still current. Review and recheck Runs get no paths.
-Every tool cache failure, including an API without these routes, becomes a
-notice in the native Session and never fails the Run. `verify:workspace-image`
+Every tool cache failure, including an API without these routes, becomes part
+of a notice and never fails the Run. The restore notice is a section of the
+Run's first prompt, after its instruction, so it never takes a model turn of its
+own; the save notice follows the save. `verify:workspace-image`
 proves the restore, the save after the checkpoint, and a SIGTERM during a save.
