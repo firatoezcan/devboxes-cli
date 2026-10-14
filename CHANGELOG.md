@@ -1,5 +1,17 @@
 # devboxes
 
+## 0.5.0
+
+### Minor Changes
+
+- Connect a Provider Account with `devboxes connect`: without a provider ID it offers each provider's browser sign-in and API key, `devboxes connect <providerId>` signs in without prompts, and `--api-key` with `--account` replaces an account's key. A Claude subscription connects by signing in on Anthropic's page and pasting the code at a masked prompt.
+- 02b6989: Remove `--vercel` from `devboxes signup` and `devboxes login`. Sign in with GitHub or with email and password.
+
+### Patch Changes
+
+- `devboxes runner listen` runs Claude subscription Runs with the Claude Code build the API assigns, and removes the task directory and executor of a Run that paused at its usage limit.
+- Write command output once to a slow pipe. A reader that fell behind received the first 64 KiB twice and could not parse the JSON.
+
 ## 0.4.2
 
 ### Patch Changes

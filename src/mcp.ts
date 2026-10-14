@@ -1,69 +1,58 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { z } from "zod";
+import {
+  CallToolRequestSchema,
+  type CallToolResult,
+  ErrorCode,
+  ListToolsRequestSchema,
+  McpError,
+} from "@modelcontextprotocol/sdk/types.js";
 
 import { cliVersion } from "./api";
-import { CommandError, describeCommands, invokeCommand, type CommandConnection } from "./commands";
+import { devboxesCommandTools, type CommandConnection } from "./commands";
 
-const toolResult = async (
-  operation: () => Promise<NonNullable<CallToolResult["structuredContent"]>>,
-): Promise<CallToolResult> => {
-  try {
-    const result = await operation();
-    return {
-      content: [{ type: "text", text: JSON.stringify(result) }],
-      structuredContent: result,
-    };
-  } catch (error) {
-    const result = CommandError.from(error).toJSON();
-    return {
-      isError: true,
-      content: [{ type: "text", text: JSON.stringify(result) }],
-      structuredContent: result,
-    };
-  }
-};
+const mcpResult = ({
+  isError,
+  result,
+}: {
+  isError: boolean;
+  result: NonNullable<CallToolResult["structuredContent"]>;
+}): CallToolResult => ({
+  ...(isError && { isError }),
+  content: [{ type: "text", text: JSON.stringify(result) }],
+  structuredContent: result,
+});
 
 export const runDevboxesMcpServer = async (connection: CommandConnection) => {
-  const server = new McpServer({ name: "devboxes", version: cliVersion });
-  server.registerTool(
-    "devboxes_describe",
-    {
-      description:
-        "List Devboxes command IDs, effects, and summaries when command is omitted. Pass an exact command ID to read its OpenAPI input, response, and authority contract before using devboxes_invoke. Discovery does not grant authority.",
-      inputSchema: { command: z.string().min(1).optional() },
-      annotations: { readOnlyHint: true, openWorldHint: true },
-    },
-    async ({ command }) =>
-      toolResult(async () => {
-        const description = await describeCommands(connection, command);
-        if (command !== undefined) return description;
-        return {
-          commands: description.commands.map((operation) => ({
-            operationId: operation.operationId,
-            effect: operation["x-devboxes"].effect,
-            summary: operation.summary,
-          })),
-        };
-      }),
+  const { describe, invoke } = devboxesCommandTools(connection);
+  const server = new Server(
+    { name: "devboxes", version: cliVersion },
+    { capabilities: { tools: {} } },
   );
-  server.registerTool(
-    "devboxes_invoke",
-    {
-      description:
-        "Invoke an advertised Devboxes command. Supply JSON input directly, never a local file reference. HTTP acceptance is not evidence that asynchronous work completed.",
-      inputSchema: {
-        command: z.string().min(1),
-        input: z.json(),
+  server.setRequestHandler(ListToolsRequestSchema, () => ({
+    tools: [
+      {
+        name: describe.name,
+        description: describe.description,
+        inputSchema: describe.input,
+        annotations: { readOnlyHint: true, openWorldHint: true },
       },
-      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
-    },
-    async (invocation) => toolResult(() => invokeCommand(connection, invocation)),
-  );
+      {
+        name: invoke.name,
+        description: invoke.description,
+        inputSchema: invoke.input,
+        annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+      },
+    ],
+  }));
+  server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
+    if (params.name === describe.name) return mcpResult(await describe.run(params.arguments));
+    if (params.name === invoke.name) return mcpResult(await invoke.run(params.arguments));
+    throw new McpError(ErrorCode.InvalidParams, `Tool ${params.name} not found`);
+  });
 
   const { promise: closed, resolve: finish } = Promise.withResolvers<void>();
-  server.server.onclose = finish;
+  server.onclose = finish;
   process.stdin.once("end", finish);
   process.stdin.once("close", finish);
   try {

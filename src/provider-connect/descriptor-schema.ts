@@ -51,6 +51,21 @@ export const OpencodeConnectorDescriptorSchema = Type.Union([
     },
     { additionalProperties: true },
   ),
+  // PKCE authorization code flow with Anthropic's manual redirect: the sign-in page shows
+  // `code#state` for the person to paste, and the token endpoint takes JSON.
+  Type.Object(
+    {
+      ...connectorBase,
+      kind: Type.Literal("anthropic-pkce"),
+      clientId: Type.String({ minLength: 1 }),
+      authorizeUrl: Type.String({ minLength: 1 }),
+      tokenUrl: Type.String({ minLength: 1 }),
+      redirectUri: Type.String({ minLength: 1 }),
+      scope: Type.String({ minLength: 1 }),
+      tokenLifetimeSeconds: Type.Integer({ minimum: 1 }),
+    },
+    { additionalProperties: true },
+  ),
 ]);
 
 export type OpencodeConnectorDescriptor = Static<typeof OpencodeConnectorDescriptorSchema>;

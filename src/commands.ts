@@ -1,49 +1,66 @@
-import { randomBytes } from "node:crypto";
-
 import { betterFetch } from "@better-fetch/fetch";
-import { defaultTextMapGetter, ROOT_CONTEXT, trace, TraceFlags } from "@opentelemetry/api";
+import { JsonValueSchema } from "./protocol/provider-auth";
+import { describeErrors } from "./values/validation-errors";
+import { defaultTextMapGetter, ROOT_CONTEXT, trace } from "@opentelemetry/api";
 import { W3CTraceContextPropagator } from "@opentelemetry/core";
-import { z } from "zod";
+import Type, { type Static, type TObject, type TSchema } from "typebox";
+import Value from "typebox/value";
 
 import { cliUserAgent } from "./api";
 
-export type CommandConnection = { origin: string; token: string };
+/**
+ * `organizationId` is the one Organization the token is bound to, such as a Chat turn's. Every
+ * command that takes an `organizationId` receives it in place of the one its input names.
+ */
+export type CommandConnection = { origin: string; token: string; organizationId?: string };
 
-const operationSchema = z
-  .object({
-    operationId: z.string().min(1),
-    summary: z.string().optional(),
-    "x-devboxes": z.object({
-      effect: z.enum(["read", "write"]),
-      authority: z.string().min(1),
+const operationSchema = Type.Object({
+  operationId: Type.String({ minLength: 1 }),
+  summary: Type.Optional(Type.String()),
+  "x-devboxes": Type.Object({
+    effect: Type.Union([Type.Literal("read"), Type.Literal("write")]),
+    authority: Type.String({ minLength: 1 }),
+  }),
+  requestBody: Type.Optional(Type.Unknown()),
+  responses: Type.Record(Type.String(), Type.Unknown()),
+});
+
+const organizationScopedOperationSchema = Type.Object({
+  requestBody: Type.Object({
+    content: Type.Object({
+      "application/json": Type.Object({
+        schema: Type.Object({ properties: Type.Object({ organizationId: Type.Object({}) }) }),
+      }),
     }),
-    requestBody: z.unknown().optional(),
-    responses: z.record(z.string(), z.unknown()),
-  })
-  .passthrough();
+  }),
+});
+const commandObjectInputSchema = Type.Record(Type.String(), JsonValueSchema);
 
-const documentSchema = z.object({
-  openapi: z.string(),
-  paths: z.record(z.string(), z.object({ post: z.unknown().optional() }).passthrough()),
-  components: z.record(z.string(), z.unknown()).optional(),
+const documentSchema = Type.Object({
+  openapi: Type.String(),
+  paths: Type.Record(Type.String(), Type.Object({ post: Type.Optional(Type.Unknown()) })),
+  components: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 });
 
-export const failureSchema = z.object({
-  code: z.string(),
-  message: z.string(),
-  details: z.json().optional(),
+export const failureSchema = Type.Object({
+  code: Type.String(),
+  message: Type.String(),
+  details: Type.Optional(JsonValueSchema),
 });
-const errorSchema = z.object({ error: failureSchema });
-const systemErrorSchema = z.object({ code: z.string() });
-const responseTextSchema = z.string();
+const errorSchema = Type.Object({ error: failureSchema });
+const systemErrorSchema = Type.Object({ code: Type.String() });
 
+type Command = Static<typeof operationSchema> & { path: string; method: "POST" };
 export type CommandDescription = {
   openapi: string;
-  commands: (z.infer<typeof operationSchema> & { path: string; method: "POST" })[];
-  components: NonNullable<z.infer<typeof documentSchema>["components"]>;
+  commands: Command[];
+  components: NonNullable<Static<typeof documentSchema>["components"]>;
 };
-type RequestCorrelation = { traceId: string; requestId: string | null };
-export type CommandResponse = { status: number; data: z.core.util.JSONType } & RequestCorrelation;
+type RequestCorrelation = { traceId: string | null; requestId: string | null };
+export type CommandResponse = {
+  status: number;
+  data: Static<typeof JsonValueSchema>;
+} & RequestCorrelation;
 
 export class CommandError extends Error {
   constructor(
@@ -51,7 +68,7 @@ export class CommandError extends Error {
     message: string,
     readonly options: {
       status?: number;
-      details?: z.core.util.JSONType;
+      details?: Static<typeof JsonValueSchema>;
       correlation?: RequestCorrelation;
     } = {},
   ) {
@@ -62,10 +79,9 @@ export class CommandError extends Error {
   static from(cause: unknown) {
     if (cause instanceof CommandError) return cause;
     if (!(cause instanceof Error)) return new CommandError("COMMAND_FAILED", String(cause));
-    const system = systemErrorSchema.safeParse(cause);
     return new CommandError(
       "COMMAND_FAILED",
-      `${system.success ? system.data.code : cause.name}: ${cause.message}`,
+      `${Value.Check(systemErrorSchema, cause) ? cause.code : cause.name}: ${cause.message}`,
     );
   }
 
@@ -98,29 +114,19 @@ export class CommandError extends Error {
 
 const w3cTraceContext = new W3CTraceContextPropagator();
 
-// One CLI invocation joins the caller's W3C trace from TRACEPARENT, or starts a
-// new trace, and sends it as the traceparent of each of its requests. A new
-// trace leaves sampling to the API.
-export const invocationTrace = () => {
-  const spanContext = trace.getSpanContext(
-    w3cTraceContext.extract(
-      ROOT_CONTEXT,
-      { traceparent: process.env.TRACEPARENT },
-      defaultTextMapGetter,
-    ),
-  ) ?? {
-    traceId: randomBytes(16).toString("hex"),
-    spanId: randomBytes(8).toString("hex"),
-    traceFlags: TraceFlags.NONE,
-  };
-  return {
-    traceId: spanContext.traceId,
-    inject: (headers: Headers) =>
-      w3cTraceContext.inject(trace.setSpanContext(ROOT_CONTEXT, spanContext), headers, {
-        set: (carrier, key, value) => carrier.set(key, value),
-      }),
-  };
-};
+// The CLI joins the caller's W3C trace from TRACEPARENT. Without one it sends no traceparent, so
+// the API starts each request's trace, and a result reports the trace the API names in its
+// traceresponse.
+const callerTrace = w3cTraceContext.extract(
+  ROOT_CONTEXT,
+  { traceparent: process.env.TRACEPARENT },
+  defaultTextMapGetter,
+);
+
+export const injectCallerTrace = (headers: Headers) =>
+  w3cTraceContext.inject(callerTrace, headers, {
+    set: (carrier, key, value) => carrier.set(key, value),
+  });
 
 export const apiOrigin = (value: string, identity: "account" | "scoped" = "scoped"): string => {
   const url = URL.parse(value);
@@ -149,13 +155,12 @@ export const credentialSafeJson = (
   text: string,
   secrets: readonly (string | undefined)[],
   redactAuthTokens = false,
-): z.core.util.JSONType =>
+): Static<typeof JsonValueSchema> =>
   text
-    ? JSON.parse(text, (key: string, value: z.core.util.JSONType) => {
-        const parsed = responseTextSchema.safeParse(value);
-        if (!parsed.success) return value;
-        if (redactAuthTokens && key === "token" && parsed.data) return "[redacted]";
-        let text = parsed.data;
+    ? JSON.parse(text, (key: string, value: Static<typeof JsonValueSchema>) => {
+        if (!Value.Check(Type.String(), value)) return value;
+        if (redactAuthTokens && key === "token" && value) return "[redacted]";
+        let text = value;
         for (const secret of secrets) {
           if (secret) text = text.replaceAll(secret, "[redacted]");
         }
@@ -163,17 +168,30 @@ export const credentialSafeJson = (
       })
     : null;
 
+/** The `endpoint` response as `schema` declares it, or a refusal that names every problem. */
+export const parseResponse = <Schema extends TSchema>(
+  schema: Schema,
+  data: Static<typeof JsonValueSchema>,
+  endpoint: string,
+): Static<Schema> => {
+  if (Value.Check(schema, data)) return data;
+  throw new CommandError(
+    "INVALID_RESPONSE",
+    `The ${endpoint} response is invalid: ${describeErrors(schema, data)}.`,
+  );
+};
+
 export const requestJson = async (
   connection: CommandConnection,
   path: string,
-  { traceId, inject }: ReturnType<typeof invocationTrace>,
-  body?: z.core.util.JSONType,
+  body?: Static<typeof JsonValueSchema>,
 ): Promise<CommandResponse> => {
   const headers = new Headers({ Accept: "application/json", "User-Agent": cliUserAgent });
-  inject(headers);
+  injectCallerTrace(headers);
+  let traceId: string | null = null;
   let requestId: string | null = null;
   let result: CommandResponse | undefined;
-  const { error } = await betterFetch<z.core.util.JSONType>(path, {
+  const { error } = await betterFetch<Static<typeof JsonValueSchema>>(path, {
     baseURL: connection.origin,
     method: body === undefined ? "GET" : "POST",
     body,
@@ -182,6 +200,14 @@ export const requestJson = async (
     redirect: "error",
     jsonParser: (text) => credentialSafeJson(text, [connection.token]),
     onResponse: ({ response }) => {
+      traceId =
+        trace.getSpanContext(
+          w3cTraceContext.extract(
+            ROOT_CONTEXT,
+            { traceparent: response.headers.get("traceresponse") ?? undefined },
+            defaultTextMapGetter,
+          ),
+        )?.traceId ?? null;
       requestId = response.headers.get("x-request-id");
     },
     onSuccess: ({ data, response }) => {
@@ -194,11 +220,10 @@ export const requestJson = async (
     throw new CommandError("INVALID_RESPONSE", "The API returned no command result.", {
       correlation,
     });
-  const failure = errorSchema.safeParse(error);
-  if (failure.success) {
-    throw new CommandError(failure.data.error.code, failure.data.error.message, {
+  if (Value.Check(errorSchema, error)) {
+    throw new CommandError(error.error.code, error.error.message, {
       status: error.status,
-      details: failure.data.error.details,
+      details: error.error.details,
       correlation,
     });
   }
@@ -209,7 +234,35 @@ export const requestJson = async (
   );
 };
 
-export const readCommandInput = async (source: string): Promise<z.core.util.JSONType> => {
+/** Opens `url` in the default browser, or asks the person to open it when that fails. */
+export const openInBrowser = (url: string) => {
+  try {
+    Bun.spawn(
+      process.platform === "darwin"
+        ? ["open", url]
+        : process.platform === "win32"
+          ? ["rundll32", "url.dll,FileProtocolHandler", url]
+          : ["xdg-open", url],
+      { stdio: ["ignore", "ignore", "ignore"] },
+    ).unref();
+  } catch {
+    process.stderr.write("Open the URL above in a browser.\n");
+  }
+};
+
+/**
+ * Writes command output to stdout and resolves once stdout accepted all of it. All CLI output goes
+ * through `process.stdout`, which the entrypoint, Commander, and the MCP transport also write to.
+ * Once `process.stdout` exists, `Bun.write(Bun.stdout, ...)` restarts from the first byte when a
+ * pipe fills, so a slow reader receives the first 64 KiB twice. The output is written as bytes, which
+ * the entrypoint's ANSI filter passes through, so a result's text keeps its C1 control characters.
+ */
+export const writeOutput = (text: string) =>
+  new Promise<void>((resolve, reject) =>
+    process.stdout.write(Buffer.from(text), (error) => (error ? reject(error) : resolve())),
+  );
+
+export const readCommandInput = async (source: string): Promise<Static<typeof JsonValueSchema>> => {
   let text: string;
   if (source === "-") {
     if (process.stdin.isTTY)
@@ -226,7 +279,7 @@ export const readCommandInput = async (source: string): Promise<z.core.util.JSON
       "Use --input @file or --input -. Keep credentials out of command arguments.",
     );
   }
-  let input: z.core.util.JSONType | undefined;
+  let input: Static<typeof JsonValueSchema> | undefined;
   try {
     input = JSON.parse(text);
   } catch {
@@ -239,54 +292,138 @@ export const readCommandInput = async (source: string): Promise<z.core.util.JSON
 
 export const describeCommands = async (
   connection: CommandConnection,
-  command?: string,
-  commandTrace = invocationTrace(),
 ): Promise<CommandDescription> => {
-  const response = await requestJson(connection, "/api/openapi/json", commandTrace);
-  const document = documentSchema.safeParse(response.data);
-  if (!document.success) {
-    throw new CommandError("INVALID_DISCOVERY", "The API returned an invalid OpenAPI document.");
+  const response = await requestJson(connection, "/api/openapi/json");
+  const document = response.data;
+  if (!Value.Check(documentSchema, document)) {
+    throw new CommandError(
+      "INVALID_DISCOVERY",
+      `The API returned an invalid OpenAPI document: ${describeErrors(documentSchema, document)}.`,
+    );
   }
   const commands = [];
   const ids = new Set<string>();
-  for (const [path, item] of Object.entries(document.data.paths)) {
+  for (const [path, item] of Object.entries(document.paths)) {
     const route = /^\/api\/commands\/([A-Za-z0-9_-]+)\/([A-Za-z0-9_-]+)$/.exec(path);
     if (!route || item.post === undefined) continue;
-    const parsed = operationSchema.safeParse(item.post);
-    if (!parsed.success || parsed.data.operationId !== `${route[1]}.${route[2]}`) {
+    const operation = item.post;
+    if (!Value.Check(operationSchema, operation)) {
       throw new CommandError(
         "INVALID_DISCOVERY",
-        "A command route has an invalid operation contract.",
+        `A command route has an invalid operation contract: ${describeErrors(operationSchema, operation)}.`,
       );
     }
-    if (ids.has(parsed.data.operationId)) {
+    if (operation.operationId !== `${route[1]}.${route[2]}`) {
+      throw new CommandError(
+        "INVALID_DISCOVERY",
+        `A command route has an invalid operation contract: /operationId must be ${route[1]}.${route[2]}.`,
+      );
+    }
+    if (ids.has(operation.operationId)) {
       throw new CommandError("INVALID_DISCOVERY", "Command operation IDs must be unique.");
     }
-    ids.add(parsed.data.operationId);
-    commands.push({ ...parsed.data, path, method: "POST" as const });
+    ids.add(operation.operationId);
+    commands.push({ ...operation, path, method: "POST" as const });
   }
-  if (command !== undefined && !ids.has(command)) {
+  return {
+    openapi: document.openapi,
+    commands,
+    components: document.components ?? {},
+  };
+};
+
+/** The advertised commands narrowed to one, or a refusal of a command the API does not advertise. */
+export const describeCommand = (
+  description: CommandDescription,
+  command: string,
+): CommandDescription & { commands: [Command] } => {
+  const operation = description.commands.find((candidate) => candidate.operationId === command);
+  if (!operation) {
     throw new CommandError(
       "UNKNOWN_COMMAND",
       "This operation is not advertised by the configured API. Use devboxes commands to discover available operations.",
     );
   }
-  return {
-    openapi: document.data.openapi,
-    commands: commands.filter(
-      (operation) => command === undefined || operation.operationId === command,
-    ),
-    components: document.data.components ?? {},
-  };
+  return { ...description, commands: [operation] };
 };
 
 export const invokeCommand = async (
   connection: CommandConnection,
-  invocation: { command: string; input: z.core.util.JSONType },
+  invocation: { command: string; input: Static<typeof JsonValueSchema> },
+  readCommands = describeCommands,
 ): Promise<CommandResponse> => {
-  const commandTrace = invocationTrace();
-  const description = await describeCommands(connection, invocation.command, commandTrace);
-  const operation = description.commands[0];
-  if (!operation) throw new CommandError("UNKNOWN_COMMAND", "The command is unavailable.");
-  return requestJson(connection, operation.path, commandTrace, invocation.input);
+  const [operation] = describeCommand(await readCommands(connection), invocation.command).commands;
+  let input = invocation.input;
+  if (
+    connection.organizationId &&
+    Value.Check(organizationScopedOperationSchema, operation) &&
+    Value.Check(commandObjectInputSchema, input)
+  ) {
+    input = { ...input, organizationId: connection.organizationId };
+  }
+  return requestJson(connection, operation.path, input);
 };
+
+/**
+ * A Devboxes command tool. Its run refuses input that `input` rejects, and returns that refusal or a
+ * command failure as an error result the agent reads.
+ */
+const commandTool = <Input extends TObject, Result>(
+  name: string,
+  description: string,
+  input: Input,
+  run: (input: Static<Input>) => Promise<Result>,
+) => ({
+  name,
+  description,
+  input,
+  run: async <Submitted>(submitted: Submitted) => {
+    try {
+      if (!Value.Check(input, submitted))
+        throw new CommandError(
+          "INVALID_INPUT",
+          `The ${name} input is invalid: ${describeErrors(input, submitted)}.`,
+        );
+      return { isError: false, result: await run(submitted) };
+    } catch (error) {
+      return { isError: true, result: CommandError.from(error).toJSON() };
+    }
+  },
+});
+
+/**
+ * The Devboxes command tools. `devboxes mcp` serves them over stdio, and the Chat native host
+ * runs them in its own process. Each call reads the advertised commands with `readCommands`, which
+ * by default asks the API again.
+ */
+export const devboxesCommandTools = (
+  connection: CommandConnection,
+  readCommands = describeCommands,
+) => ({
+  describe: commandTool(
+    "devboxes_describe",
+    "List Devboxes command IDs, effects, and summaries when command is omitted. Pass an exact command ID to read its OpenAPI input, response, and authority contract before using devboxes_invoke. Discovery does not grant authority.",
+    Type.Object({ command: Type.Optional(Type.String({ minLength: 1 })) }),
+    async ({ command }) => {
+      const description = await readCommands(connection);
+      if (command !== undefined) return describeCommand(description, command);
+      return {
+        commands: description.commands.map((operation) => ({
+          operationId: operation.operationId,
+          effect: operation["x-devboxes"].effect,
+          summary: operation.summary,
+        })),
+      };
+    },
+  ),
+  invoke: commandTool(
+    "devboxes_invoke",
+    "Invoke an advertised Devboxes command. Supply JSON input directly, never a local file reference. HTTP acceptance is not evidence that asynchronous work completed.",
+    Type.Object({
+      command: Type.String({ minLength: 1 }),
+      // Tool arguments arrive as JSON, so the advertised schema accepts every value.
+      input: Type.Unsafe<Static<typeof JsonValueSchema>>({}),
+    }),
+    (invocation) => invokeCommand(connection, invocation, readCommands),
+  ),
+});

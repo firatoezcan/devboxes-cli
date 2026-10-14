@@ -39,4 +39,19 @@ export const opencodeProviderConnectors: readonly OpencodeConnectorDescriptor[] 
     tokenUrl: "https://auth.x.ai/oauth2/token",
     verificationUrlHosts: ["x.ai"],
   },
+  {
+    providerId: "claude-subscription",
+    label: "Claude subscription",
+    description: "Authorize a Claude Pro, Max, Team or Enterprise subscription.",
+    kind: "anthropic-pkce",
+    // Claude Code's public client, asking for the inference-only token with a one-year lifetime that
+    // Claude Code asks for when it issues a long-lived token. The owner chose this client for the
+    // sign-in step only; model requests go through Claude Code unchanged.
+    clientId: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+    authorizeUrl: "https://claude.com/cai/oauth/authorize",
+    tokenUrl: "https://platform.claude.com/v1/oauth/token",
+    redirectUri: "https://platform.claude.com/oauth/code/callback",
+    scope: "user:inference",
+    tokenLifetimeSeconds: 31_536_000,
+  },
 ];

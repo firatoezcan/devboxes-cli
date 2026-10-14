@@ -1,21 +1,30 @@
-import type { OpencodeOauthAuth } from "../protocol/provider-auth";
+import { githubRateLimit } from "../repositories/github-rate-limit";
+import type {
+  OpencodeOauthAuth,
+  OpencodeProviderAuth,
+} from "../protocol/provider-auth";
+import { describeErrors } from "../values/validation-errors";
+import { Schema } from "effect";
 import { decodeJwt, type JWTPayload } from "jose";
 import {
   None,
   allowInsecureRequests,
+  calculatePKCECodeChallenge,
   deviceAuthorizationRequest,
   deviceCodeGrantRequest,
+  generateRandomCodeVerifier,
+  generateRandomState,
   genericTokenEndpointRequest,
 } from "oauth4webapi";
 import Type, { type Static } from "typebox";
 import Value from "typebox/value";
-import { z } from "zod";
 
 import type { OpencodeConnectorDescriptor } from "./descriptor-schema";
 
 type OpenaiDeviceDescriptor = Extract<OpencodeConnectorDescriptor, { kind: "openai-device" }>;
 type GithubDeviceDescriptor = Extract<OpencodeConnectorDescriptor, { kind: "github-device" }>;
 type Rfc8628FormDescriptor = Extract<OpencodeConnectorDescriptor, { kind: "rfc8628-form" }>;
+type AnthropicPkceDescriptor = Extract<OpencodeConnectorDescriptor, { kind: "anthropic-pkce" }>;
 
 const userAgent = "devboxes-dashboard";
 
@@ -31,17 +40,27 @@ const clampedIntervalSeconds = (seconds: number | undefined, fallback: number) =
 // The caller stores this payload and decodes it for each poll. It carries the
 // flow kind it was started with; executors refuse a payload whose kind does not
 // match the descriptor they were handed.
-export const OpencodeOauthAttemptPayloadSchema = z.union([
-  z.object({ kind: z.literal("openai-device"), deviceAuthId: z.string(), userCode: z.string() }),
-  z.object({ kind: z.literal("github-device"), deviceCode: z.string() }),
-  z.object({ kind: z.literal("github-device"), accessToken: z.string().min(1) }),
-  z.object({ kind: z.literal("rfc8628-form"), deviceCode: z.string() }),
+export const OpencodeOauthAttemptPayloadSchema = Type.Union([
+  Type.Object({
+    kind: Type.Literal("openai-device"),
+    deviceAuthId: Type.String(),
+    userCode: Type.String(),
+  }),
+  Type.Object({ kind: Type.Literal("github-device"), deviceCode: Type.String() }),
+  Type.Object({ kind: Type.Literal("github-device"), accessToken: Type.String({ minLength: 1 }) }),
+  Type.Object({ kind: Type.Literal("rfc8628-form"), deviceCode: Type.String() }),
+  Type.Object({
+    kind: Type.Literal("anthropic-pkce"),
+    codeVerifier: Type.String({ minLength: 1 }),
+    state: Type.String({ minLength: 1 }),
+  }),
 ]);
 
-export type OpencodeOauthAttemptPayload = z.infer<typeof OpencodeOauthAttemptPayloadSchema>;
+export type OpencodeOauthAttemptPayload = Static<typeof OpencodeOauthAttemptPayloadSchema>;
 
 export type OpencodeOauthDeviceStart = {
-  userCode: string;
+  /** The code the person confirms on the provider's page; none for a flow whose page shows one. */
+  userCode: string | null;
   verificationUrl: string;
   intervalSeconds: number;
   expiresAtMs: number | null;
@@ -57,7 +76,9 @@ export type OpencodeOauthPollResult =
   | { status: "failed"; reason?: "insufficient-scope" }
   | {
       status: "completed";
-      auth: OpencodeOauthAuth;
+      auth: OpencodeProviderAuth;
+      /** When an API key the sign-in issued stops working. */
+      expiresAtMs?: number;
       accountExternalId?: string;
       accountLabel?: string;
     };
@@ -74,30 +95,31 @@ const TokenResponseSchema = Type.Object(
   { additionalProperties: true },
 );
 
-const OauthIdentityClaimsSchema = z
-  .object({
-    chatgpt_account_id: z.string().optional(),
-    email: z.string().optional(),
-    sub: z.string().optional(),
-    "https://api.openai.com/auth": z
-      .object({ chatgpt_account_id: z.string().optional() })
-      .optional(),
-    organizations: z.array(z.object({ id: z.string().optional() })).optional(),
-  })
-  .transform((claims) => ({
+const OauthIdentityClaimsSchema = Type.Object({
+  chatgpt_account_id: Type.Optional(Type.String()),
+  email: Type.Optional(Type.String()),
+  sub: Type.Optional(Type.String()),
+  "https://api.openai.com/auth": Type.Optional(
+    Type.Object({ chatgpt_account_id: Type.Optional(Type.String()) }),
+  ),
+  organizations: Type.Optional(Type.Array(Type.Object({ id: Type.Optional(Type.String()) }))),
+});
+
+const oauthIdentity = (payload: JWTPayload) => {
+  if (!Value.Check(OauthIdentityClaimsSchema, payload))
+    throw new Error(
+      `The OAuth token's identity claims are invalid: ${describeErrors(OauthIdentityClaimsSchema, payload)}.`,
+    );
+  const claims: Static<typeof OauthIdentityClaimsSchema> = payload;
+  return {
     accountId:
       claims.chatgpt_account_id ||
       claims["https://api.openai.com/auth"]?.chatgpt_account_id ||
       claims.organizations?.[0]?.id,
     email: claims.email,
     subject: claims.sub,
-  }))
-  .brand<"OauthIdentityClaims">();
-
-type OauthIdentityClaims = z.output<typeof OauthIdentityClaimsSchema>;
-
-const parseOauthIdentityClaims = (token: string): OauthIdentityClaims =>
-  OauthIdentityClaimsSchema.parse(decodeJwt(token));
+  };
+};
 
 // --- ChatGPT-style device flow (kind: openai-device) ------------------------
 
@@ -122,7 +144,7 @@ const openaiOauthFromTokens = (
   tokens: Static<typeof TokenResponseSchema>,
   refreshToken: string,
 ): Omit<Extract<OpencodeOauthPollResult, { status: "completed" }>, "status"> => {
-  const identity = tokens.id_token ? parseOauthIdentityClaims(tokens.id_token) : undefined;
+  const identity = tokens.id_token ? oauthIdentity(decodeJwt(tokens.id_token)) : undefined;
   let accessClaims: JWTPayload | undefined;
   if (!identity?.accountId) {
     try {
@@ -131,7 +153,7 @@ const openaiOauthFromTokens = (
       accessClaims = undefined;
     }
   }
-  const accessIdentity = accessClaims ? OauthIdentityClaimsSchema.parse(accessClaims) : undefined;
+  const accessIdentity = accessClaims ? oauthIdentity(accessClaims) : undefined;
   const accountId = identity?.accountId || accessIdentity?.accountId;
   const auth: OpencodeOauthAuth = {
     type: "oauth",
@@ -354,6 +376,25 @@ const pollGithubDeviceFlow = async (
     intervalSeconds,
     payload: { kind: "github-device", accessToken },
   };
+  /** Keeps the attempt pending until GitHub's retry time when GitHub refused for a rate limit. */
+  const rateLimitedPoll = async (response: Response): Promise<OpencodeOauthPollResult | null> => {
+    const rateLimit = githubRateLimit({
+      status: response.status,
+      message: await response.text().catch(() => ""),
+      response: { headers: Object.fromEntries(response.headers) },
+    });
+    if (!rateLimit) return null;
+    const retrySeconds = rateLimit.retryAt
+      ? (rateLimit.retryAt.getTime() - Date.now()) / 1_000
+      : undefined;
+    return {
+      ...pending,
+      intervalSeconds: Math.max(
+        intervalSeconds,
+        clampedIntervalSeconds(retrySeconds, intervalSeconds),
+      ),
+    };
+  };
   const headers = {
     Accept: "application/vnd.github+json",
     Authorization: `Bearer ${accessToken}`,
@@ -364,9 +405,12 @@ const pollGithubDeviceFlow = async (
   );
   if (!identityResponse || identityResponse.status >= 500) return pending;
   if (!identityResponse.ok) {
-    return identityResponse.status === 403
-      ? { status: "failed", reason: "insufficient-scope" }
-      : { status: "failed" };
+    return (
+      (await rateLimitedPoll(identityResponse)) ??
+      (identityResponse.status === 403
+        ? { status: "failed", reason: "insufficient-scope" }
+        : { status: "failed" })
+    );
   }
   const scopes = (identityResponse.headers.get("x-oauth-scopes") ?? "")
     .split(",")
@@ -380,9 +424,12 @@ const pollGithubDeviceFlow = async (
   }).catch(() => undefined);
   if (!copilotResponse || copilotResponse.status >= 500) return pending;
   if (!copilotResponse.ok) {
-    return copilotResponse.status === 401 || copilotResponse.status === 403
-      ? { status: "failed", reason: "insufficient-scope" }
-      : { status: "failed" };
+    return (
+      (await rateLimitedPoll(copilotResponse)) ??
+      (copilotResponse.status === 401 || copilotResponse.status === 403
+        ? { status: "failed", reason: "insufficient-scope" }
+        : { status: "failed" })
+    );
   }
   const copilotBody = await copilotResponse.text().catch(() => undefined);
   if (copilotBody === undefined) return pending;
@@ -425,7 +472,7 @@ const rfc8628OauthFromTokens = (
     access: tokens.access_token,
     expires: Math.round(Date.now() + (tokens.expires_in ?? 3600) * 1000),
   };
-  const claims = tokens.id_token ? parseOauthIdentityClaims(tokens.id_token) : undefined;
+  const claims = tokens.id_token ? oauthIdentity(decodeJwt(tokens.id_token)) : undefined;
   return { auth, accountExternalId: claims?.subject, accountLabel: claims?.email };
 };
 
@@ -531,6 +578,92 @@ const pollRfc8628FormFlow = async (
   return { status: "failed" };
 };
 
+// --- Anthropic PKCE code flow (kind: anthropic-pkce) -------------------------
+// The person signs in on Anthropic's page and pastes the `code#state` it shows.
+
+const authorizationCodeLifetimeMs = 10 * 60_000;
+
+const startAnthropicPkceFlow = async (
+  descriptor: AnthropicPkceDescriptor,
+): Promise<OpencodeOauthDeviceStart> => {
+  const codeVerifier = generateRandomCodeVerifier();
+  const state = generateRandomState();
+  const authorizeUrl = new URL(descriptor.authorizeUrl);
+  authorizeUrl.search = new URLSearchParams({
+    code: "true",
+    client_id: descriptor.clientId,
+    response_type: "code",
+    redirect_uri: descriptor.redirectUri,
+    scope: descriptor.scope,
+    code_challenge: await calculatePKCECodeChallenge(codeVerifier),
+    code_challenge_method: "S256",
+    state,
+  }).toString();
+  return {
+    userCode: null,
+    verificationUrl: authorizeUrl.toString(),
+    intervalSeconds: 0,
+    expiresAtMs: Date.now() + authorizationCodeLifetimeMs,
+    payload: { kind: "anthropic-pkce", codeVerifier, state },
+  };
+};
+
+/** A sign-in that ended without a token, with the HTTP status and code the API answers with. */
+export class ProviderSignInFailed extends Schema.TaggedError<ProviderSignInFailed>()(
+  "ProviderSignInFailed",
+  { status: Schema.Number, code: Schema.String, message: Schema.String },
+) {}
+
+/**
+ * Exchanges the pasted `code#state` for the account's inference token, which is its API key.
+ * Anthropic's refusal or failure reaches the caller as Anthropic sent it.
+ */
+const completeAnthropicPkceFlow = async (
+  descriptor: AnthropicPkceDescriptor,
+  payload: Extract<OpencodeOauthAttemptPayload, { kind: "anthropic-pkce" }>,
+  pasted: string | undefined,
+): Promise<OpencodeOauthPollResult> => {
+  const [code, state] = pasted?.trim().split("#") ?? [];
+  if (!code || state !== payload.state)
+    throw new ProviderSignInFailed({
+      status: 422,
+      code: "SIGN_IN_CODE_MISMATCH",
+      message:
+        "The sign-in code doesn't match this sign-in attempt; start again with devboxes connect",
+    });
+  const response = await fetch(descriptor.tokenUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "User-Agent": userAgent },
+    body: JSON.stringify({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: descriptor.redirectUri,
+      client_id: descriptor.clientId,
+      code_verifier: payload.codeVerifier,
+      state,
+      expires_in: descriptor.tokenLifetimeSeconds,
+    }),
+  });
+  if (response.status >= 500)
+    throw new ProviderSignInFailed({
+      status: 502,
+      code: "PROVIDER_UNAVAILABLE",
+      message: `Anthropic's sign-in failed upstream (${response.status}): ${await response.text()}`,
+    });
+  if (!response.ok)
+    throw new ProviderSignInFailed({
+      status: 422,
+      code: "PROVIDER_SIGN_IN_REFUSED",
+      message: `Anthropic refused the sign-in (${response.status}): ${await response.text()}`,
+    });
+  const tokens = Value.Parse(TokenResponseSchema, await response.json());
+  return {
+    status: "completed",
+    auth: { type: "api", key: tokens.access_token },
+    ...(tokens.expires_in !== undefined && { expiresAtMs: Date.now() + tokens.expires_in * 1000 }),
+  };
+};
+
 // --- Shared entry points -----------------------------------------------------
 
 export const startOpencodeOauthDeviceFlow = async (
@@ -538,13 +671,16 @@ export const startOpencodeOauthDeviceFlow = async (
 ): Promise<OpencodeOauthDeviceStart> => {
   if (descriptor.kind === "openai-device") return startOpenaiDeviceFlow(descriptor);
   if (descriptor.kind === "github-device") return startGithubDeviceFlow(descriptor);
+  if (descriptor.kind === "anthropic-pkce") return startAnthropicPkceFlow(descriptor);
   return startRfc8628FormFlow(descriptor);
 };
 
+/** `code` is what the person pasted from the provider's page, for a flow that shows one. */
 export const pollOpencodeOauthDeviceFlow = async (
   descriptor: OpencodeConnectorDescriptor,
   payload: OpencodeOauthAttemptPayload,
   intervalSeconds: number,
+  code?: string,
 ): Promise<OpencodeOauthPollResult> => {
   // The payload records the flow kind it was started with; a descriptor whose
   // kind moved underneath a pending attempt must fail instead of reaching the
@@ -557,6 +693,9 @@ export const pollOpencodeOauthDeviceFlow = async (
   }
   if (descriptor.kind === "rfc8628-form" && payload.kind === "rfc8628-form") {
     return pollRfc8628FormFlow(descriptor, payload, intervalSeconds);
+  }
+  if (descriptor.kind === "anthropic-pkce" && payload.kind === "anthropic-pkce") {
+    return completeAnthropicPkceFlow(descriptor, payload, code);
   }
   throw new Error(
     `Opencode provider ${descriptor.providerId} attempt was started as ${payload.kind} but the connector is now ${descriptor.kind}; start a new connect attempt.`,

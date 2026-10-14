@@ -14,9 +14,13 @@ const copilotConnector = opencodeProviderConnectors.find(
   (connector) => connector.providerId === "github-copilot",
 );
 const xaiConnector = opencodeProviderConnectors.find((connector) => connector.providerId === "xai");
+const claudeConnector = opencodeProviderConnectors.find(
+  (connector) => connector.providerId === "claude-subscription",
+);
 assert(openaiConnector?.kind === "openai-device");
 assert(copilotConnector?.kind === "github-device");
 assert(xaiConnector?.kind === "rfc8628-form");
+assert(claudeConnector?.kind === "anthropic-pkce");
 
 const originalFetch = globalThis.fetch;
 
@@ -139,7 +143,7 @@ describe("ChatGPT device flow", () => {
     expect(exchangeBody.get("redirect_uri")).toBe("https://auth.openai.com/deviceauth/callback");
 
     if (result.status !== "completed") throw new Error(`Expected completion, got ${result.status}`);
-    expect(result.auth.type).toBe("oauth");
+    assert(result.auth.type === "oauth");
     expect(result.auth.refresh).toBe("refresh-1");
     expect(result.auth.access).toBe(accessToken);
     expect(result.auth.expires).toBeGreaterThan(Date.now());
@@ -339,6 +343,59 @@ describe("GitHub Copilot device flow", () => {
         5,
       ),
     ).toEqual({ status: "failed", reason: "insufficient-scope" });
+  });
+
+  test("a GitHub rate limit on the identity or Copilot check keeps the attempt pending until its retry time", async () => {
+    const rateLimited = [
+      {
+        path: "/user",
+        retryAfter: 60,
+        response: () =>
+          Response.json(
+            { message: "You have exceeded a secondary rate limit." },
+            { status: 403, headers: { "retry-after": "60" } },
+          ),
+      },
+      {
+        path: "/copilot_internal/v2/token",
+        retryAfter: 90,
+        response: () =>
+          Response.json(
+            { message: "Too many requests" },
+            { status: 429, headers: { "retry-after": "90" } },
+          ),
+      },
+    ];
+    for (const { path, retryAfter, response } of rateLimited) {
+      stubFetch((url) =>
+        url.endsWith(path)
+          ? response()
+          : url.endsWith("/login/oauth/access_token")
+            ? Response.json({ access_token: "gho_token" })
+            : url.endsWith("/copilot_internal/v2/token")
+              ? Response.json({ token: "copilot-api-token" })
+              : Response.json(
+                  { id: 4217, login: "debug-owner" },
+                  { headers: { "x-oauth-scopes": "read:user" } },
+                ),
+      );
+
+      expect([
+        path,
+        await pollOpencodeOauthDeviceFlow(
+          copilotConnector,
+          { kind: "github-device", deviceCode: "device-code-1" },
+          5,
+        ),
+      ]).toEqual([
+        path,
+        {
+          status: "pending",
+          intervalSeconds: retryAfter,
+          payload: { kind: "github-device", accessToken: "gho_token" },
+        },
+      ]);
+    }
   });
 
   test("denial fails the attempt", async () => {
@@ -573,7 +630,7 @@ describe("xAI Grok device flow", () => {
     expect(pollBody.get("device_code")).toBe("xai-device-code");
 
     if (result.status !== "completed") throw new Error(`Expected completion, got ${result.status}`);
-    expect(result.auth.type).toBe("oauth");
+    assert(result.auth.type === "oauth");
     expect(result.auth.refresh).toBe("xai-refresh-1");
     expect(result.auth.access).toBe("xai-access-1");
     expect(result.auth.expires).toBeGreaterThan(Date.now());
@@ -608,6 +665,51 @@ describe("xAI Grok device flow", () => {
       ),
       /502/,
     );
+  });
+});
+
+describe("Claude subscription sign-in", () => {
+  test("refuses a missing code, or one with another attempt's state, without asking Anthropic", async () => {
+    const requests = stubFetch(() => Response.json({}));
+    const { payload } = await startOpencodeOauthDeviceFlow(claudeConnector);
+    const mismatch = {
+      status: 422,
+      code: "SIGN_IN_CODE_MISMATCH",
+      message:
+        "The sign-in code doesn't match this sign-in attempt; start again with devboxes connect",
+    };
+
+    for (const pasted of [undefined, "code", "code#another-state"])
+      await expect(
+        pollOpencodeOauthDeviceFlow(claudeConnector, payload, 0, pasted),
+      ).rejects.toMatchObject(mismatch);
+    expect(requests).toEqual([]);
+  });
+
+  test("shows Anthropic's refusal and its upstream failure as Anthropic sent them", async () => {
+    const answers = [
+      Response.json(
+        { error: "invalid_grant", error_description: "Invalid 'code' in request." },
+        { status: 400 },
+      ),
+      new Response("upstream overloaded", { status: 503 }),
+    ];
+    stubFetch(() => answers.shift() ?? Response.json({}));
+    const { payload } = await startOpencodeOauthDeviceFlow(claudeConnector);
+    assert(payload.kind === "anthropic-pkce");
+    const exchange = () =>
+      pollOpencodeOauthDeviceFlow(claudeConnector, payload, 0, `code#${payload.state}`);
+
+    await expect(exchange()).rejects.toMatchObject({
+      status: 422,
+      code: "PROVIDER_SIGN_IN_REFUSED",
+      message: `Anthropic refused the sign-in (400): {"error":"invalid_grant","error_description":"Invalid 'code' in request."}`,
+    });
+    await expect(exchange()).rejects.toMatchObject({
+      status: 502,
+      code: "PROVIDER_UNAVAILABLE",
+      message: "Anthropic's sign-in failed upstream (503): upstream overloaded",
+    });
   });
 });
 

@@ -1,6 +1,6 @@
 {
   "name": "devboxes",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "private": true,
   "description": "Devboxes CLI: discover and invoke application commands, authenticate, run execution capacity, and serve stdio MCP.",
   "homepage": "https://github.com/firatoezcan/devboxes-cli#readme",
@@ -12,25 +12,21 @@
   },
   "type": "module",
   "dependencies": {
-    "@better-fetch/fetch": "1.1.21",
+    "@better-fetch/fetch": "1.3.2",
     "@clack/prompts": "^1.7.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@opentelemetry/api": "1.9.1",
     "@opentelemetry/core": "2.7.0",
-    "better-auth": "1.6.9",
+    "axios": "1.19.0",
+    "better-auth": "1.7.7",
     "commander": "^14.0.3",
     "dockerode": "5.0.1",
+    "effect": "4.0.1",
     "elysia": "^1.4.28",
-    "jose": "6.2.2",
+    "jose": "6.2.12",
     "oauth4webapi": "3.8.6",
     "tough-cookie": "6.0.1",
-    "typebox": "^1.1.34",
-    "zod": "^4.3.6",
-    "@effect/platform-node": "4.0.0-rc.112",
-    "@opencode-ai/server": "0.0.0-dev-18687",
-    "axios": "1.19.0",
-    "effect": "4.0.0-rc.112",
-    "octokit": "^5.0.5"
+    "typebox": "^1.1.34"
   },
   "devDependencies": {
     "@types/dockerode": "^4.0.1",
@@ -43,10 +39,6 @@
   "engines": {
     "bun": ">=1.4.2"
   },
-  "optionalDependencies": {
-    "@opencode-ai/pty-linux-arm64-gnu": "0.1.13",
-    "@opencode-ai/pty-linux-x64-gnu": "0.1.13"
-  },
   "exports": {
     "./protocol/*": "./src/protocol/*.ts",
     "./provider-connect/*": "./src/provider-connect/*.ts"
@@ -56,9 +48,6 @@
     "build:smoke": "bun scripts/build-cli-binaries.ts --smoke",
     "devboxes:local": "bun src/cli.ts",
     "test": "bun test --isolate --no-orphans --timeout 60000",
-    "test:full": "bun test --isolate --no-orphans --timeout 60000",
-    "build:daemon": "bun run build:daemon:linux-amd64",
-    "build:daemon:linux-amd64": "bun build src/daemon/index.ts --compile --sourcemap=external --target=bun-linux-x64-baseline --outfile build/linux-amd64/devboxes-daemon",
-    "build:daemon:linux-arm64": "bun build src/daemon/index.ts --compile --sourcemap=external --target=bun-linux-arm64 --outfile build/linux-arm64/devboxes-daemon"
+    "test:full": "bun test --isolate --no-orphans --timeout 60000"
   }
 }

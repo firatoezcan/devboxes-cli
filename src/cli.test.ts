@@ -3,12 +3,16 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+
 import { apiOrigin } from "./commands";
 
 const runCli = async (
   args: string[],
   env: Record<string, string | undefined> = {},
   embeddedApiOrigin?: string,
+  stdin?: string,
 ) => {
   const define =
     embeddedApiOrigin === undefined
@@ -17,7 +21,7 @@ const runCli = async (
   const child = Bun.spawn([process.execPath, ...define, "src/cli.ts", ...args], {
     cwd: join(import.meta.dir, ".."),
     env: { ...process.env, ...env },
-    stdin: "ignore",
+    stdin: stdin === undefined ? "ignore" : new Blob([stdin]),
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -147,7 +151,15 @@ describe("devboxes entrypoint", () => {
 
 describe("devboxes invoke", () => {
   const traceparents: (string | null)[] = [];
+  const apiTraceresponse = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
   const authorizations: (string | null)[] = [];
+  // About 150 KB of output, like the Production failure. Bun 1.4.2 writes 256 KiB and more another way.
+  // Each text starts with a C1 control sequence, which JSON.stringify leaves unescaped.
+  const events = Array.from({ length: 600 }, (_, index) => ({
+    index,
+    text: `\u009b1m${"x".repeat(200)}`,
+  }));
+  let eventsServed = Promise.withResolvers<void>();
   const api = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -180,10 +192,23 @@ describe("devboxes invoke", () => {
                 responses: {},
               },
             },
+            "/api/commands/sessions/events": {
+              post: {
+                operationId: "sessions.events",
+                "x-devboxes": { effect: "read", authority: "Organization member" },
+                responses: {},
+              },
+            },
           },
         });
+      if (pathname === "/api/commands/sessions/events") {
+        eventsServed.resolve();
+        return Response.json(events, { headers: { "x-request-id": "request-events" } });
+      }
       if (pathname === "/api/commands/sessions/list")
-        return Response.json([], { headers: { "x-request-id": "request-list" } });
+        return Response.json([], {
+          headers: { "x-request-id": "request-list", traceresponse: apiTraceresponse },
+        });
       if (pathname === "/api/commands/delegations/create")
         return Response.json(
           { delegation: { expiresAt: null }, token: "devboxes_delegate_ci", warning },
@@ -268,29 +293,407 @@ describe("devboxes invoke", () => {
     expect(JSON.parse(json.stdout).data.warning).toBe(warning);
   });
 
-  it("sends a traceparent that joins TRACEPARENT or starts a trace, and reports it", async () => {
+  // Bun.spawn gives a child a socket pair, so the CLI writes into a shell pipe to cat instead. The
+  // test reads cat a second after the API answered, so the CLI's write meets a full pipe.
+  it("writes output larger than a pipe buffer exactly once to a reader that starts late", async () => {
+    await writeFile(dispatchInput, "{}");
+    const outputFile = join(fixtureDirectory, "events.json");
+    const statusFile = join(fixtureDirectory, "events.status");
+    const command = [
+      process.execPath,
+      "src/cli.ts",
+      "invoke",
+      "sessions.events",
+      "--input",
+      `@${dispatchInput}`,
+    ];
+    const options = {
+      cwd: join(import.meta.dir, ".."),
+      env: {
+        ...process.env,
+        ...connection,
+        TRACEPARENT: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+      },
+      stdin: "ignore",
+      stderr: "ignore",
+    } as const;
+    const toFile = Bun.spawn(command, { ...options, stdout: Bun.file(outputFile) });
+    expect(await toFile.exited).toBe(0);
+    const expected = await Bun.file(outputFile).bytes();
+    eventsServed = Promise.withResolvers<void>();
+    const toPipe = Bun.spawn(
+      [
+        "sh",
+        "-c",
+        'status_file=$1; shift; { "$@"; echo $? > "$status_file"; } | cat',
+        "sh",
+        statusFile,
+        ...command,
+      ],
+      { ...options, stdout: "pipe" },
+    );
+    await eventsServed.promise;
+    await Bun.sleep(1_000);
+    const received = await new Response(toPipe.stdout).bytes();
+
+    await toPipe.exited;
+    expect((await Bun.file(statusFile).text()).trim()).toBe("0");
+    expect(expected.length).toBeGreaterThan(64 * 1024);
+    expect(JSON.parse(new TextDecoder().decode(expected)).data).toEqual(events);
+    expect(received.length).toBe(expected.length);
+    expect(Buffer.from(received).equals(Buffer.from(expected))).toBe(true);
+  });
+
+  it("joins TRACEPARENT, sends no traceparent without one, and reports the trace the API names", async () => {
     await writeFile(dispatchInput, "{}");
     const list = ["--json", "invoke", "sessions.list", "--input", `@${dispatchInput}`];
     const callerTraceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
     traceparents.length = 0;
     const joined = await runCli(list, { ...connection, TRACEPARENT: callerTraceparent });
     const joinedTraceparents = traceparents.splice(0);
-    const started = await runCli(list, { ...connection, TRACEPARENT: undefined });
+    const unjoined = await runCli(list, { ...connection, TRACEPARENT: undefined });
 
     expect(joinedTraceparents.length).toBeGreaterThan(0);
     expect(new Set(joinedTraceparents)).toEqual(new Set([callerTraceparent]));
-    expect(JSON.parse(joined.stdout)).toEqual({
-      status: 200,
-      data: [],
-      traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
-      requestId: "request-list",
-    });
-    const { traceId } = JSON.parse(started.stdout);
-    expect(traceId).toMatch(/^[0-9a-f]{32}$/);
-    expect(traceId).not.toBe("4bf92f3577b34da6a3ce929d0e0e4736");
     expect(traceparents.length).toBeGreaterThan(0);
-    for (const traceparent of traceparents)
-      expect(traceparent).toMatch(new RegExp(`^00-${traceId}-[0-9a-f]{16}-00$`));
+    expect(new Set(traceparents)).toEqual(new Set([null]));
+    for (const result of [joined, unjoined])
+      expect(JSON.parse(result.stdout)).toEqual({
+        status: 200,
+        data: [],
+        traceId: "0af7651916cd43dd8448eb211c80319c",
+        requestId: "request-list",
+      });
+  });
+});
+
+describe("devboxes connect", () => {
+  const organizationId = "0198a0b0-0000-7000-8000-000000000001";
+  const code = `pasted-code-${crypto.randomUUID()}#state`;
+  const key = `sk-ant-api03-${crypto.randomUUID()}`;
+  const ownerOnly = "Only an Organization owner can connect a Provider Account.";
+  let owner = true;
+  let completeAnswers: object[] = [];
+  const starts: unknown[] = [];
+  const completions: unknown[] = [];
+  const accountWrites: { operation: string; body: unknown }[] = [];
+  const operation = (operationId: string) => ({
+    post: {
+      operationId,
+      "x-devboxes": { effect: "write", authority: "Organization owner" },
+      responses: {},
+    },
+  });
+  const api = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: async (request) => {
+      const { pathname } = new URL(request.url);
+      if (pathname === "/api/openapi/json")
+        return Response.json({
+          openapi: "3.0.3",
+          paths: Object.fromEntries(
+            [
+              "providers.list",
+              "providers.connect-start",
+              "providers.connect-complete",
+              "connections.add",
+              "connections.update",
+            ].map((operationId) => [
+              `/api/commands/${operationId.replace(".", "/")}`,
+              operation(operationId),
+            ]),
+          ),
+        });
+      if (pathname === "/api/commands/providers/list") {
+        const unavailable = owner ? null : ownerOnly;
+        return Response.json([
+          { id: "openai", name: "OpenAI", deviceFlow: true, apiKey: true, unavailable },
+          {
+            id: "claude-subscription",
+            name: "Claude subscription",
+            deviceFlow: true,
+            apiKey: false,
+            unavailable,
+          },
+          { id: "anthropic", name: "Anthropic", deviceFlow: false, apiKey: true, unavailable },
+          { id: "xai", name: "xAI", deviceFlow: true, apiKey: true, unavailable: ownerOnly },
+        ]);
+      }
+      if (pathname === "/api/commands/providers/connect-start") {
+        const body = await request.json();
+        starts.push(body);
+        return Response.json({
+          attemptId: "attempt-1",
+          userCode: body.providerId === "openai" ? "ABCD-1234" : null,
+          verificationUrl: `https://sign-in.example/${body.providerId}?state=state`,
+          intervalSeconds: 0,
+          expiresAt: null,
+        });
+      }
+      if (pathname === "/api/commands/providers/connect-complete") {
+        completions.push(await request.json());
+        return Response.json(
+          completeAnswers.shift() ?? { status: "completed", accountId: "account-1" },
+        );
+      }
+      accountWrites.push({ operation: pathname, body: await request.json() });
+      return Response.json({
+        id: "account-2",
+        providerId: "anthropic",
+        label: "Anthropic",
+        authType: "api",
+        accountLabel: null,
+        version: 1,
+      });
+    },
+  });
+  afterAll(() => api.stop(true));
+  const connectTo = (...args: string[]) => [
+    "connect",
+    ...args,
+    "--organization",
+    organizationId,
+    "--label",
+    "Claude",
+  ];
+  const connection = { DEVBOXES_API_URL: api.url.origin, DEVBOXES_TOKEN: "connect-token" };
+  const reset = () => {
+    owner = true;
+    completeAnswers = [];
+    starts.length = 0;
+    completions.length = 0;
+    accountWrites.length = 0;
+  };
+  /** Runs the CLI in a pseudo-terminal, with an `open` on PATH that only records its calls. */
+  const inTerminal = async (args: string[]) => {
+    const bin = await mkdtemp(join(fixtureDirectory, "bin-"));
+    const opened = join(bin, "opened");
+    await writeFile(join(bin, "open"), `#!/bin/sh\necho "$@" >> ${opened}\n`);
+    await chmod(join(bin, "open"), 0o755);
+    let screen = "";
+    const child = Bun.spawn([process.execPath, "src/cli.ts", ...args], {
+      cwd: join(import.meta.dir, ".."),
+      env: { ...process.env, ...connection, PATH: `${bin}:${process.env.PATH}` },
+      terminal: {
+        cols: 120,
+        rows: 40,
+        data: (_terminal, data) => {
+          screen += new TextDecoder().decode(data);
+        },
+      },
+    });
+    return {
+      screen: () => screen,
+      shows: async (text: string) => {
+        for (let waited = 0; !screen.includes(text) && waited < 10_000; waited += 50)
+          await Bun.sleep(50);
+        return screen.includes(text);
+      },
+      type: (text: string) => child.terminal?.write(text),
+      exited: (milliseconds = 10_000) =>
+        Promise.race([child.exited, Bun.sleep(milliseconds).then(() => null)]),
+      kill: () => child.kill(),
+      opened: () => Bun.file(opened).exists(),
+    };
+  };
+
+  it("shows the sign-in URL, sends the pasted code, and never prints the code", async () => {
+    reset();
+    const result = await runCli(
+      connectTo("claude-subscription"),
+      connection,
+      undefined,
+      `${code}\n`,
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toContain("Open https://sign-in.example/claude-subscription?state=state");
+    expect(result.stdout).toBe("Connected Claude as Provider Account account-1.\n");
+    expect(`${result.stdout}${result.stderr}`).not.toContain(code);
+    expect(completions).toEqual([{ organizationId, attemptId: "attempt-1", code }]);
+  });
+
+  it("refuses a provider the person can't connect, with the reason, before it starts a sign-in or reads a key", async () => {
+    reset();
+    owner = false;
+    const signIn = await runCli(
+      connectTo("claude-subscription"),
+      connection,
+      undefined,
+      `${code}\n`,
+    );
+    const apiKey = await runCli(connectTo("anthropic"), connection, undefined, `${key}\n`);
+
+    for (const result of [signIn, apiKey]) {
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toStartWith(`PROVIDER_UNAVAILABLE: ${ownerOnly}`);
+      expect(result.stderr).not.toContain("Open ");
+    }
+    expect(starts).toEqual([]);
+    expect(accountWrites).toEqual([]);
+  });
+
+  it("polls a device sign-in until the provider approves it, and fails when the provider refuses", async () => {
+    reset();
+    completeAnswers = [
+      { status: "pending", intervalSeconds: 0 },
+      { status: "pending", intervalSeconds: 0 },
+    ];
+    const approved = await runCli(connectTo("openai"), connection);
+    const approvals = completions.length;
+    completeAnswers = [{ status: "pending", intervalSeconds: 0 }, { status: "failed" }];
+    const refused = await runCli(connectTo("openai"), connection);
+
+    expect(approved.exitCode).toBe(0);
+    expect(approved.stderr).toContain(
+      "Open https://sign-in.example/openai?state=state to sign in. Confirm that the page shows code ABCD-1234.",
+    );
+    expect(approved.stdout).toBe("Connected Claude as Provider Account account-1.\n");
+    expect(approvals).toBe(3);
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stderr).toContain("CONNECTION_FAILED: The provider refused the sign-in.");
+    expect(completions).toHaveLength(5);
+  });
+
+  it("connects an API key from stdin through connections.add, also to a provider with a sign-in, replaces one with --account, and never prints it", async () => {
+    reset();
+    const added = await runCli(connectTo("anthropic"), connection, undefined, `${key}\n`);
+    const replaced = await runCli(
+      [...connectTo("anthropic"), "--account", "account-2"],
+      connection,
+      undefined,
+      `${key}\n`,
+    );
+    const instead = await runCli(
+      [...connectTo("openai"), "--api-key"],
+      connection,
+      undefined,
+      `${key}\n`,
+    );
+    const signInOnly = await runCli(
+      [...connectTo("claude-subscription"), "--api-key"],
+      connection,
+      undefined,
+      `${key}\n`,
+    );
+
+    expect(signInOnly.exitCode).toBe(1);
+    expect(signInOnly.stderr).toStartWith(
+      "API_KEY_UNSUPPORTED: Claude subscription takes no API key: run devboxes connect claude-subscription to sign in.",
+    );
+    expect(starts).toEqual([]);
+    for (const result of [added, replaced, instead]) {
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe("Connected Claude as Provider Account account-2.\n");
+      expect(`${result.stdout}${result.stderr}`).not.toContain(key);
+    }
+    expect(accountWrites).toEqual([
+      {
+        operation: "/api/commands/connections/add",
+        body: {
+          organizationId,
+          providerId: "anthropic",
+          label: "Claude",
+          auth: { type: "api", key },
+        },
+      },
+      {
+        operation: "/api/commands/connections/update",
+        body: {
+          organizationId,
+          accountId: "account-2",
+          label: "Claude",
+          auth: { type: "api", key },
+        },
+      },
+      {
+        operation: "/api/commands/connections/add",
+        body: {
+          organizationId,
+          providerId: "openai",
+          label: "Claude",
+          auth: { type: "api", key },
+        },
+      },
+    ]);
+  });
+
+  it("refuses to read a key or code from a terminal that shows what is typed", async () => {
+    reset();
+    const cli = await inTerminal([...connectTo("anthropic"), "--json"]);
+
+    if ((await cli.exited(5_000)) === null) cli.type(`${key}\r\x04`);
+    const exitCode = await cli.exited();
+    cli.kill();
+
+    expect(exitCode).toBe(1);
+    expect(cli.screen()).toContain("INPUT_REQUIRED");
+    expect(cli.screen()).not.toContain(key);
+    expect(accountWrites).toEqual([]);
+  });
+
+  it("asks for a provider without a terminal to choose one in", async () => {
+    reset();
+    const result = await runCli(connectTo(), connection);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toStartWith("PROVIDER_REQUIRED");
+  });
+
+  it("lets a person choose every provider's sign-in or API key, greys out what they can't connect, and masks the key", async () => {
+    reset();
+    const cli = await inTerminal(connectTo());
+
+    expect(await cli.shows("xAI API key")).toBe(true);
+    cli.type("\x1b[B\r");
+    expect(await cli.shows("Paste the OpenAI API key")).toBe(true);
+    cli.type(`${key}\r`);
+    const exitCode = await cli.exited();
+    cli.kill();
+
+    expect(exitCode).toBe(0);
+    for (const option of [
+      "OpenAI (browser sign-in)",
+      "OpenAI API key",
+      "Claude subscription (browser sign-in)",
+      "Anthropic API key",
+      "xAI (browser sign-in)",
+      ownerOnly,
+    ])
+      expect(cli.screen()).toContain(option);
+    expect(cli.screen()).not.toContain("Claude subscription API key");
+    expect(cli.screen()).toContain("Connected Claude as Provider Account account-2.");
+    expect(cli.screen()).not.toContain(key);
+    expect(accountWrites).toEqual([
+      {
+        operation: "/api/commands/connections/add",
+        body: {
+          organizationId,
+          providerId: "openai",
+          label: "Claude",
+          auth: { type: "api", key },
+        },
+      },
+    ]);
+    expect(await cli.opened()).toBe(false);
+  });
+
+  it("won't connect a greyed-out option that Enter chose", async () => {
+    reset();
+    owner = false;
+    const cli = await inTerminal(connectTo());
+
+    expect(await cli.shows("xAI (browser sign-in)")).toBe(true);
+    cli.type("\r");
+    const exitCode = await cli.exited();
+    cli.kill();
+
+    expect(exitCode).toBe(1);
+    expect(cli.screen()).toContain(`PROVIDER_UNAVAILABLE: ${ownerOnly}`);
+    expect(cli.screen()).not.toContain("Open ");
+    expect(starts).toEqual([]);
+    expect(await cli.opened()).toBe(false);
   });
 });
 
@@ -338,120 +741,70 @@ describe("devboxes runner listen", () => {
   };
 
   it.skipIf(process.platform === "win32")(
-    "keeps polling while the API is unreachable and claims again when it returns",
+    "retries a server error and a 404 after its first successful poll, names an invalid response, and stops without finishing its wait",
     async () => {
-      let claims = 0;
-      const serve = (port: number) =>
-        Bun.serve({
+      const serve = (failure: {
+        path: "assignments" | "claim";
+        status: number;
+        code: string;
+        message: string;
+      }) => {
+        let failed = false;
+        return Bun.serve({
           hostname: "127.0.0.1",
-          port,
+          port: 0,
           fetch: (request) => {
-            const { pathname } = new URL(request.url);
-            if (pathname === "/api/internal/execution/runners/assignments")
-              return Response.json({ tasks: [] });
-            if (pathname === "/api/internal/execution/runners/claim") {
-              claims += 1;
-              return Response.json({ task: null });
+            const path = new URL(request.url).pathname.split("/").at(-1);
+            if (path === failure.path && !failed) {
+              failed = true;
+              const { status, code, message } = failure;
+              return Response.json({ error: { code, message } }, { status });
             }
-            return new Response(null, { status: 404 });
+            return path === "assignments"
+              ? Response.json({ tasks: [] })
+              : Response.json({ task: { id: "not-a-task" } });
           },
         });
-      let api = serve(0);
-      const { origin, port } = api.url;
-      try {
-        await using runner = await spawnListener(origin);
-        await until(() => claims === 1);
-        await api.stop(true);
-        await until(
-          () =>
-            runner.output.stderr.includes("ConnectionRefused") || runner.listener.exitCode !== null,
-        );
-        expect(runner.listener.exitCode).toBeNull();
-        api = serve(Number(port));
-        await until(() => claims === 2 || runner.listener.exitCode !== null);
-
-        expect(claims).toBe(2);
-        expect(runner.listener.exitCode).toBeNull();
-      } finally {
-        await api.stop(true);
-      }
-    },
-    40_000,
-  );
-
-  it.skipIf(process.platform === "win32")(
-    "retries a server error, names an invalid response, and stops without finishing its wait",
-    async () => {
-      let assignments = 0;
-      const api = Bun.serve({
-        hostname: "127.0.0.1",
-        port: 0,
-        fetch: (request) => {
-          const { pathname } = new URL(request.url);
-          if (pathname === "/api/internal/execution/runners/assignments") {
-            assignments += 1;
-            return assignments === 1
-              ? Response.json(
-                  { error: { code: "SERVICE_UNAVAILABLE", message: "The API is restarting." } },
-                  { status: 503 },
-                )
-              : Response.json({ tasks: [] });
-          }
-          return Response.json({ task: { id: "not-a-task" } });
-        },
+      };
+      const serverErrorApi = serve({
+        path: "assignments",
+        status: 503,
+        code: "SERVICE_UNAVAILABLE",
+        message: "The API is restarting.",
+      });
+      const lateNotFoundApi = serve({
+        path: "claim",
+        status: 404,
+        code: "TASK_NOT_FOUND",
+        message: "The Task is not assigned.",
       });
       try {
-        await using runner = await spawnListener(api.url.origin);
-        await until(
-          () =>
-            runner.output.stderr.split("Polling failed").length > 2 ||
-            runner.listener.exitCode !== null,
+        await using serverError = await spawnListener(serverErrorApi.url.origin);
+        await using lateNotFound = await spawnListener(lateNotFoundApi.url.origin);
+        const runners = [serverError, lateNotFound];
+        await until(() =>
+          runners.every(
+            (runner) =>
+              runner.output.stderr.split("Polling failed").length > 2 ||
+              runner.listener.exitCode !== null,
+          ),
         );
 
-        expect(runner.output.stderr).toContain(
+        expect(serverError.output.stderr).toContain(
           "SERVICE_UNAVAILABLE (HTTP 503): The API is restarting.",
         );
-        expect(runner.output.stderr).toMatch(/claim response .*\/task/);
-        const stopping = performance.now();
-        runner.listener.kill("SIGTERM");
-        expect(await runner.listener.exited).toBe(0);
-        expect(performance.now() - stopping).toBeLessThan(2_000);
-      } finally {
-        await api.stop(true);
-      }
-    },
-    30_000,
-  );
-
-  it.skipIf(process.platform === "win32")(
-    "retries a 404 after its first successful poll",
-    async () => {
-      let claims = 0;
-      const api = Bun.serve({
-        hostname: "127.0.0.1",
-        port: 0,
-        fetch: (request) => {
-          if (new URL(request.url).pathname === "/api/internal/execution/runners/assignments")
-            return Response.json({ tasks: [] });
-          claims += 1;
-          return claims === 1
-            ? Response.json(
-                { error: { code: "TASK_NOT_FOUND", message: "The Task is not assigned." } },
-                { status: 404 },
-              )
-            : Response.json({ task: null });
-        },
-      });
-      try {
-        await using runner = await spawnListener(api.url.origin);
-        await until(() => claims === 2 || runner.listener.exitCode !== null);
-
-        expect(runner.listener.exitCode).toBeNull();
-        expect(runner.output.stderr).toContain(
+        expect(lateNotFound.output.stderr).toContain(
           "TASK_NOT_FOUND (HTTP 404): The Task is not assigned.",
         );
+        for (const runner of runners) {
+          expect(runner.output.stderr).toMatch(/claim response .*\/task/);
+          const stopping = performance.now();
+          runner.listener.kill("SIGTERM");
+          expect(await runner.listener.exited).toBe(0);
+          expect(performance.now() - stopping).toBeLessThan(2_000);
+        }
       } finally {
-        await api.stop(true);
+        await Promise.all([serverErrorApi.stop(true), lateNotFoundApi.stop(true)]);
       }
     },
     30_000,
@@ -477,6 +830,122 @@ describe("devboxes runner listen", () => {
       expect(JSON.parse(json.stderr)).toMatchObject({ error: { code }, status });
     } finally {
       await api.stop(true);
+    }
+  });
+});
+
+describe("devboxes mcp", () => {
+  it("invokes an operation the API starts advertising after the server's first discovery", async () => {
+    const operation = (operationId: string) => ({
+      post: {
+        operationId,
+        "x-devboxes": { effect: "read", authority: "Organization member" },
+        responses: {},
+      },
+    });
+    const paths = new Map([["/api/commands/sessions/list", operation("sessions.list")]]);
+    const invoked: string[] = [];
+    using api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request) => {
+        const { pathname } = new URL(request.url);
+        if (pathname === "/api/openapi/json")
+          return Response.json({ openapi: "3.0.3", paths: Object.fromEntries(paths) });
+        invoked.push(pathname);
+        return Response.json({ sessionId: "session-1" });
+      },
+    });
+    const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
+    await client.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: ["src/cli.ts", "mcp"],
+        cwd: join(import.meta.dir, ".."),
+        env: {
+          PATH: process.env.PATH ?? "",
+          DEVBOXES_API_URL: api.url.origin,
+          DEVBOXES_TOKEN: "scoped",
+        },
+      }),
+    );
+    try {
+      const listed = await client.callTool({ name: "devboxes_describe", arguments: {} });
+      paths.set("/api/commands/sessions/inspect", operation("sessions.inspect"));
+      const inspected = await client.callTool({
+        name: "devboxes_invoke",
+        arguments: { command: "sessions.inspect", input: {} },
+      });
+
+      expect(listed.structuredContent).toEqual({
+        commands: [{ operationId: "sessions.list", effect: "read" }],
+      });
+      expect(inspected.isError).toBeUndefined();
+      expect(inspected.structuredContent).toMatchObject({
+        status: 200,
+        data: { sessionId: "session-1" },
+      });
+      expect(invoked).toEqual(["/api/commands/sessions/inspect"]);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("lists its tools, refuses invalid arguments with every problem, and rejects an unknown tool", async () => {
+    const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
+    await client.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: ["src/cli.ts", "mcp"],
+        cwd: join(import.meta.dir, ".."),
+        env: {
+          PATH: process.env.PATH ?? "",
+          DEVBOXES_API_URL: "http://127.0.0.1:9",
+          DEVBOXES_TOKEN: "scoped",
+        },
+      }),
+    );
+    try {
+      expect((await client.listTools()).tools).toEqual([
+        {
+          name: "devboxes_describe",
+          description: expect.any(String),
+          inputSchema: {
+            type: "object",
+            properties: { command: { type: "string", minLength: 1 } },
+          },
+          annotations: { readOnlyHint: true, openWorldHint: true },
+        },
+        {
+          name: "devboxes_invoke",
+          description: expect.any(String),
+          inputSchema: {
+            type: "object",
+            required: ["command", "input"],
+            properties: { command: { type: "string", minLength: 1 }, input: {} },
+          },
+          annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+        },
+      ]);
+      expect(
+        await client.callTool({ name: "devboxes_invoke", arguments: { command: "" } }),
+      ).toMatchObject({
+        isError: true,
+        structuredContent: {
+          error: {
+            code: "INVALID_INPUT",
+            message:
+              "The devboxes_invoke input is invalid: / must have required properties input; /command must not have fewer than 1 characters.",
+          },
+        },
+      });
+      await expect(
+        client.callTool({ name: "devboxes_unknown", arguments: {} }),
+      ).rejects.toMatchObject({
+        code: -32602,
+      });
+    } finally {
+      await client.close();
     }
   });
 });
@@ -519,7 +988,6 @@ describe("devboxes signup and login", () => {
           details: {
             methods: [
               { method: "github", flag: "--github" },
-              { method: "vercel", flag: "--vercel" },
               { method: "email", flag: "--email <email>" },
             ],
           },

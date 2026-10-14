@@ -104,14 +104,6 @@ Register a Runner through the discovered `capacity.register` application command
 Use `devboxes runner listen --help` for credential-file, Docker socket, state
 directory, and container-reachable API options.
 
-## Native OpenCode daemon
-
-The public source checkout builds `devboxes-daemon`, the standalone native
-OpenCode HTTP server. Sessions and the durable event log persist in `opencode.db`
-under its data directory. On Linux, that directory is `$XDG_DATA_HOME/opencode`,
-or `$HOME/.local/share/opencode` when `XDG_DATA_HOME` is unset or empty. Preserve
-this directory across daemon restarts to retain Sessions and replay stored events.
-
 ## Verify the CLI
 
 In the Dashboard workspace, run:

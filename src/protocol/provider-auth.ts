@@ -50,47 +50,33 @@ export type OpencodeProviderAuthSourceValue =
   | readonly OpencodeProviderAuthSourceValue[]
   | { readonly [key: string]: OpencodeProviderAuthSourceValue };
 
-export const ProviderAuthRecordSchema = Type.Object(
-  { type: Type.String({ minLength: 1 }) },
-  { additionalProperties: true },
-);
-const WorkspaceImageQualificationProviderAuthLeaseSchema = Type.Object(
-  {
-    providerID: Type.String({ minLength: 1 }),
-    modelID: Type.String({ minLength: 1 }),
-    auth: ProviderAuthRecordSchema,
-  },
-  { additionalProperties: false },
-);
-
 const ApiProviderAuthSchema = Type.Object(
   {
     type: Type.Literal("api"),
-    key: Type.Optional(Type.String()),
-    metadata: Type.Optional(Type.Unknown()),
+    key: Type.String({ pattern: "\\S" }),
+    metadata: Type.Optional(Type.Record(Type.String(), Type.String())),
   },
   { additionalProperties: true },
 );
 
-const ApiProviderAuthMetadataSchema = Type.Record(Type.String(), Type.String());
-
-const OauthProviderAuthMetadataValueSchema = Type.Cyclic(
+/**
+ * Any JSON value. A credential field that validateOpencodeProviderAuth checks next takes it, so the
+ * validator's provider-named error is the one that surfaces.
+ */
+export const JsonValueSchema = Type.Cyclic(
   {
-    OauthProviderAuthMetadataValue: Type.Union([
+    JsonValue: Type.Union([
       Type.String(),
       Type.Number(),
       Type.Boolean(),
       Type.Null(),
-      Type.Array(Type.Ref("OauthProviderAuthMetadataValue")),
-      Type.Record(Type.String(), Type.Ref("OauthProviderAuthMetadataValue")),
+      Type.Array(Type.Ref("JsonValue")),
+      Type.Record(Type.String(), Type.Ref("JsonValue")),
     ]),
   },
-  "OauthProviderAuthMetadataValue",
+  "JsonValue",
 );
-const OauthProviderAuthMetadataSchema = Type.Record(
-  Type.String(),
-  OauthProviderAuthMetadataValueSchema,
-);
+const OauthProviderAuthMetadataSchema = Type.Record(Type.String(), JsonValueSchema);
 
 // Mirrors the generated SDK OAuth shape: what opencode reads from its auth
 // file. `expires` is epoch milliseconds; 0 marks tokens that never expire
@@ -109,6 +95,21 @@ const OauthProviderAuthSchema = Type.Object(
   },
   { additionalProperties: true },
 );
+
+/** An API-key or OAuth credential as OpenCode stores it, wherever one crosses a process boundary. */
+export const OpencodeProviderAuthSchema = Type.Union([
+  ApiProviderAuthSchema,
+  OauthProviderAuthSchema,
+]);
+const WorkspaceImageQualificationProviderAuthLeaseSchema = Type.Object(
+  {
+    providerID: Type.String({ minLength: 1 }),
+    modelID: Type.String({ minLength: 1 }),
+    auth: JsonValueSchema,
+  },
+  { additionalProperties: false },
+);
+
 // Matches the provider_id check constraints in schema.ts, which also require
 // the stored id to be trimmed and lowercase.
 const providerIdPattern = /^[a-z0-9][a-z0-9_-]*$/;
@@ -121,48 +122,39 @@ export const normalizeOpencodeProviderId = (providerId: string) => {
   return normalizedProviderId;
 };
 
+/** The provider whose Provider Accounts hold a Claude sign-in's inference token as their key. */
+export const claudeSubscriptionProviderID = "claude-subscription";
+
+/** Whether a member can connect the provider with an API key: a Claude subscription only signs in. */
+export const takesApiKey = (providerId: string) => providerId !== claudeSubscriptionProviderID;
+
 export const validateOpencodeProviderAuth = (
   providerId: string,
-  auth: OpencodeProviderAuthSourceValue,
+  source: OpencodeProviderAuthSourceValue,
 ): OpencodeProviderAuth => {
-  const candidate = Value.Parse(ProviderAuthRecordSchema, auth);
-
-  if (candidate.type === "api") {
-    const apiAuth = Value.Parse(ApiProviderAuthSchema, auth);
-    if (!apiAuth.key?.trim()) {
-      throw new Error(`Opencode API credentials for provider ${providerId} are invalid.`);
-    }
-    const metadata =
-      apiAuth.metadata === undefined
-        ? undefined
-        : Value.Parse(ApiProviderAuthMetadataSchema, apiAuth.metadata);
-    const validatedAuth: OpencodeApiAuth = {
-      type: "api",
-      key: apiAuth.key.trim(),
-    };
-    if (metadata !== undefined) validatedAuth.metadata = metadata;
+  const auth: unknown = source;
+  if (!Value.Check(OpencodeProviderAuthSchema, auth)) {
+    throw new Error(
+      `Opencode credentials for provider ${providerId} must be valid API-key or OAuth entries.`,
+    );
+  }
+  if (providerId === claudeSubscriptionProviderID && auth.type !== "api")
+    throw new Error(`A ${providerId} Provider Account does not take ${auth.type} credentials.`);
+  if (auth.type === "api") {
+    const validatedAuth: OpencodeApiAuth = { type: "api", key: auth.key.trim() };
+    if (auth.metadata !== undefined) validatedAuth.metadata = auth.metadata;
     return validatedAuth;
   }
-
-  if (candidate.type === "oauth") {
-    const oauthAuth = Value.Parse(OauthProviderAuthSchema, auth);
-    const validatedAuth: OpencodeOauthAuth = {
-      type: "oauth",
-      refresh: oauthAuth.refresh,
-      access: oauthAuth.access,
-      expires: oauthAuth.expires,
-    };
-    if (oauthAuth.metadata !== undefined) validatedAuth.metadata = oauthAuth.metadata;
-    if (oauthAuth.accountId !== undefined) validatedAuth.accountId = oauthAuth.accountId;
-    if (oauthAuth.enterpriseUrl !== undefined) {
-      validatedAuth.enterpriseUrl = oauthAuth.enterpriseUrl;
-    }
-    return validatedAuth;
-  }
-
-  throw new Error(
-    `Opencode credentials for provider ${providerId} must be API-key or OAuth entries.`,
-  );
+  const validatedAuth: OpencodeOauthAuth = {
+    type: "oauth",
+    refresh: auth.refresh,
+    access: auth.access,
+    expires: auth.expires,
+  };
+  if (auth.metadata !== undefined) validatedAuth.metadata = auth.metadata;
+  if (auth.accountId !== undefined) validatedAuth.accountId = auth.accountId;
+  if (auth.enterpriseUrl !== undefined) validatedAuth.enterpriseUrl = auth.enterpriseUrl;
+  return validatedAuth;
 };
 
 export const validateWorkspaceImageQualificationProviderAuthLease = (

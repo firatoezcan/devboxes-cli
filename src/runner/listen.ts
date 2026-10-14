@@ -2,25 +2,26 @@ import { readFile, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { DockerOpencodeTaskRuntime } from "./docker-task-runtime";
+import { JsonValueSchema } from "../protocol/provider-auth";
+import { ClaudeCodeArtifactSchema } from "../protocol/task-runtime";
 import Type, { type Static, type TSchema } from "typebox";
-import Value from "typebox/value";
-import type { z } from "zod";
 
-import { CommandError, invocationTrace, requestJson } from "../commands";
+import { CommandError, parseResponse, requestJson } from "../commands";
 
 const taskSchema = Type.Object({
-  id: Type.String({ format: "uuid" }),
+  id: Type.String(),
   executorId: Type.Union([Type.String(), Type.Null()]),
   containerId: Type.Union([Type.String(), Type.Null()]),
   token: Type.String(),
   image: Type.String(),
   platform: Type.Union([Type.Literal("linux/amd64"), Type.Literal("linux/arm64")]),
   daemon: Type.Object({ sha256: Type.String(), version: Type.String(), url: Type.String() }),
+  claudeCode: Type.Union([ClaudeCodeArtifactSchema, Type.Null()]),
   traceparent: Type.String({ minLength: 1 }),
   status: Type.String(),
 });
 const assignmentSchema = Type.Object({
-  id: Type.String({ format: "uuid" }),
+  id: Type.String(),
   executorId: Type.Union([Type.String(), Type.Null()]),
   containerId: Type.Union([Type.String(), Type.Null()]),
   status: Type.String(),
@@ -55,20 +56,14 @@ export const listen = async (options: {
   const api = async <Schema extends TSchema>(
     operation: string,
     schema: Schema,
-    body: z.core.util.JSONType,
+    body: Static<typeof JsonValueSchema>,
   ): Promise<Static<Schema>> => {
     const { data } = await requestJson(
       { origin: options.apiOrigin, token },
       `/api/internal/execution/runners/${operation}`,
-      invocationTrace(),
       body,
     );
-    if (Value.Check(schema, data)) return data;
-    const [invalid] = Value.Errors(schema, data);
-    throw new CommandError(
-      "INVALID_RESPONSE",
-      `The ${operation} response is invalid at ${invalid?.instancePath || "/"}: ${invalid?.message}.`,
-    );
+    return parseResponse(schema, data, operation);
   };
   let stopping = false;
   const interrupt = () => {
@@ -121,6 +116,7 @@ export const listen = async (options: {
           if (
             task.status === "succeeded" ||
             task.status === "cancelled" ||
+            task.status === "paused" ||
             task.status === "cancel_requested"
           )
             await rm(join(directory, task.id), { recursive: true, force: true });
@@ -151,7 +147,11 @@ export const listen = async (options: {
               }),
         });
         if (!executor.State.Running) {
-          if (result.status === "succeeded" || result.status === "cancelled") {
+          if (
+            result.status === "succeeded" ||
+            result.status === "cancelled" ||
+            result.status === "paused"
+          ) {
             await runtime.docker.getContainer(executor.Id).remove();
             await rm(join(directory, task.id), { recursive: true, force: true });
           } else console.error(`Retained failed executor ${executorId} for inspection.`);
