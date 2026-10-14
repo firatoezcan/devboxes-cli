@@ -712,11 +712,11 @@ describe("devboxes runner listen", () => {
   const until = async (condition: () => boolean) => {
     while (!condition()) await Bun.sleep(50);
   };
-  const spawnListener = async (origin: string) => {
+  const spawnListener = async (origin: string, env: Record<string, string | undefined> = {}) => {
     await writeFile(runnerTokenFile, "firops_runner_fixture\n", { mode: 0o600 });
     const listener = Bun.spawn([process.execPath, "src/cli.ts", ...listenTo(origin)], {
       cwd: join(import.meta.dir, ".."),
-      env: { ...process.env, ...localDocker },
+      env: { ...process.env, ...localDocker, ...env },
       stdin: "ignore",
       stdout: "ignore",
       stderr: "pipe",
@@ -832,6 +832,40 @@ describe("devboxes runner listen", () => {
       await api.stop(true);
     }
   });
+
+  it.skipIf(process.platform !== "darwin").each([
+    [undefined, "DO_NOT_TRACK=1"],
+    ["0", "DO_NOT_TRACK=0"],
+  ])(
+    "polls with DO_NOT_TRACK %p as %s in its process environment, so Bun uploads a crash report only when asked",
+    async (configured, polling) => {
+      let polled = false;
+      using api = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: (request) => {
+          polled = true;
+          return new URL(request.url).pathname.endsWith("/assignments")
+            ? Response.json({ tasks: [] })
+            : Response.json({ task: null });
+        },
+      });
+      await using runner = await spawnListener(api.url.origin, { DO_NOT_TRACK: configured });
+      await until(() => polled || runner.listener.exitCode !== null);
+      const processes = Bun.spawnSync([
+        "ps",
+        "-E",
+        "-ww",
+        "-o",
+        "command=",
+        "-p",
+        String(runner.listener.pid),
+      ]);
+
+      expect(processes.stdout.toString().split(/\s/)).toContain(polling);
+    },
+    30_000,
+  );
 });
 
 describe("devboxes mcp", () => {
