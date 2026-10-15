@@ -136,6 +136,13 @@ at the checkpoint, the API records the branch's open pull request or opens one
 with the Session's title. A failed request to GitHub there records nothing and
 does not fail the node, so the next such Run tries again.
 
+A Run of a taskbox Project has no repository. Its payload's `taskbox` names the
+workspace archive that the Session's checkpoint saved, or null for none, and is
+null in every other Run. `/repository` and the Git transport refuse a taskbox
+Run with `REPOSITORY_UNAVAILABLE`, and its `/started` carries a null
+`repositoryStartSha`. Admission refuses such a Run a publish node and any
+`repositories` operation.
+
 The executor embeds OpenCode with the repository's project configuration, so a
 repository can define agents and other OpenCode settings. OpenCode in the
 executor runs only its built-in plugins and the plugins of the executor and
