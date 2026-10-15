@@ -56,9 +56,10 @@ const sessionSelectionSchemas = new Map<string, TObject>([
 const oauthFailureSchema = Type.Object({ error: Type.String(), error_description: Type.String() });
 const listedSessionSchema = Type.Object({ id: Type.String(), token: Type.String() });
 
-const signInMethods: { method: "github" | "email"; flag: string; label: string }[] = [
+const signInMethods: { method: "github" | "email" | "password"; flag: string; label: string }[] = [
   { method: "github", flag: "--github", label: "GitHub" },
-  { method: "email", flag: "--email <email>", label: "Email and password" },
+  { method: "email", flag: "--email <email>", label: "Email code" },
+  { method: "password", flag: "--email <email> --password-stdin", label: "Email and password" },
 ];
 const deviceClientId = "devboxes-cli";
 
@@ -68,6 +69,7 @@ type AccountOptions = {
   github?: boolean;
   email?: string;
   name?: string;
+  codeStdin?: boolean;
   passwordStdin?: boolean;
   json?: boolean;
 };
@@ -174,19 +176,31 @@ export const addAuthenticationCommands = (program: Command) => {
       .command(action)
       .description(
         action === "signup"
-          ? "create an account with GitHub or email and password"
-          : "sign in with GitHub or email and password",
+          ? "create an account with GitHub or a code sent to your email"
+          : "sign in with GitHub, a code sent to your email, or your password",
       )
       .addOption(
         new Option("--github", "Continue with GitHub in a browser").conflicts([
           "email",
           "name",
+          "codeStdin",
           "passwordStdin",
         ]),
       )
-      .option("--email <email>", "Use email and password with this account email")
-      .option("--password-stdin", "Read the password from stdin instead of a masked prompt");
+      .option("--email <email>", "Sign in with this email address, by default with an emailed code")
+      .option("--code-stdin", "Read the emailed code from stdin and finish the sign-in");
     if (action === "signup") command.option("--name <name>", "Display name for an email account");
+    else
+      command.addOption(
+        new Option(
+          "--password-stdin",
+          "Sign in with the account password from stdin instead of a code",
+        ).conflicts("codeStdin"),
+      );
+    const methods =
+      action === "signup"
+        ? signInMethods.filter((entry) => entry.method !== "password")
+        : signInMethods;
     command.action(async () => {
       const options = command.optsWithGlobals<AccountOptions>();
       if (process.env.DEVBOXES_TOKEN !== undefined) {
@@ -196,8 +210,11 @@ export const addAuthenticationCommands = (program: Command) => {
         );
       }
       const interactive = !options.json && process.stdin.isTTY && process.stderr.isTTY;
-      let choice = signInMethods.find((entry) =>
-        entry.method === "email" ? options.email !== undefined : options[entry.method],
+      let choice = methods.find((entry) =>
+        entry.method === "github"
+          ? options.github
+          : options.email !== undefined &&
+            (entry.method === "password") === !!options.passwordStdin,
       );
       const context = await loadAccountContext(options);
       if (!choice) {
@@ -205,30 +222,28 @@ export const addAuthenticationCommands = (program: Command) => {
           throw new CommandError(
             "SIGN_IN_METHOD_REQUIRED",
             "Choose a sign-in method: --github or --email <email>.",
-            { details: { methods: signInMethods.map(({ method, flag }) => ({ method, flag })) } },
+            { details: { methods: methods.map(({ method, flag }) => ({ method, flag })) } },
           );
         }
         const selected = await select({
           message: action === "signup" ? "Create your account with" : "Sign in with",
-          options: signInMethods.map((entry) => ({ value: entry, label: entry.label })),
+          options: methods.map((entry) => ({ value: entry, label: entry.label })),
           output: process.stderr,
         });
         if (isCancel(selected)) throw new CommandError("CANCELLED", "Authentication cancelled.");
         choice = selected;
       }
-      const report = async (user: Static<typeof userSchema>, signedIn: boolean) => {
+      const report = async (user: Static<typeof userSchema>) => {
         await writeOutput(
           `${
             options.json
-              ? JSON.stringify({ user: Value.Clean(userSchema, user), signedIn })
-              : signedIn
-                ? `Signed in as ${user.email}.`
-                : `Devboxes sent an email to ${user.email}. Follow its instructions, then run devboxes login --email ${user.email}.`
+              ? JSON.stringify({ user: Value.Clean(userSchema, user), signedIn: true })
+              : `Signed in as ${user.email}.`
           }\n`,
         );
       };
 
-      if (choice.method !== "email") {
+      if (choice.method === "github") {
         const device = (
           await requestAuthentication(context, "/device/code", {
             method: "POST",
@@ -325,7 +340,7 @@ export const addAuthenticationCommands = (program: Command) => {
           (await requestAuthentication(context, "/get-session")).data,
           "/get-session",
         );
-        await report(session.user, true);
+        await report(session.user);
         return;
       }
 
@@ -343,82 +358,105 @@ export const addAuthenticationCommands = (program: Command) => {
             : "Email login requires --email <email>.",
         );
       }
-      let password: string;
-      if (options.passwordStdin) {
-        if (process.stdin.isTTY) {
+      if (choice.method === "password") {
+        let password: string;
+        if (options.passwordStdin) {
+          if (process.stdin.isTTY) {
+            throw new CommandError(
+              "PASSWORD_INPUT_REQUIRED",
+              "Pipe the password into --password-stdin, or run devboxes login without flags and choose email and password.",
+            );
+          }
+          password = (await Bun.stdin.text()).replace(/\r?\n$/, "");
+        } else {
+          const entered = await passwordPrompt({ message: "Password", output: process.stderr });
+          if (isCancel(entered)) throw new CommandError("CANCELLED", "Authentication cancelled.");
+          password = entered;
+        }
+        if (!password)
+          throw new CommandError("PASSWORD_INPUT_REQUIRED", "The password must not be empty.");
+        const signedIn = await authenticationResponse(context, "/sign-in/email", {
+          method: "POST",
+          body: { email, password },
+        });
+        if ("failure" in signedIn) {
+          if (signedIn.failure.code !== "EMAIL_NOT_VERIFIED") throw signedIn.failure;
           throw new CommandError(
-            "PASSWORD_INPUT_REQUIRED",
-            "Pipe the password into --password-stdin, or omit that flag to use a masked prompt.",
+            "EMAIL_NOT_VERIFIED",
+            `${email} is not verified yet. Sign in with the code Devboxes emails you: devboxes login --email ${email}. That sign-in removes the password, which you then set again through the reset email.`,
+            signedIn.failure.options,
           );
         }
-        password = (await Bun.stdin.text()).replace(/\r?\n$/, "");
-      } else {
-        if (!process.stdin.isTTY || !process.stderr.isTTY) {
-          throw new CommandError(
-            "PASSWORD_INPUT_REQUIRED",
-            "Use --password-stdin when no interactive terminal is available.",
+        let response = signedIn;
+        const challenge = response.data;
+        if (
+          Value.Check(
+            Type.Object({
+              twoFactorRedirect: Type.Literal(true),
+              twoFactorMethods: Type.Array(Type.String()),
+            }),
+            challenge,
+          )
+        ) {
+          delete context.config.sessionToken;
+          await writeConfig(context);
+          if (!interactive) {
+            await writeOutput(
+              `${
+                options.json
+                  ? JSON.stringify({
+                      signedIn: false,
+                      twoFactorRequired: true,
+                      twoFactorMethods: challenge.twoFactorMethods,
+                    })
+                  : 'Two-factor verification is required. Pipe {"code":"<authenticator code>"} into devboxes auth /two-factor/verify-totp --input -, or {"code":"<backup code>"} into devboxes auth /two-factor/verify-backup-code --input -.'
+              }\n`,
+            );
+            return;
+          }
+          const code = (await promptText("Authenticator code or backup code")).replace(/\s/g, "");
+          response = await requestAuthentication(
+            context,
+            /^\d{6}$/.test(code) ? "/two-factor/verify-totp" : "/two-factor/verify-backup-code",
+            { method: "POST", body: { code } },
           );
         }
-        const entered = await passwordPrompt({ message: "Password", output: process.stderr });
-        if (isCancel(entered)) throw new CommandError("CANCELLED", "Authentication cancelled.");
-        password = entered;
+        await report(parseResponse(authenticationSchema, response.data, "/sign-in/email").user);
+        return;
       }
-      if (!password)
-        throw new CommandError("PASSWORD_INPUT_REQUIRED", "The password must not be empty.");
-      let response = await authenticationResponse(
-        context,
-        action === "signup" ? "/sign-up/email" : "/sign-in/email",
-        { method: "POST", body: { email, password, name } },
-      );
-      if ("failure" in response) {
-        if (response.failure.code !== "EMAIL_NOT_VERIFIED") throw response.failure;
-        throw new CommandError(
-          "EMAIL_NOT_VERIFIED",
-          `Verify ${email} before you sign in. Devboxes sent a new verification link to it. Open the link, then run devboxes login again.`,
-          response.failure.options,
-        );
+      if (options.codeStdin && process.stdin.isTTY) {
+        throw new CommandError("CODE_INPUT_REQUIRED", "Pipe the emailed code into --code-stdin.");
       }
-      const challenge = response.data;
-      if (
-        Value.Check(
-          Type.Object({
-            twoFactorRedirect: Type.Literal(true),
-            twoFactorMethods: Type.Array(Type.String()),
-          }),
-          challenge,
-        )
-      ) {
-        delete context.config.sessionToken;
-        await writeConfig(context);
+      if (!options.codeStdin) {
+        await requestAuthentication(context, "/email-otp/send-verification-otp", {
+          method: "POST",
+          body: { email, type: "sign-in" },
+        });
         if (!interactive) {
           await writeOutput(
             `${
               options.json
-                ? JSON.stringify({
-                    signedIn: false,
-                    twoFactorRequired: true,
-                    twoFactorMethods: challenge.twoFactorMethods,
-                  })
-                : 'Two-factor verification is required. Pipe {"code":"<authenticator code>"} into devboxes auth /two-factor/verify-totp --input -, or {"code":"<backup code>"} into devboxes auth /two-factor/verify-backup-code --input -.'
+                ? JSON.stringify({ signedIn: false, codeSent: true })
+                : `Devboxes sent a sign-in code to ${email}. Pipe it into the same command with --code-stdin.`
             }\n`,
           );
           return;
         }
-        const code = (await promptText("Authenticator code or backup code")).replace(/\s/g, "");
-        response = await requestAuthentication(
-          context,
-          /^\d{6}$/.test(code) ? "/two-factor/verify-totp" : "/two-factor/verify-backup-code",
-          { method: "POST", body: { code } },
-        );
       }
-      const authenticated = response.data;
-      if (!Value.Check(authenticationSchema, authenticated))
-        throw new CommandError(
-          "INVALID_AUTH_RESPONSE",
-          `Authentication did not return the expected user and session contract: ${describeErrors(authenticationSchema, authenticated)}.`,
-          { status: response.status },
-        );
-      await report(authenticated.user, authenticated.token !== null);
+      const code = options.codeStdin
+        ? (await Bun.stdin.text()).trim()
+        : await promptText(`Code sent to ${email}`);
+      const authenticated = parseResponse(
+        authenticationSchema,
+        (
+          await requestAuthentication(context, "/sign-in/email-otp", {
+            method: "POST",
+            body: { email, otp: code, name },
+          })
+        ).data,
+        "/sign-in/email-otp",
+      );
+      await report(authenticated.user);
     });
   }
 

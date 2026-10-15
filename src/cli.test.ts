@@ -1040,9 +1040,12 @@ describe("devboxes failure report", () => {
 });
 
 describe("devboxes signup and login", () => {
-  it.each(["signup", "login"])(
+  it.each([
+    ["signup", []],
+    ["login", [{ method: "password", flag: "--email <email> --password-stdin" }]],
+  ] as const)(
     "%s lists every sign-in method instead of prompting without a terminal",
-    async (action) => {
+    async (action, passwordMethods) => {
       const result = await runCli([
         "--json",
         "--config",
@@ -1060,6 +1063,7 @@ describe("devboxes signup and login", () => {
             methods: [
               { method: "github", flag: "--github" },
               { method: "email", flag: "--email <email>" },
+              ...passwordMethods,
             ],
           },
         },

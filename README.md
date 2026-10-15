@@ -26,8 +26,8 @@ devboxes login
 ```
 
 [Install the CLI and run operations](https://docs.devboxes.ai/guides/cli#sign-in)
-describes the sign-in methods, the flags for scripts and agents, email
-verification, and two-factor completion.
+describes the sign-in methods, including email codes and passwords, the flags
+for scripts and agents, and two-factor completion.
 
 Released binaries embed `https://api.devboxes.ai` as the default API origin
 through `scripts/build-cli-binaries.ts`. A source run has no default: it uses a
@@ -41,8 +41,8 @@ keep separate API origins or accounts in separate files. `devboxes logout`
 revokes the current session and clears its saved credential.
 
 `devboxes auth` reads Better Auth's generated schema and exposes the installed
-two-factor, password recovery, email verification, account, session, and
-factor-management endpoints. An endpoint that accepts both GET and POST requires `--method GET` or
+two-factor, email-code, password, account, session, and factor-management
+endpoints. An endpoint that accepts both GET and POST requires `--method GET` or
 `--method POST`. GET input supplies query parameters; template-path parameters
 use the same JSON object. Authentication operations follow the native owner's
 semantics. Enrollment results contain authenticator secrets and backup codes;
@@ -78,9 +78,9 @@ discovers the invitation with `invitations.received`, and accepts or declines
 with `invitations.respond`. Owners inspect and cancel invitations with
 `invitations.list` and `invitations.cancel`.
 
-Invitation creation does not send a notification email. Account-verification
-and password-recovery email remain available. Admission requires the inviter to
-remain an active owner and cannot replace an active or suspended membership.
+Invitation creation does not send a notification email. Admission requires the
+inviter to remain an active owner and cannot replace an active or suspended
+membership.
 
 ## Use the same commands through MCP
 
