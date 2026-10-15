@@ -38,7 +38,7 @@ boundaries, not compatibility guarantees for retired protocols.
   `devboxes-task`. The API accepts no token from a Runner's container.
 - `apps/firops-api/src/execution/tool-cache.ts` owns the tool cache callbacks:
   `/tool-cache`, `/tool-cache-upload` and `/tool-cache-ack`.
-  `apps/firops-api/src/execution/native/execution.ts` restores and saves the
+  `apps/elysia-opencode/src/executor/execution.ts` restores and saves the
   tool cache.
 - `packages/devbox/src/runner/docker-task-runtime.ts` owns Docker launch.
   The container name is `devboxes-task-<taskId>` and its identity label is
@@ -48,7 +48,7 @@ boundaries, not compatibility guarantees for retired protocols.
   HTTPS and verifies its SHA-256 digest before the Runner mounts it, and
   verifies Claude Code's npm tarball and the binary in it against the SHA-512
   values that `apps/firops-api/src/execution/claude-code-artifact.ts` pins.
-- `apps/firops-api/src/execution/native/claude-code-launcher.ts` owns the
+- `apps/elysia-opencode/src/executor/claude-code-launcher.ts` owns the
   launcher that runs a Claude subscription Run's Claude Code as its own uid.
 - `apps/firops-api/src/execution/managed.ts` owns managed launch of the Task
   Pod from the `devboxes-task` SandboxTemplate.
