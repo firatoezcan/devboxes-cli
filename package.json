@@ -36,12 +36,14 @@
     "hono": "catalog:",
     "jose": "catalog:",
     "oauth4webapi": "catalog:",
+    "tar-stream": "catalog:",
     "tough-cookie": "6.0.1",
     "typebox": "catalog:"
   },
   "devDependencies": {
     "@types/dockerode": "catalog:",
     "@types/node": "^25.6.0",
+    "@types/tar-stream": "catalog:",
     "@typescript/native": "catalog:",
     "bun-types": "catalog:",
     "drizzle-orm": "1.0.0-beta.22",
