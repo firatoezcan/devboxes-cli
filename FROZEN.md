@@ -28,8 +28,14 @@ boundaries, not compatibility guarantees for retired protocols.
 - `apps/firops-api/src/execution/callbacks.ts` owns Task callbacks. The hidden
   `runtime-*` routes in `apps/firops-api/src/routes/commands/providers.ts` are
   Task callbacks for the Run's Provider Account.
-  `execution/authority.ts` validates the signed Run token against the Task,
-  Run, Organization, and current actor authority.
+  `execution/authority.ts` validates a managed Task's signed Run token, or a
+  Runner Task's relayed Runner credential, against the Task, Run, Organization,
+  and current actor authority, and a managed Task's token against the client IP
+  in `DEVBOX_MANAGED_TASK_SOURCE_CIDRS`.
+- `apps/devboxes-cli/src/runner/listen.ts` owns the Runner's relay. It signs
+  each executor's token, accepts only Task callbacks with it, and forwards them
+  to the API with the Runner credential and the token's Task in
+  `devboxes-task`. The API accepts no token from a Runner's container.
 - `apps/firops-api/src/execution/tool-cache.ts` owns the tool cache callbacks:
   `/tool-cache`, `/tool-cache-upload` and `/tool-cache-ack`.
   `apps/firops-api/src/execution/native/execution.ts` restores and saves the
@@ -54,12 +60,18 @@ The Runner stages the SHA-256-verified executor and mounts it read-only at
 `DAC_OVERRIDE`, `SETGID`, and `SETUID`; it drops all other capabilities and uses
 `no-new-privileges`.
 
-The Run token is supplied as `DEVBOX_BACKEND_TOKEN` in Docker Env and is visible
-to anyone with Docker access. The private executor captures its configuration,
-sanitizes the process environment, and drops to uid 1001 before importing the
-native execution module. The in-process uid change makes the executor
-non-dumpable under Docker and under gVisor, the managed runtime, so other uid
-1001 processes cannot read its environment, memory or file descriptors.
+The executor's token is supplied as `DEVBOX_BACKEND_TOKEN` in Docker Env and is
+visible to anyone with Docker access. It authenticates only at the Runner's
+relay, which `DEVBOX_BACKEND_BASE_URL` names at `host.docker.internal`. The
+relay listens on the host's loopback address under Docker Desktop and OrbStack,
+and on the bridge gateway address under a Linux Docker Engine, whose host must
+accept container traffic to that address and the relay's port.
+
+The private executor captures its configuration, sanitizes the process
+environment, and drops to uid 1001 before importing the native execution
+module. The in-process uid change makes the executor non-dumpable under Docker
+and under gVisor, the managed runtime, so other uid 1001 processes cannot read
+its environment, memory or file descriptors.
 
 A Claude subscription Run's Claude Code runs as uid 1002, which the agent can't
 read, signal or trace:
@@ -161,6 +173,8 @@ home path with a signed read URL for its current archive on the executor's
 platform. `/tool-cache-upload` signs an archive's upload, and `/tool-cache-ack`
 makes it the path's current archive only while the archive the Run restored, or
 the absence of one, is still current. Review and recheck Runs get no paths.
-Every tool cache failure, including an API without these routes, becomes a
-notice in the native Session and never fails the Run. `verify:workspace-image`
+Every tool cache failure, including an API without these routes, becomes part
+of a notice and never fails the Run. The restore notice is a section of the
+Run's first prompt, after its instruction, so it never takes a model turn of its
+own; the save notice follows the save. `verify:workspace-image`
 proves the restore, the save after the checkpoint, and a SIGTERM during a save.

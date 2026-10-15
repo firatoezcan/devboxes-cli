@@ -28,6 +28,25 @@ export const runnerPassthroughEnvironmentKeys = [
   "NODE_EXTRA_CA_CERTS",
 ] as const;
 
+/**
+ * The settings that turn off telemetry in common tools that a Task runs. Bun, Turborepo, Nuxt and
+ * Wrangler honor DO_NOT_TRACK; the other tools read only their own setting. A Project environment
+ * variable of the same name replaces a value.
+ */
+export const telemetryOptOutEnvironment = {
+  DO_NOT_TRACK: "1",
+  NEXT_TELEMETRY_DISABLED: "1",
+  ASTRO_TELEMETRY_DISABLED: "1",
+  GATSBY_TELEMETRY_DISABLED: "1",
+  STORYBOOK_DISABLE_TELEMETRY: "1",
+  EXPO_NO_TELEMETRY: "1",
+  FLUTTER_SUPPRESS_ANALYTICS: "true",
+  DASH__SUPPRESS_ANALYTICS: "true",
+  CHECKPOINT_DISABLE: "1",
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1",
+  npm_config_update_notifier: "false",
+};
+
 const runnerExactEnvironmentKeys = new Set([
   ...runnerPassthroughEnvironmentKeys,
   "GITHUB_TOKEN",

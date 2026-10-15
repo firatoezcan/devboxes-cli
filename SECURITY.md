@@ -35,8 +35,16 @@ not establish that a container stopped.
 - The account configuration is written atomically with owner-only mode `0600`.
 - Store the Runner token from `capacity.register` in a regular, owner-only file
   (`0600`). Protect that file and the Runner state directory from other local users.
-- Per-task callback tokens are passed in the container environment as
+- Each task's executor gets a token in its container environment as
   `DEVBOX_BACKEND_TOKEN`. Docker access permits inspection of that environment.
+  The token works only at the listener's relay, an HTTP listener on the host's
+  loopback address under Docker Desktop and OrbStack, and on the Docker bridge
+  gateway address under a Linux Docker Engine. The relay accepts only task
+  callbacks with a token that it signed, and forwards them to the API with the
+  Runner token. The API accepts no token from a task container.
+- The relay's signing key and port are in `relay.json` in the Runner state
+  directory, with mode `0600`. Protect that directory like the Runner token
+  file.
 - Native configuration and private daemon state use container memory-backed
   filesystems. Docker access still permits inspection of container files and
   credentials. These controls do not protect against the host operator.

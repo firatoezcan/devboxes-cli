@@ -1,6 +1,6 @@
 {
   "name": "devboxes",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "description": "Devboxes CLI: discover and invoke application commands, authenticate, run execution capacity, and serve stdio MCP.",
   "homepage": "https://github.com/firatoezcan/devboxes-cli#readme",
@@ -23,6 +23,7 @@
     "dockerode": "5.0.1",
     "effect": "4.0.1",
     "elysia": "^1.4.28",
+    "hono": "4.12.15",
     "jose": "6.2.12",
     "oauth4webapi": "3.8.6",
     "tough-cookie": "6.0.1",

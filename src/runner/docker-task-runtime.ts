@@ -25,6 +25,8 @@ import { claudeCodeArchive, stageExecutorArtifact } from "./executor-artifact";
 
 export type NativeTaskLaunch = {
   id: string;
+  /** The executor's API and its token: the Runner's relay and a token that only it accepts. */
+  apiBaseUrl: string;
   token: string;
   image: string;
   platform: "linux/amd64" | "linux/arm64";
@@ -46,9 +48,7 @@ export class DockerOpencodeTaskRuntime {
   /** The Claude Code volumes this Runner is checking or filling, by name. */
   readonly #claudeCodeFills = new Map<string, Promise<string>>();
 
-  constructor(
-    readonly options: { socketPath: string; apiBaseUrl: string; stateDirectory: string },
-  ) {
+  constructor(readonly options: { socketPath: string; stateDirectory: string }) {
     this.docker = new Docker({ socketPath: options.socketPath });
   }
 
@@ -190,7 +190,7 @@ export class DockerOpencodeTaskRuntime {
     const environment = {
       ...executorEnvironment({
         id: task.id,
-        apiBaseUrl: this.options.apiBaseUrl,
+        apiBaseUrl: task.apiBaseUrl,
         token: task.token,
         traceparent: task.traceparent,
       }),

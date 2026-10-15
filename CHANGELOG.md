@@ -1,5 +1,15 @@
 # devboxes
 
+## 0.6.0
+
+### Minor Changes
+
+- `devboxes runner listen` relays each Task's callbacks to the API with the Runner credential, so no token inside a Task container authenticates at the API. The relay listens where the executor reaches `host.docker.internal`, and its key and port persist in the state directory. `--daemon-api` is removed. Runners need Docker Desktop, OrbStack or a native Linux Docker Engine; any other engine, such as Colima or rootless Docker, is refused with `DOCKER_ENGINE_UNSUPPORTED`. The current API requires this version for Runner claims.
+
+### Patch Changes
+
+- `devboxes runner listen` sets `DO_NOT_TRACK=1` on macOS and Windows unless `DO_NOT_TRACK` is already set, so Bun sends no crash reports from a Runner by default.
+
 ## 0.5.0
 
 ### Minor Changes

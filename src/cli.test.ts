@@ -699,7 +699,19 @@ describe("devboxes connect", () => {
 
 describe("devboxes runner listen", () => {
   const runnerTokenFile = join(fixtureDirectory, "runner-token");
-  const listenTo = (origin: string) => [
+  const engine = { name: "Test Engine", gateway: "127.0.0.1" };
+  const docker = Bun.serve({
+    unix: join(fixtureDirectory, "docker.sock"),
+    fetch: (request) => {
+      const { pathname } = new URL(request.url);
+      if (pathname.endsWith("/info")) return Response.json({ OperatingSystem: engine.name });
+      if (pathname.endsWith("/networks/bridge"))
+        return Response.json({ IPAM: { Config: [{ Gateway: engine.gateway }] } });
+      return Response.json({ message: `Unexpected ${pathname}` }, { status: 500 });
+    },
+  });
+  afterAll(() => docker.stop(true));
+  const listenTo = async (origin: string) => [
     "--api",
     origin,
     "runner",
@@ -708,15 +720,17 @@ describe("devboxes runner listen", () => {
     runnerTokenFile,
     "--docker-socket",
     join(fixtureDirectory, "docker.sock"),
+    "--state-directory",
+    await mkdtemp(join(fixtureDirectory, "state-")),
   ];
   const until = async (condition: () => boolean) => {
     while (!condition()) await Bun.sleep(50);
   };
-  const spawnListener = async (origin: string) => {
+  const spawnListener = async (origin: string, env: Record<string, string | undefined> = {}) => {
     await writeFile(runnerTokenFile, "firops_runner_fixture\n", { mode: 0o600 });
-    const listener = Bun.spawn([process.execPath, "src/cli.ts", ...listenTo(origin)], {
+    const listener = Bun.spawn([process.execPath, "src/cli.ts", ...(await listenTo(origin))], {
       cwd: join(import.meta.dir, ".."),
-      env: { ...process.env, ...localDocker },
+      env: { ...process.env, ...localDocker, ...env },
       stdin: "ignore",
       stdout: "ignore",
       stderr: "pipe",
@@ -821,8 +835,8 @@ describe("devboxes runner listen", () => {
     });
     try {
       await writeFile(runnerTokenFile, "firops_runner_fixture\n", { mode: 0o600 });
-      const human = await runCli(listenTo(api.url.origin), localDocker);
-      const json = await runCli(["--json", ...listenTo(api.url.origin)], localDocker);
+      const human = await runCli(await listenTo(api.url.origin), localDocker);
+      const json = await runCli(["--json", ...(await listenTo(api.url.origin))], localDocker);
 
       expect(human.exitCode).toBe(1);
       expect(human.stderr).toBe(`${code} (HTTP ${status}): ${message}\n`);
@@ -832,6 +846,63 @@ describe("devboxes runner listen", () => {
       await api.stop(true);
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "refuses a Docker engine whose Task containers cannot reach this host, and names it",
+    async () => {
+      engine.name = "Ubuntu 24.04.3 LTS";
+      engine.gateway = "192.0.2.1";
+      try {
+        await writeFile(runnerTokenFile, "firops_runner_fixture\n", { mode: 0o600 });
+        const refused = await runCli(["--json", ...(await listenTo(unusedOrigin))], localDocker);
+
+        expect(refused.exitCode).toBe(1);
+        expect(JSON.parse(refused.stderr)).toMatchObject({
+          error: {
+            code: "DOCKER_ENGINE_UNSUPPORTED",
+            message: expect.stringContaining('"Ubuntu 24.04.3 LTS"'),
+          },
+        });
+      } finally {
+        engine.name = "Test Engine";
+        engine.gateway = "127.0.0.1";
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== "darwin").each([
+    [undefined, "DO_NOT_TRACK=1"],
+    ["0", "DO_NOT_TRACK=0"],
+  ])(
+    "polls with DO_NOT_TRACK %p as %s in its process environment, so Bun uploads a crash report only when asked",
+    async (configured, polling) => {
+      let polled = false;
+      using api = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: (request) => {
+          polled = true;
+          return new URL(request.url).pathname.endsWith("/assignments")
+            ? Response.json({ tasks: [] })
+            : Response.json({ task: null });
+        },
+      });
+      await using runner = await spawnListener(api.url.origin, { DO_NOT_TRACK: configured });
+      await until(() => polled || runner.listener.exitCode !== null);
+      const processes = Bun.spawnSync([
+        "ps",
+        "-E",
+        "-ww",
+        "-o",
+        "command=",
+        "-p",
+        String(runner.listener.pid),
+      ]);
+
+      expect(processes.stdout.toString().split(/\s/)).toContain(polling);
+    },
+    30_000,
+  );
 });
 
 describe("devboxes mcp", () => {
