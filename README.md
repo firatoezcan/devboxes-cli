@@ -6,16 +6,17 @@ server exposes the same discovery and invocation implementation to agents.
 The package launcher requires Bun 1.4.2 or later. Published native binaries
 include their runtime and do not require a separate JavaScript runtime.
 
-## Run from this checkout
+## Run from source
+
+Install dependencies with `bun install` in the public source repository, or
+with `pnpm install` at the root of the Dashboard workspace. Then run these
+commands from the package directory: the repository root of the public source,
+or `apps/devboxes-cli` in the Dashboard workspace.
 
 ```sh
-bun apps/devboxes-cli/src/cli.ts --help
-pnpm vp run devboxes#build:smoke
+bun src/cli.ts --help
+bun run build:smoke
 ```
-
-Start the API with `pnpm vp run dev:api` and use the printed HTTP origin on
-`127.0.0.1` with its assigned port. Local startup needs no DNS or certificate
-setup. Remote API connections require HTTPS.
 
 ## Create an account or sign in
 
@@ -24,15 +25,16 @@ devboxes signup
 devboxes login
 ```
 
-[Install the CLI and run operations](../docs/content/guides/cli.mdx#sign-in) describes the
-sign-in methods, the flags for scripts and agents, email verification, and
-two-factor completion.
+[Install the CLI and run operations](https://docs.devboxes.ai/guides/cli#sign-in)
+describes the sign-in methods, the flags for scripts and agents, email
+verification, and two-factor completion.
 
 Released binaries embed `https://api.devboxes.ai` as the default API origin
 through `scripts/build-cli-binaries.ts`. A source run has no default: it uses a
 saved account's origin, and otherwise requires `--api` or `DEVBOXES_API_URL`.
 `--api` takes precedence over `DEVBOXES_API_URL`, both override the default, and
-a saved configuration keeps the origin it was created for.
+a saved configuration keeps the origin it was created for. A local API can use
+an HTTP origin on `127.0.0.1`. Remote API connections require HTTPS.
 
 Credentials are saved atomically with file mode `0600`. Use `--config <path>` to
 keep separate API origins or accounts in separate files. `devboxes logout`
@@ -106,19 +108,19 @@ directory options.
 
 ## Verify the CLI
 
-In the Dashboard workspace, run:
+From the package directory, run:
 
 ```sh
-pnpm vp run devboxes#test
-pnpm vp run devboxes#test:full
-pnpm vp run devboxes#build:smoke
+bun run test
+bun run test:full
+bun run build:smoke
 ```
 
-The tests use Bun and need no PostgreSQL or ClickHouse service. The smoke command
-compiles and executes the host binary. It does not prove another platform's
-binary can run.
+The tests use Bun and need no PostgreSQL or ClickHouse service. In the public
+source, `test` and `test:full` both run the whole suite. In the Dashboard
+workspace, `test` runs only the tests selected by changes since `origin/dev`.
+The smoke command compiles and executes the host binary. It does not prove
+another platform's binary can run.
 
-In the standalone public source checkout, `bun run test` and `bun run test:full`
-run the Bun suite without a private workspace runner or an `origin/dev` branch.
 The source export retains the local-config, provider-connection, and Docker
 socket contracts beside their exported implementations.
