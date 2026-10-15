@@ -29,7 +29,8 @@ boundaries, not compatibility guarantees for retired protocols.
   `runtime-*` routes in `apps/firops-api/src/routes/commands/providers.ts` are
   Task callbacks for the Run's Provider Account.
   `execution/authority.ts` validates the signed Run token against the Task,
-  Run, Organization, and current actor authority.
+  Run, Organization, and current actor authority, and a managed Task's token
+  against the client IP in `DEVBOX_MANAGED_TASK_SOURCE_CIDRS`.
 - `apps/firops-api/src/execution/tool-cache.ts` owns the tool cache callbacks:
   `/tool-cache`, `/tool-cache-upload` and `/tool-cache-ack`.
   `apps/firops-api/src/execution/native/execution.ts` restores and saves the
