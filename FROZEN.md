@@ -138,10 +138,14 @@ does not fail the node, so the next such Run tries again.
 
 A Run of a taskbox Project has no repository. Its payload's `taskbox` names the
 workspace archive that the Session's checkpoint saved, or null for none, and is
-null in every other Run. `/repository` and the Git transport refuse a taskbox
-Run with `REPOSITORY_UNAVAILABLE`, and its `/started` carries a null
-`repositoryStartSha`. Admission refuses such a Run a publish node and any
-`repositories` operation.
+null in every other Run. The executor of a taskbox Run uses no Git: it unpacks
+that gzip tar into a plain workspace directory, saves the directory the same way
+for its checkpoint, through the tool cache's safe pack and unpack, and sends a
+null `repositoryStartSha` in `/started`, which the API accepts only from a Run
+without a repository. `/repository` answers a taskbox Run with
+`EXECUTOR_OUTDATED`, because only an executor from before taskboxes asks it, and
+the Git transport refuses one with `REPOSITORY_UNAVAILABLE`. Admission refuses
+such a Run a publish node and any `repositories` operation.
 
 The executor embeds OpenCode with the repository's project configuration, so a
 repository can define agents and other OpenCode settings. OpenCode in the
