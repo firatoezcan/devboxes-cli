@@ -79,9 +79,10 @@ export class CommandError extends Error {
   static from(cause: unknown) {
     if (cause instanceof CommandError) return cause;
     if (!(cause instanceof Error)) return new CommandError("COMMAND_FAILED", String(cause));
+    const kind = Value.Check(systemErrorSchema, cause) ? cause.code : cause.name;
     return new CommandError(
       "COMMAND_FAILED",
-      `${Value.Check(systemErrorSchema, cause) ? cause.code : cause.name}: ${cause.message}`,
+      cause.message.includes(kind) ? cause.message : `${kind}: ${cause.message}`,
     );
   }
 

@@ -153,7 +153,7 @@ describe("devboxes invoke", () => {
   const traceparents: (string | null)[] = [];
   const apiTraceresponse = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
   const authorizations: (string | null)[] = [];
-  // About 150 KB of output, like the Production failure. Bun 1.4.2 writes 256 KiB and more another way.
+  // About 150 KB of output, like the Production failure. Bun writes 256 KiB and more another way.
   // Each text starts with a C1 control sequence, which JSON.stringify leaves unescaped.
   const events = Array.from({ length: 600 }, (_, index) => ({
     index,
@@ -1034,7 +1034,10 @@ describe("devboxes failure report", () => {
 
     expect(result.exitCode).toBe(1);
     expect(JSON.parse(result.stderr)).toMatchObject({
-      error: { code: "COMMAND_FAILED", message: expect.stringContaining("ConnectionRefused") },
+      error: {
+        code: "COMMAND_FAILED",
+        message: expect.stringMatching(/^ECONNREFUSED: (?!ECONNREFUSED)/),
+      },
     });
   });
 });
