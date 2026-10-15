@@ -101,8 +101,8 @@ its work ends.
 ## Run execution capacity
 
 Register a Runner through the discovered `capacity.register` application command.
-Use `devboxes runner listen --help` for credential-file, Docker socket, state
-directory, and container-reachable API options.
+Use `devboxes runner listen --help` for credential-file, Docker socket, and state
+directory options.
 
 ## Verify the CLI
 

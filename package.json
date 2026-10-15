@@ -33,6 +33,7 @@
     "dockerode": "catalog:",
     "effect": "catalog:",
     "elysia": "catalog:",
+    "hono": "catalog:",
     "jose": "catalog:",
     "oauth4webapi": "catalog:",
     "tough-cookie": "6.0.1",

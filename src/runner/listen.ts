@@ -1,10 +1,15 @@
-import { readFile, rm, stat } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { createSocket } from "node:dgram";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { DockerOpencodeTaskRuntime } from "@firops/devbox/runner/docker-task-runtime";
 import { JsonValueSchema } from "@firops/platform/protocol/provider-auth";
 import { ClaudeCodeArtifactSchema } from "@firops/platform/protocol/task-runtime";
+import { proxy } from "hono/proxy";
+import { jwtVerify, SignJWT } from "jose";
 import Type, { type Static, type TSchema } from "typebox";
+import Value from "typebox/value";
 
 import { CommandError, parseResponse, requestJson } from "../commands";
 
@@ -12,7 +17,6 @@ const taskSchema = Type.Object({
   id: Type.String(),
   executorId: Type.Union([Type.String(), Type.Null()]),
   containerId: Type.Union([Type.String(), Type.Null()]),
-  token: Type.String(),
   image: Type.String(),
   platform: Type.Union([Type.Literal("linux/amd64"), Type.Literal("linux/arm64")]),
   daemon: Type.Object({ sha256: Type.String(), version: Type.String(), url: Type.String() }),
@@ -29,10 +33,19 @@ const assignmentSchema = Type.Object({
 const assignmentsSchema = Type.Object({ tasks: Type.Array(assignmentSchema) });
 const claimSchema = Type.Object({ task: Type.Union([taskSchema, Type.Null()]) });
 const reconcileSchema = Type.Object({ status: Type.String() });
+/** The relay's signing key and port, kept so that running executors outlast a listener restart. */
+const relayStateSchema = Type.Object({
+  key: Type.String({ minLength: 43 }),
+  port: Type.Integer({ minimum: 1, maximum: 65_535 }),
+});
 
+/**
+ * Runs the Runner. Each executor reaches only this listener's relay, with a token that only the
+ * relay accepts. The relay forwards the executor's Task callbacks to the API with the Runner
+ * credential and names the token's Task in `devboxes-task`.
+ */
 export const listen = async (options: {
   apiOrigin: string;
-  daemonApiBaseUrl: string;
   tokenFile: string;
   stateDirectory: string;
   socketPath: string;
@@ -48,11 +61,93 @@ export const listen = async (options: {
   if (!token)
     throw new CommandError("INVALID_RUNNER_TOKEN_FILE", "The Runner token file is empty.");
   const directory = resolve(options.stateDirectory);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
   const runtime = new DockerOpencodeTaskRuntime({
     socketPath: options.socketPath,
-    apiBaseUrl: options.daemonApiBaseUrl,
     stateDirectory: directory,
   });
+  const engine = await runtime.docker.info();
+  let hostname = "127.0.0.1";
+  if (!["Docker Desktop", "OrbStack"].includes(engine.OperatingSystem)) {
+    const gateway = (await runtime.docker.getNetwork("bridge").inspect()).IPAM?.Config?.[0]
+      ?.Gateway;
+    const gatewayIsLocal =
+      gateway &&
+      (await new Promise<boolean>((resolve) => {
+        const socket = createSocket("udp4");
+        socket.once("error", () => {
+          socket.close();
+          resolve(false);
+        });
+        socket.bind(0, gateway, () => {
+          socket.close();
+          resolve(true);
+        });
+      }));
+    if (!gateway || !gatewayIsLocal)
+      throw new CommandError(
+        "DOCKER_ENGINE_UNSUPPORTED",
+        `Task containers of the Docker engine "${engine.OperatingSystem}" cannot reach this host. Self-hosted Runners need Docker Desktop, OrbStack or a native Linux Docker Engine.`,
+      );
+    hostname = gateway;
+  }
+  const relayStatePath = join(directory, "relay.json");
+  const relayState = await readFile(relayStatePath, "utf8").then(
+    (text) => Value.Parse(relayStateSchema, JSON.parse(text)),
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    },
+  );
+  const relayKey = relayState ? Buffer.from(relayState.key, "base64url") : randomBytes(32);
+  const relay = Bun.serve({
+    hostname,
+    port: relayState?.port ?? 0,
+    idleTimeout: 0,
+    development: false,
+    async fetch(request) {
+      const { pathname, search } = new URL(request.url);
+      if (
+        !pathname.startsWith("/api/internal/execution/tasks/") &&
+        pathname !== "/api/commands/providers/runtime-read" &&
+        pathname !== "/api/commands/providers/runtime-write"
+      )
+        return Response.json(
+          { error: { code: "NOT_RELAYED", message: "The Runner relays only Task callbacks." } },
+          { status: 404 },
+        );
+      const verified = await jwtVerify(
+        request.headers.get("authorization")?.replace(/^Bearer /, "") ?? "",
+        relayKey,
+        { algorithms: ["HS256"] },
+      ).catch(() => null);
+      if (!verified?.payload.sub)
+        return Response.json(
+          {
+            error: {
+              code: "RUN_TOKEN_INVALID",
+              message: "The Run credential does not belong to this Runner.",
+            },
+          },
+          { status: 401 },
+        );
+      const headers = new Headers(request.headers);
+      headers.delete("host");
+      headers.set("authorization", `Bearer ${token}`);
+      headers.set("devboxes-task", verified.payload.sub);
+      return proxy(`${options.apiOrigin}${pathname}${search}`, {
+        raw: new Request(request, { headers }),
+        redirect: "manual",
+      });
+    },
+  });
+  if (!relayState)
+    await writeFile(
+      relayStatePath,
+      JSON.stringify({ key: relayKey.toString("base64url"), port: relay.port }),
+      { mode: 0o600 },
+    );
+  const apiBaseUrl = `http://host.docker.internal:${relay.port}/api`;
   const api = async <Schema extends TSchema>(
     operation: string,
     schema: Schema,
@@ -91,7 +186,14 @@ export const listen = async (options: {
   const startClaimed = async (task: Static<typeof taskSchema>) => {
     const existing = await runtime.inspect(task.executorId ?? `devboxes-task-${task.id}`);
     if (!existing) {
-      const container = await runtime.create(task);
+      const container = await runtime.create({
+        ...task,
+        apiBaseUrl,
+        token: await new SignJWT()
+          .setProtectedHeader({ alg: "HS256" })
+          .setSubject(task.id)
+          .sign(relayKey),
+      });
       await startCreated(task, container.id);
     } else if (existing.State.Status === "created") {
       await startCreated(task, existing.Id);
@@ -202,6 +304,7 @@ export const listen = async (options: {
     }
   } finally {
     await Promise.all(starting.values());
+    await relay.stop();
     process.removeListener("SIGINT", interrupt);
     process.removeListener("SIGTERM", interrupt);
   }

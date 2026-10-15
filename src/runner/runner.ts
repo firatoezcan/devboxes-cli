@@ -20,8 +20,7 @@ export const addRunnerCommands = (program: Command) => {
       "Downloaded daemon binary cache",
       join(platformConfigHome(), "devboxes", "runner"),
     )
-    .option("--docker-socket <path>", "Docker socket path")
-    .option("--daemon-api <url>", "Container-reachable API origin when it differs from --api");
+    .option("--docker-socket <path>", "Docker socket path");
   command.action(async () => {
     // Bun uploads its crash reports on macOS and Windows unless DO_NOT_TRACK is set when the
     // process starts, so the listener starts again with it.
@@ -51,7 +50,6 @@ export const addRunnerCommands = (program: Command) => {
       tokenFile: string;
       stateDirectory: string;
       dockerSocket?: string;
-      daemonApi?: string;
     }>();
     const origin = options.api
       ? apiOrigin(options.api)
@@ -59,7 +57,6 @@ export const addRunnerCommands = (program: Command) => {
     const socketPath = options.dockerSocket ?? dockerSocketPath();
     await listen({
       apiOrigin: origin,
-      daemonApiBaseUrl: `${apiOrigin(options.daemonApi ?? origin)}/api`,
       tokenFile: options.tokenFile,
       stateDirectory: options.stateDirectory,
       socketPath,
