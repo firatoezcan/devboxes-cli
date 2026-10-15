@@ -3,9 +3,9 @@ import { createSocket } from "node:dgram";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-import { DockerOpencodeTaskRuntime } from "@firops/devbox/runner/docker-task-runtime";
-import { JsonValueSchema } from "@firops/platform/protocol/provider-auth";
-import { ClaudeCodeArtifactSchema } from "@firops/platform/protocol/task-runtime";
+import { DockerOpencodeTaskRuntime } from "./docker-task-runtime";
+import { JsonValueSchema } from "../protocol/provider-auth";
+import { ClaudeCodeArtifactSchema } from "../protocol/task-runtime";
 import { proxy } from "hono/proxy";
 import { jwtVerify, SignJWT } from "jose";
 import Type, { type Static, type TSchema } from "typebox";
