@@ -73,9 +73,9 @@ The API's OpenAPI contract defines inputs, results, authority, and errors.
 ## Join an Organization
 
 An owner uses `invitations.create` to record an invitation for an email address.
-The intended recipient verifies that email through the native authentication
-flow, discovers the invitation with `invitations.received`, and accepts or
-declines with `invitations.respond`. Owners inspect and cancel invitations with
+The intended recipient signs in to an account with that verified email,
+discovers the invitation with `invitations.received`, and accepts or declines
+with `invitations.respond`. Owners inspect and cancel invitations with
 `invitations.list` and `invitations.cancel`.
 
 Invitation creation does not send a notification email. Account-verification

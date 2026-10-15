@@ -221,12 +221,9 @@ export const addAuthenticationCommands = (program: Command) => {
           `${
             options.json
               ? JSON.stringify({ user: Value.Clean(userSchema, user), signedIn })
-              : [
-                  signedIn ? `Signed in as ${user.email}.` : `Account created for ${user.email}.`,
-                  ...(action === "signup" && !user.emailVerified
-                    ? [`Open the verification link sent to ${user.email}.`]
-                    : []),
-                ].join(" ")
+              : signedIn
+                ? `Signed in as ${user.email}.`
+                : `Devboxes sent an email to ${user.email}. Follow its instructions, then run devboxes login --email ${user.email}.`
           }\n`,
         );
       };
@@ -368,11 +365,19 @@ export const addAuthenticationCommands = (program: Command) => {
       }
       if (!password)
         throw new CommandError("PASSWORD_INPUT_REQUIRED", "The password must not be empty.");
-      let response = await requestAuthentication(
+      let response = await authenticationResponse(
         context,
         action === "signup" ? "/sign-up/email" : "/sign-in/email",
         { method: "POST", body: { email, password, name } },
       );
+      if ("failure" in response) {
+        if (response.failure.code !== "EMAIL_NOT_VERIFIED") throw response.failure;
+        throw new CommandError(
+          "EMAIL_NOT_VERIFIED",
+          `Verify ${email} before you sign in. Devboxes sent a new verification link to it. Open the link, then run devboxes login again.`,
+          response.failure.options,
+        );
+      }
       const challenge = response.data;
       if (
         Value.Check(
