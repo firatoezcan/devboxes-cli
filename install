@@ -18,12 +18,12 @@ fi
 
 case "$version" in
   *[!0-9.]* | .* | *..* | *.)
-    echo "devboxes version must be X.Y.Z (got '$version')." >&2
+    echo "Devboxes version must be X.Y.Z (got '$version')." >&2
     exit 1
     ;;
 esac
 if [ "$(printf '%s' "$version" | awk -F. '{ print NF }')" -ne 3 ]; then
-  echo "devboxes version must be X.Y.Z (got '$version')." >&2
+  echo "Devboxes version must be X.Y.Z (got '$version')." >&2
   exit 1
 fi
 
@@ -32,12 +32,12 @@ case "$(uname -s)" in
   Linux)
     platform="linux"
     if ldd --version 2>&1 | grep -qi musl; then
-      echo "devboxes does not currently publish a native binary for musl Linux." >&2
+      echo "Devboxes does not currently publish a native binary for musl Linux." >&2
       exit 1
     fi
     ;;
   *)
-    echo "devboxes supports macOS, glibc Linux, and Windows. Use install.ps1 on Windows." >&2
+    echo "Devboxes supports macOS, glibc Linux, and Windows. Use install.ps1 on Windows." >&2
     exit 1
     ;;
 esac
@@ -46,7 +46,7 @@ case "$(uname -m)" in
   arm64 | aarch64) architecture="arm64" ;;
   x86_64 | amd64) architecture="x64" ;;
   *)
-    echo "devboxes does not publish a binary for architecture $(uname -m)." >&2
+    echo "Devboxes does not publish a binary for architecture $(uname -m)." >&2
     exit 1
     ;;
 esac
@@ -59,7 +59,7 @@ destination="${install_dir}/devboxes"
 umask 022
 mkdir -p "$install_dir"
 if [ -d "$destination" ]; then
-  echo "devboxes install destination is a directory: ${destination}" >&2
+  echo "Devboxes install destination is a directory: ${destination}" >&2
   exit 1
 fi
 staged="$(mktemp "${install_dir}/.devboxes.XXXXXX")"
@@ -82,7 +82,7 @@ if command -v sha256sum >/dev/null 2>&1; then
 elif command -v shasum >/dev/null 2>&1; then
   actual="$(shasum -a 256 "$staged" | awk '{ print $1 }')"
 else
-  echo "Install sha256sum or shasum before installing devboxes." >&2
+  echo "Install sha256sum or shasum before installing Devboxes." >&2
   exit 1
 fi
 if [ "$actual" != "$expected" ]; then
@@ -101,7 +101,7 @@ mv -f "$staged" "$destination"
 trap - 0 1 2 15
 rm -f "$checksums"
 
-echo "Installed devboxes ${version} at ${destination}"
+echo "Installed Devboxes ${version} at ${destination}"
 case ":${PATH}:" in
   *":${install_dir}:"*) ;;
   *) echo "Add ${install_dir} to PATH, then open a new terminal." ;;
