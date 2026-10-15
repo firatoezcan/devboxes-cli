@@ -90,7 +90,7 @@ afterEach(async () => {
   );
 });
 
-describe("installed Devboxes launcher", () => {
+describe("installed devboxes launcher", () => {
   it("preserves arguments, stdio, and the native command exit code", async () => {
     const launcher = await createInstalledLauncher(`
 let input = "";
@@ -257,7 +257,7 @@ setTimeout(() => process.exit(97), 500);
     await expect(waitForExit(child)).resolves.toEqual(nativeTermination.result);
   });
 
-  it("rejects a native package from a different Devboxes release", async () => {
+  it("rejects a native package from a different devboxes release", async () => {
     const launcher = await createInstalledLauncher(
       'process.stdout.write("must not run");',
       "1.2.2",
@@ -278,7 +278,7 @@ setTimeout(() => process.exit(97), 500);
 
     await expect(waitForExit(child)).resolves.toEqual({ code: 1, signal: null });
     expect(stdout).toBe("");
-    expect(stderr).toContain("Devboxes package version mismatch: devboxes is 1.2.3");
+    expect(stderr).toContain("devboxes package version mismatch: devboxes is 1.2.3");
     expect(stderr).toContain("is 1.2.2. Reinstall devboxes.");
   });
 

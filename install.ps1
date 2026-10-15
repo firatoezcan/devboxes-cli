@@ -14,16 +14,16 @@ if (-not $Version) {
   $Version = $release.tag_name -replace "^v", ""
 }
 if ($Version -notmatch "^\d+\.\d+\.\d+$") {
-  throw "Devboxes version must be X.Y.Z (got '$Version')."
+  throw "devboxes version must be X.Y.Z (got '$Version')."
 }
 
 if (-not [Environment]::Is64BitOperatingSystem) {
-  throw "Devboxes does not currently publish a Windows 32-bit binary."
+  throw "devboxes does not currently publish a Windows 32-bit binary."
 }
 
 if (-not $InstallDir) {
   $localAppData = [Environment]::GetFolderPath("LocalApplicationData")
-  $InstallDir = Join-Path $localAppData "Programs\Devboxes\bin"
+  $InstallDir = Join-Path $localAppData "Programs\devboxes\bin"
 }
 
 $asset = "devboxes-$Version-windows-x64.exe"
@@ -62,7 +62,7 @@ try {
   Remove-Item -Force -ErrorAction SilentlyContinue $staged, $checksums
 }
 
-Write-Host "Installed Devboxes $Version at $destination"
+Write-Host "Installed devboxes $Version at $destination"
 if (($env:PATH -split [IO.Path]::PathSeparator) -notcontains $InstallDir) {
   Write-Host "Add $InstallDir to PATH, then open a new terminal."
 }

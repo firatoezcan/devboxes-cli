@@ -1,4 +1,4 @@
-# Devboxes CLI
+# devboxes CLI
 
 The CLI discovers and invokes the application's API-owned commands. Its MCP
 server exposes the same discovery and invocation implementation to agents.

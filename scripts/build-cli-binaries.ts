@@ -22,7 +22,7 @@ const hostPlatform = (): CliPlatform => {
   const arch = process.arch === "arm64" ? "arm64" : "amd64";
   const platform = `${os}/${arch}`;
   if (!(platform in platformTargets)) {
-    throw new Error(`Unsupported Devboxes build host platform ${platform}.`);
+    throw new Error(`Unsupported devboxes build host platform ${platform}.`);
   }
   return platform as CliPlatform;
 };
@@ -38,7 +38,7 @@ const argValue = (name: string) => {
 const requestedPlatform = argValue("--platform");
 const smoke = Bun.argv.includes("--smoke");
 if (smoke && requestedPlatform !== undefined) {
-  throw new Error("The Devboxes CLI smoke builds and executes the host artifact only.");
+  throw new Error("The devboxes CLI smoke builds and executes the host artifact only.");
 }
 const platforms: CliPlatform[] =
   requestedPlatform === "all"
@@ -47,7 +47,7 @@ const platforms: CliPlatform[] =
 for (const platform of platforms) {
   if (!(platform in platformTargets)) {
     throw new Error(
-      `Devboxes build platform must be one of ${Object.keys(platformTargets).join(", ")} or all.`,
+      `devboxes build platform must be one of ${Object.keys(platformTargets).join(", ")} or all.`,
     );
   }
 }
@@ -78,10 +78,10 @@ for (const platform of platforms) {
   if (smoke) {
     const artifact = await stat(outfile);
     if (!artifact.isFile()) {
-      throw new Error(`Devboxes CLI artifact ${outfile} is not a file.`);
+      throw new Error(`devboxes CLI artifact ${outfile} is not a file.`);
     }
     if (!platform.startsWith("windows/") && (artifact.mode & 0o111) === 0) {
-      throw new Error(`Devboxes CLI artifact ${outfile} is not executable.`);
+      throw new Error(`devboxes CLI artifact ${outfile} is not executable.`);
     }
 
     const help = Bun.spawn([outfile, "--help"], {
@@ -94,8 +94,8 @@ for (const platform of platforms) {
     if (exitCode !== 0) {
       throw new Error(`The artifact exited with status ${exitCode}.`);
     }
-    console.info(`Executed Devboxes CLI artifact ${outfile} with --help.`);
+    console.info(`Executed devboxes CLI artifact ${outfile} with --help.`);
   } else {
-    console.info(`Built ${platform} Devboxes CLI at ${outfile}.`);
+    console.info(`Built ${platform} devboxes CLI at ${outfile}.`);
   }
 }

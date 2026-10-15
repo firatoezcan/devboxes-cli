@@ -264,7 +264,7 @@ export const addAccountCommands = (program: Command) => {
 
   const mcp = program
     .command("mcp")
-    .description("serve Devboxes describe and invoke tools over stdio");
+    .description("serve devboxes describe and invoke tools over stdio");
   mcp.action(async () => {
     const connection = await loadCommandConnection(
       mcp.optsWithGlobals<{ api?: string; config?: string }>(),

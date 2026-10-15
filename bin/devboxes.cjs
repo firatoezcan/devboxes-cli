@@ -18,14 +18,14 @@ const run = () => {
   const nativePackage = nativePackageByTarget[target];
   if (!nativePackage) {
     console.error(
-      `Devboxes does not publish a native binary for ${target}. ` +
+      `devboxes does not publish a native binary for ${target}. ` +
         "Use macOS or glibc Linux on arm64/x64, or Windows x64.",
     );
     process.exitCode = 1;
     return;
   }
   if (process.platform === "linux" && !process.report?.getReport().header?.glibcVersionRuntime) {
-    console.error("Devboxes publishes Linux binaries for glibc systems only.");
+    console.error("devboxes publishes Linux binaries for glibc systems only.");
     process.exitCode = 1;
     return;
   }
@@ -46,7 +46,7 @@ const run = () => {
   const wrapperVersion = require(join(__dirname, "..", "package.json")).version;
   if (nativeVersion !== wrapperVersion) {
     console.error(
-      `Devboxes package version mismatch: devboxes is ${wrapperVersion}, ` +
+      `devboxes package version mismatch: devboxes is ${wrapperVersion}, ` +
         `${nativePackage} is ${nativeVersion}. Reinstall devboxes.`,
     );
     process.exitCode = 1;

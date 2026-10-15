@@ -11,7 +11,7 @@ import { addRunnerCommands } from "./runner/runner";
 export const createDevboxesCommand = () => {
   const program = new Command()
     .name("devboxes")
-    .description("Discover and invoke Devboxes application commands")
+    .description("Discover and invoke devboxes application commands")
     .version(cliVersion)
     .showHelpAfterError()
     .configureOutput({
@@ -24,7 +24,7 @@ export const createDevboxesCommand = () => {
         throw new CommandError("INVALID_USAGE", error.message.replace(/^error: /, ""));
       }
     })
-    .option("--config <path>", "Path to the Devboxes configuration file")
+    .option("--config <path>", "Path to the devboxes configuration file")
     .option(
       "--api <url>",
       defaultApiOrigin

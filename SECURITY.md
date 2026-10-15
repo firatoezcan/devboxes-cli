@@ -11,7 +11,7 @@ and coordinate a fix or mitigation before public disclosure.
 
 This policy covers the latest published `devboxes` version: its account CLI,
 MCP server, local Docker runner, runner protocol, and provider-connection
-implementation. Reports about the hosted Devboxes platform are welcome at the
+implementation. Reports about the hosted devboxes platform are welcome at the
 same address.
 
 ## Runner trust boundary

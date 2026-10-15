@@ -383,7 +383,7 @@ export const addAuthenticationCommands = (program: Command) => {
           if (signedIn.failure.code !== "EMAIL_NOT_VERIFIED") throw signedIn.failure;
           throw new CommandError(
             "EMAIL_NOT_VERIFIED",
-            `${email} is not verified yet. Sign in with the code Devboxes emails you: devboxes login --email ${email}. That sign-in removes the password, which you then set again through the reset email.`,
+            `${email} is not verified yet. Sign in with the code devboxes emails you: devboxes login --email ${email}. That sign-in removes the password, which you then set again through the reset email.`,
             signedIn.failure.options,
           );
         }
@@ -437,7 +437,7 @@ export const addAuthenticationCommands = (program: Command) => {
             `${
               options.json
                 ? JSON.stringify({ signedIn: false, codeSent: true })
-                : `Devboxes sent a sign-in code to ${email}. Pipe it into the same command with --code-stdin.`
+                : `devboxes sent a sign-in code to ${email}. Pipe it into the same command with --code-stdin.`
             }\n`,
           );
           return;

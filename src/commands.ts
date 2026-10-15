@@ -366,7 +366,7 @@ export const invokeCommand = async (
 };
 
 /**
- * A Devboxes command tool. Its run refuses input that `input` rejects, and returns that refusal or a
+ * A devboxes command tool. Its run refuses input that `input` rejects, and returns that refusal or a
  * command failure as an error result the agent reads.
  */
 const commandTool = <Input extends TObject, Result>(
@@ -393,7 +393,7 @@ const commandTool = <Input extends TObject, Result>(
 });
 
 /**
- * The Devboxes command tools. `devboxes mcp` serves them over stdio, and the Chat native host
+ * The devboxes command tools. `devboxes mcp` serves them over stdio, and the Chat native host
  * runs them in its own process. Each call reads the advertised commands with `readCommands`, which
  * by default asks the API again.
  */
@@ -403,7 +403,7 @@ export const devboxesCommandTools = (
 ) => ({
   describe: commandTool(
     "devboxes_describe",
-    "List Devboxes command IDs, effects, and summaries when command is omitted. Pass an exact command ID to read its OpenAPI input, response, and authority contract before using devboxes_invoke. Discovery does not grant authority.",
+    "List devboxes command IDs, effects, and summaries when command is omitted. Pass an exact command ID to read its OpenAPI input, response, and authority contract before using devboxes_invoke. Discovery does not grant authority.",
     Type.Object({ command: Type.Optional(Type.String({ minLength: 1 })) }),
     async ({ command }) => {
       const description = await readCommands(connection);
@@ -419,7 +419,7 @@ export const devboxesCommandTools = (
   ),
   invoke: commandTool(
     "devboxes_invoke",
-    "Invoke an advertised Devboxes command. Supply JSON input directly, never a local file reference. HTTP acceptance is not evidence that asynchronous work completed.",
+    "Invoke an advertised devboxes command. Supply JSON input directly, never a local file reference. HTTP acceptance is not evidence that asynchronous work completed.",
     Type.Object({
       command: Type.String({ minLength: 1 }),
       // Tool arguments arrive as JSON, so the advertised schema accepts every value.

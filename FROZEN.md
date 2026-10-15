@@ -146,7 +146,7 @@ Run with `REPOSITORY_UNAVAILABLE`, and its `/started` carries a null
 The executor embeds OpenCode with the repository's project configuration, so a
 repository can define agents and other OpenCode settings. OpenCode in the
 executor runs only its built-in plugins and the plugins of the executor and
-the Devboxes runtime. It ignores `plugins` entries in configuration documents
+the devboxes runtime. It ignores `plugins` entries in configuration documents
 and files in `plugin` and `plugins` configuration directories, including those
 the agent writes during the Run. It turns off the built-in `opencode.warming`
 plugin, so a repository's configuration cannot start background model requests
