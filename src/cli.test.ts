@@ -1471,11 +1471,12 @@ describe("devboxes failure report", () => {
 
 describe("devboxes signup and login", () => {
   const github = { method: "github", flag: "--github" };
+  const google = { method: "google", flag: "--google" };
   const emailCode = { method: "email", flag: "--email <email>" };
   const password = { method: "password", flag: "--email <email> --password-stdin" };
   it.each([
-    ["signup", [github, password]],
-    ["login", [github, emailCode, password]],
+    ["signup", [github, google, password]],
+    ["login", [github, google, emailCode, password]],
   ] as const)(
     "%s lists every sign-in method instead of prompting without a terminal",
     async (action, methods) => {
@@ -1611,6 +1612,62 @@ describe("devboxes signup and login", () => {
       await api.stop(true);
     }
   });
+  it.each([
+    ["login", ""],
+    ["signup", "&sign_up=true"],
+  ] as const)(
+    "runs %s --google through the browser approval page that starts Google",
+    async (action, signUp) => {
+      const api = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: (request) => {
+          const { pathname } = new URL(request.url);
+          if (pathname === "/api/auth/device/code")
+            return Response.json({
+              device_code: "device-code",
+              user_code: "ABCDEFGH",
+              verification_uri_complete: new URL("/api/device?user_code=ABCDEFGH", request.url)
+                .href,
+              expires_in: 60,
+              interval: 0,
+            });
+          if (pathname === "/api/auth/device/token")
+            return Response.json({ access_token: "device-session", token_type: "Bearer" });
+          return Response.json({
+            session: {},
+            user: { id: "user", email: "google@example.com", name: "Google", emailVerified: true },
+          });
+        },
+      });
+      try {
+        const result = await runCli([
+          "--json",
+          "--config",
+          join(fixtureDirectory, `device-google-${action}.json`),
+          "--api",
+          api.url.origin,
+          action,
+          "--google",
+        ]);
+
+        expect(result.exitCode).toBe(0);
+        expect(JSON.parse(result.stderr.trim().split("\n")[0] ?? "")).toEqual({
+          verification: {
+            url: `${api.url.origin}/api/device?user_code=ABCDEFGH&provider=google${signUp}`,
+            userCode: "ABCDEFGH",
+            expiresIn: 60,
+          },
+        });
+        expect(JSON.parse(result.stdout)).toMatchObject({
+          signedIn: true,
+          user: { email: "google@example.com" },
+        });
+      } finally {
+        await api.stop(true);
+      }
+    },
+  );
   it("stops waiting for browser approval with the error of an unreadable token response", async () => {
     const api = Bun.serve({
       hostname: "127.0.0.1",

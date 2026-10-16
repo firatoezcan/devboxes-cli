@@ -57,8 +57,13 @@ const sessionSelectionSchemas = new Map<string, TObject>([
 const oauthFailureSchema = Type.Object({ error: Type.String(), error_description: Type.String() });
 const listedSessionSchema = Type.Object({ id: Type.String(), token: Type.String() });
 
-const signInMethods: { method: "github" | "email" | "password"; flag: string; label: string }[] = [
+const signInMethods: {
+  method: "github" | "google" | "email" | "password";
+  flag: string;
+  label: string;
+}[] = [
   { method: "github", flag: "--github", label: "GitHub" },
+  { method: "google", flag: "--google", label: "Google" },
   { method: "email", flag: "--email <email>", label: "Email code" },
   { method: "password", flag: "--email <email> --password-stdin", label: "Email and password" },
 ];
@@ -68,6 +73,7 @@ type AccountOptions = {
   api?: string;
   config?: string;
   github?: boolean;
+  google?: boolean;
   email?: string;
   codeStdin?: boolean;
   passwordStdin?: boolean;
@@ -176,11 +182,19 @@ export const addAuthenticationCommands = (program: Command) => {
       .command(action)
       .description(
         action === "signup"
-          ? "create an account with GitHub, or with your email and a password"
-          : "sign in with GitHub, a code sent to your email, or your password",
+          ? "create an account with GitHub, Google, or your email and a password"
+          : "sign in with GitHub, Google, a code sent to your email, or your password",
       )
       .addOption(
         new Option("--github", "Continue with GitHub in a browser").conflicts([
+          "google",
+          "email",
+          "codeStdin",
+          "passwordStdin",
+        ]),
+      )
+      .addOption(
+        new Option("--google", "Continue with Google in a browser").conflicts([
           "email",
           "codeStdin",
           "passwordStdin",
@@ -223,8 +237,8 @@ export const addAuthenticationCommands = (program: Command) => {
       }
       const interactive = asksInTerminal(options.json);
       let choice = methods.find((entry) =>
-        entry.method === "github"
-          ? options.github
+        entry.method === "github" || entry.method === "google"
+          ? options[entry.method]
           : options.email !== undefined &&
             (entry.method === "password") === (action === "signup" || !!options.passwordStdin),
       );
@@ -233,7 +247,7 @@ export const addAuthenticationCommands = (program: Command) => {
         if (!interactive) {
           throw new CommandError(
             "SIGN_IN_METHOD_REQUIRED",
-            "Choose a sign-in method: --github or --email <email>.",
+            "Choose a sign-in method: --github, --google or --email <email>.",
             { details: { methods: methods.map(({ method, flag }) => ({ method, flag })) } },
           );
         }
@@ -255,7 +269,7 @@ export const addAuthenticationCommands = (program: Command) => {
         );
       };
 
-      if (choice.method === "github") {
+      if (choice.method === "github" || choice.method === "google") {
         const device = (
           await requestAuthentication(context, "/device/code", {
             method: "POST",
