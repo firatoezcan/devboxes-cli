@@ -69,7 +69,6 @@ type AccountOptions = {
   config?: string;
   github?: boolean;
   email?: string;
-  name?: string;
   codeStdin?: boolean;
   passwordStdin?: boolean;
   json?: boolean;
@@ -177,30 +176,42 @@ export const addAuthenticationCommands = (program: Command) => {
       .command(action)
       .description(
         action === "signup"
-          ? "create an account with GitHub or a code sent to your email"
+          ? "create an account with GitHub, or with your email and a password"
           : "sign in with GitHub, a code sent to your email, or your password",
       )
       .addOption(
         new Option("--github", "Continue with GitHub in a browser").conflicts([
           "email",
-          "name",
           "codeStdin",
           "passwordStdin",
         ]),
-      )
-      .option("--email <email>", "Sign in with this email address, by default with an emailed code")
-      .option("--code-stdin", "Read the emailed code from stdin and finish the sign-in");
-    if (action === "signup") command.option("--name <name>", "Display name for an email account");
-    else
-      command.addOption(
-        new Option(
-          "--password-stdin",
-          "Sign in with the account password from stdin instead of a code",
-        ).conflicts("codeStdin"),
       );
+    if (action === "signup")
+      command
+        .option("--email <email>", "Create the account for this email address")
+        .option("--password-stdin", "Read the new account's password from stdin")
+        .addOption(
+          new Option(
+            "--code-stdin",
+            "Read the emailed code from stdin and finish creating the account",
+          ).conflicts("passwordStdin"),
+        );
+    else
+      command
+        .option(
+          "--email <email>",
+          "Sign in with this email address, by default with an emailed code",
+        )
+        .option("--code-stdin", "Read the emailed code from stdin and finish the sign-in")
+        .addOption(
+          new Option(
+            "--password-stdin",
+            "Sign in with the account password from stdin instead of a code",
+          ).conflicts("codeStdin"),
+        );
     const methods =
       action === "signup"
-        ? signInMethods.filter((entry) => entry.method !== "password")
+        ? signInMethods.filter((entry) => entry.method !== "email")
         : signInMethods;
     command.action(async () => {
       const options = command.optsWithGlobals<AccountOptions>();
@@ -215,7 +226,7 @@ export const addAuthenticationCommands = (program: Command) => {
         entry.method === "github"
           ? options.github
           : options.email !== undefined &&
-            (entry.method === "password") === !!options.passwordStdin,
+            (entry.method === "password") === (action === "signup" || !!options.passwordStdin),
       );
       const context = await loadAccountContext(options);
       if (!choice) {
@@ -272,6 +283,7 @@ export const addAuthenticationCommands = (program: Command) => {
           );
         }
         verification.searchParams.set("provider", choice.method);
+        if (action === "signup") verification.searchParams.set("sign_up", "true");
         process.stderr.write(
           `${
             options.json
@@ -346,26 +358,23 @@ export const addAuthenticationCommands = (program: Command) => {
       }
 
       let email = options.email;
-      let name = options.name;
-      if (interactive) {
-        email ??= await promptText("Email");
-        if (action === "signup") name ??= await promptText("Name");
-      }
-      if (!email || (action === "signup" && !name)) {
+      if (interactive) email ??= await promptText("Email");
+      if (!email) {
         throw new CommandError(
           "INVALID_USAGE",
-          action === "signup"
-            ? "Email signup requires --email <email> and --name <name>."
-            : "Email login requires --email <email>.",
+          `Email ${action === "signup" ? "signup" : "login"} requires --email <email>.`,
         );
       }
-      if (choice.method === "password") {
+      if (options.codeStdin && process.stdin.isTTY) {
+        throw new CommandError("CODE_INPUT_REQUIRED", "Pipe the emailed code into --code-stdin.");
+      }
+      const readPassword = async () => {
         let password: string;
         if (options.passwordStdin) {
           if (process.stdin.isTTY) {
             throw new CommandError(
               "PASSWORD_INPUT_REQUIRED",
-              "Pipe the password into --password-stdin, or run devboxes login without flags and choose email and password.",
+              `Pipe the password into --password-stdin, or run devboxes ${action} on its own and choose email and password.`,
             );
           }
           password = (await Bun.stdin.text()).replace(/\r?\n$/, "");
@@ -376,6 +385,39 @@ export const addAuthenticationCommands = (program: Command) => {
         }
         if (!password)
           throw new CommandError("PASSWORD_INPUT_REQUIRED", "The password must not be empty.");
+        return password;
+      };
+      if (action === "signup") {
+        if (!options.codeStdin) {
+          await requestAuthentication(context, "/sign-up/email", {
+            method: "POST",
+            body: { email, password: await readPassword(), name: "" },
+          });
+          if (!interactive) {
+            await writeOutput(
+              `${
+                options.json
+                  ? JSON.stringify({ signedIn: false, codeSent: true })
+                  : `devboxes sent a code to ${email}. Pipe it into devboxes signup --email ${email} --code-stdin to finish creating your account.`
+              }\n`,
+            );
+            return;
+          }
+        }
+        const code = options.codeStdin
+          ? (await Bun.stdin.text()).trim()
+          : await promptText(`Code sent to ${email}`);
+        const verified = await requestAuthentication(context, "/email-otp/verify-email", {
+          method: "POST",
+          body: { email, otp: code },
+        });
+        await report(
+          parseResponse(authenticationSchema, verified.data, "/email-otp/verify-email").user,
+        );
+        return;
+      }
+      if (choice.method === "password") {
+        const password = await readPassword();
         const signedIn = await authenticationResponse(context, "/sign-in/email", {
           method: "POST",
           body: { email, password },
@@ -384,7 +426,7 @@ export const addAuthenticationCommands = (program: Command) => {
           if (signedIn.failure.code !== "EMAIL_NOT_VERIFIED") throw signedIn.failure;
           throw new CommandError(
             "EMAIL_NOT_VERIFIED",
-            `${email} is not verified yet. Sign in with the code devboxes emails you: devboxes login --email ${email}. That sign-in removes the password, which you then set again through the reset email.`,
+            `${email} is not verified yet. devboxes sent a new code to it. Pipe it into devboxes signup --email ${email} --code-stdin to finish creating your account.`,
             signedIn.failure.options,
           );
         }
@@ -425,9 +467,6 @@ export const addAuthenticationCommands = (program: Command) => {
         await report(parseResponse(authenticationSchema, response.data, "/sign-in/email").user);
         return;
       }
-      if (options.codeStdin && process.stdin.isTTY) {
-        throw new CommandError("CODE_INPUT_REQUIRED", "Pipe the emailed code into --code-stdin.");
-      }
       if (!options.codeStdin) {
         await requestAuthentication(context, "/email-otp/send-verification-otp", {
           method: "POST",
@@ -438,7 +477,7 @@ export const addAuthenticationCommands = (program: Command) => {
             `${
               options.json
                 ? JSON.stringify({ signedIn: false, codeSent: true })
-                : `devboxes sent a sign-in code to ${email}. Pipe it into the same command with --code-stdin.`
+                : `If ${email} has a devboxes account, devboxes sent it a sign-in code. Pipe it into the same command with --code-stdin. To create an account, run devboxes signup.`
             }\n`,
           );
           return;
@@ -452,7 +491,7 @@ export const addAuthenticationCommands = (program: Command) => {
         (
           await requestAuthentication(context, "/sign-in/email-otp", {
             method: "POST",
-            body: { email, otp: code, name },
+            body: { email, otp: code },
           })
         ).data,
         "/sign-in/email-otp",

@@ -1465,12 +1465,15 @@ describe("devboxes failure report", () => {
 });
 
 describe("devboxes signup and login", () => {
+  const github = { method: "github", flag: "--github" };
+  const emailCode = { method: "email", flag: "--email <email>" };
+  const password = { method: "password", flag: "--email <email> --password-stdin" };
   it.each([
-    ["signup", []],
-    ["login", [{ method: "password", flag: "--email <email> --password-stdin" }]],
+    ["signup", [github, password]],
+    ["login", [github, emailCode, password]],
   ] as const)(
     "%s lists every sign-in method instead of prompting without a terminal",
-    async (action, passwordMethods) => {
+    async (action, methods) => {
       const result = await runCli([
         "--json",
         "--config",
@@ -1484,13 +1487,7 @@ describe("devboxes signup and login", () => {
       expect(JSON.parse(result.stderr)).toMatchObject({
         error: {
           code: "SIGN_IN_METHOD_REQUIRED",
-          details: {
-            methods: [
-              { method: "github", flag: "--github" },
-              { method: "email", flag: "--email <email>" },
-              ...passwordMethods,
-            ],
-          },
+          details: { methods },
         },
       });
     },
