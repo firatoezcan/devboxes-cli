@@ -270,7 +270,12 @@ export const listen = async (options: {
           ) {
             await runtime.docker.getContainer(executor.Id).remove();
             await rm(join(directory, task.id), { recursive: true, force: true });
-          } else console.error(`Retained failed executor ${executorId} for inspection.`);
+          } else {
+            console.error(`Retained failed executor ${executorId} for inspection.`);
+            console.error(
+              `Remove it when you no longer need it: docker rm ${executorId} && rm -rf '${join(directory, task.id).replaceAll("'", "'\\''")}'`,
+            );
+          }
           console.info(`Task ${task.id} ended as ${result.status}.`);
         }
       }
