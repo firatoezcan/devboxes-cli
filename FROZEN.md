@@ -64,9 +64,13 @@ The Runner stages the SHA-256-verified executor and mounts it read-only at
 The executor's token is supplied as `DEVBOX_BACKEND_TOKEN` in Docker Env and is
 visible to anyone with Docker access. It authenticates only at the Runner's
 relay, which `DEVBOX_BACKEND_BASE_URL` names at `host.docker.internal`. The
-relay listens on the host's loopback address under Docker Desktop and OrbStack,
-and on the bridge gateway address under a Linux Docker Engine, whose host must
-accept container traffic to that address and the relay's port.
+relay listens on the host's loopback address under Docker Desktop, OrbStack and
+rootless Docker, and on the bridge gateway address under a rootful Linux Docker
+Engine, whose host must accept container traffic to that address and the
+relay's port. Under rootless Docker, before the Runner starts its first Task
+executor, a container of the Task's image runs the staged executor as Bun
+(`BUN_BE_BUN=1`) and fetches the relay. When that fails, the Runner leaves the
+executor unstarted and stops with `DOCKER_ENGINE_UNSUPPORTED`.
 
 The private executor captures its configuration, sanitizes the process
 environment, and drops to uid 1001 before importing the native execution

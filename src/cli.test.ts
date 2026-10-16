@@ -1131,7 +1131,8 @@ describe("devboxes runner listen", () => {
     unix: join(fixtureDirectory, "docker.sock"),
     fetch: (request) => {
       const { pathname } = new URL(request.url);
-      if (pathname.endsWith("/info")) return Response.json({ OperatingSystem: engine.name });
+      if (pathname.endsWith("/info"))
+        return Response.json({ OperatingSystem: engine.name, SecurityOptions: [] });
       if (pathname.endsWith("/networks/bridge"))
         return Response.json({ IPAM: { Config: [{ Gateway: engine.gateway }] } });
       return Response.json({ message: `Unexpected ${pathname}` }, { status: 500 });
