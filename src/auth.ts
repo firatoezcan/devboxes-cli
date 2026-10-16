@@ -40,19 +40,8 @@ const ownSessionSelectionSchema = Type.Object(
   { id: Type.String({ minLength: 1, description: "The session id that /list-sessions returns" }) },
   { additionalProperties: false },
 );
-const userSessionSelectionSchema = Type.Object(
-  {
-    userId: Type.String({ minLength: 1, description: "The user whose session is revoked" }),
-    id: Type.String({
-      minLength: 1,
-      description: "The session id that /admin/list-user-sessions returns",
-    }),
-  },
-  { additionalProperties: false },
-);
 const sessionSelectionSchemas = new Map<string, TObject>([
   ["/revoke-session", ownSessionSelectionSchema],
-  ["/admin/revoke-user-session", userSessionSelectionSchema],
 ]);
 const oauthFailureSchema = Type.Object({ error: Type.String(), error_description: Type.String() });
 const listedSessionSchema = Type.Object({ id: Type.String(), token: Type.String() });
@@ -667,27 +656,6 @@ export const addAuthenticationCommands = (program: Command) => {
           "No active session of this account has that id.",
         );
       input = { token };
-    }
-    if (operation.path === "/admin/revoke-user-session") {
-      if (!Value.Check(userSessionSelectionSchema, submitted))
-        throw new CommandError(
-          "INVALID_INPUT",
-          "Select the session to revoke by its userId and the id that /admin/list-user-sessions returns.",
-        );
-      const listed = await requestAuthentication(
-        context,
-        "/admin/list-user-sessions",
-        { method: "POST", body: { userId: submitted.userId } },
-        false,
-      );
-      const sessionToken = parseResponse(
-        Type.Object({ sessions: Type.Array(listedSessionSchema) }),
-        listed.data,
-        "/admin/list-user-sessions",
-      ).sessions.find((listedSession) => listedSession.id === submitted.id)?.token;
-      if (!sessionToken)
-        throw new CommandError("SESSION_NOT_FOUND", "No session of this user has that id.");
-      input = { sessionToken };
     }
     if (
       !operation.path.startsWith("/") ||
