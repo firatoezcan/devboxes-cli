@@ -1614,7 +1614,7 @@ describe("devboxes signup and login", () => {
           return Response.json({
             device_code: "device-code",
             user_code: "ABCDEFGH",
-            verification_uri_complete: new URL("/api/device?user_code=ABCDEFGH", request.url).href,
+            verification_uri_complete: new URL("/device?user_code=ABCDEFGH", request.url).href,
             expires_in: 60,
             interval: 0,
           });
@@ -1662,8 +1662,7 @@ describe("devboxes signup and login", () => {
             return Response.json({
               device_code: "device-code",
               user_code: "ABCDEFGH",
-              verification_uri_complete: new URL("/api/device?user_code=ABCDEFGH", request.url)
-                .href,
+              verification_uri_complete: new URL("/device?user_code=ABCDEFGH", request.url).href,
               expires_in: 60,
               interval: 0,
             });
@@ -1689,7 +1688,7 @@ describe("devboxes signup and login", () => {
         expect(result.exitCode).toBe(0);
         expect(JSON.parse(result.stderr.trim().split("\n")[0] ?? "")).toEqual({
           verification: {
-            url: `${api.url.origin}/api/device?user_code=ABCDEFGH&provider=google${signUp}`,
+            url: `${api.url.origin}/device?user_code=ABCDEFGH&provider=google${signUp}`,
             userCode: "ABCDEFGH",
             expiresIn: 60,
           },
@@ -1712,7 +1711,7 @@ describe("devboxes signup and login", () => {
           return Response.json({
             device_code: "device-code",
             user_code: "ABCDEFGH",
-            verification_uri_complete: new URL("/api/device?user_code=ABCDEFGH", request.url).href,
+            verification_uri_complete: new URL("/device?user_code=ABCDEFGH", request.url).href,
             expires_in: 60,
             interval: 0,
           });
@@ -1760,8 +1759,7 @@ describe("devboxes signup and login", () => {
             return Response.json({
               device_code: "device-code",
               user_code: "ABCDEFGH",
-              verification_uri_complete: new URL("/api/device?user_code=ABCDEFGH", request.url)
-                .href,
+              verification_uri_complete: new URL("/device?user_code=ABCDEFGH", request.url).href,
               expires_in: 60,
               interval: 0,
             });
