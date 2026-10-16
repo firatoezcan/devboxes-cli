@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it } from "bun:test";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { JsonValueSchema } from "@firops/platform/protocol/provider-auth";
@@ -105,8 +105,8 @@ describe("devboxes entrypoint", () => {
   });
 
   it.each([
-    ["a missing required option", ["--json", "runner", "listen"]],
-    ["a trailing JSON flag", ["runner", "listen", "--json"]],
+    ["a missing required argument", ["--json", "describe"]],
+    ["a trailing JSON flag", ["describe", "--json"]],
     ["an unexpected argument", ["--json", "unknown-command"]],
   ])("writes %s as a structured error in JSON mode", async (_case, args) => {
     const result = await runCli(args);
@@ -136,6 +136,24 @@ describe("devboxes entrypoint", () => {
       [...listen, "--token-file", join(fixtureDirectory, "absent")],
       localDocker,
       "INVALID_RUNNER_TOKEN_FILE",
+    ],
+    [
+      "a machine that was never added",
+      listen,
+      { ...localDocker, XDG_CONFIG_HOME: join(fixtureDirectory, "never-added") },
+      "MACHINE_NOT_ADDED",
+    ],
+    [
+      "an Organization missing outside a terminal",
+      ["--json", "machine", "add", "--name", "Office Mac"],
+      { ...scoped, XDG_CONFIG_HOME: join(fixtureDirectory, "never-added") },
+      "ORGANIZATION_REQUIRED",
+    ],
+    [
+      "a machine name missing outside a terminal",
+      ["--json", "machine", "add", "--organization", "0198a0b0-0000-7000-8000-000000000001"],
+      { ...scoped, XDG_CONFIG_HOME: join(fixtureDirectory, "never-added") },
+      "NAME_REQUIRED",
     ],
     [
       "malformed command input",
@@ -961,6 +979,143 @@ describe("devboxes connect", () => {
     expect(cli.screen()).not.toContain("Open ");
     expect(starts).toEqual([]);
     expect(await cli.opened()).toBe(false);
+  });
+});
+
+describe("devboxes machine add", () => {
+  const organizations = [
+    { id: "0198a0b0-0000-7000-8000-00000000000a", name: "Acme" },
+    { id: "0198a0b0-0000-7000-8000-00000000000b", name: "Side project" },
+  ];
+  const registrations: unknown[] = [];
+  const refusedKeys = new Set<string>();
+  const api = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: async (request) => {
+      const { pathname } = new URL(request.url);
+      if (pathname === "/api/openapi/json")
+        return Response.json({
+          openapi: "3.0.3",
+          paths: Object.fromEntries(
+            [
+              ["organizations.list", "read", "Current account session"],
+              ["capacity.register", "write", "Organization owner"],
+            ].map(([operationId = "", effect, authority]) => [
+              `/api/commands/${operationId.replace(".", "/")}`,
+              { post: { operationId, "x-devboxes": { effect, authority }, responses: {} } },
+            ]),
+          ),
+        });
+      if (pathname === "/api/commands/organizations/list") return Response.json({ organizations });
+      if (pathname === "/api/internal/execution/runners/assignments")
+        return refusedKeys.has(request.headers.get("authorization")?.replace("Bearer ", "") ?? "")
+          ? Response.json(
+              { error: { code: "RUNNER_REVOKED", message: "The Runner is unavailable." } },
+              { status: 401 },
+            )
+          : Response.json({ tasks: [] });
+      const body = await request.json();
+      registrations.push(body);
+      return Response.json(
+        {
+          machine: { id: "machine-1", name: body.name },
+          token: `firops_runner_${registrations.length}_${crypto.randomUUID()}`,
+        },
+        { status: 201 },
+      );
+    },
+  });
+  afterAll(() => api.stop(true));
+  const platform = process.arch === "arm64" ? "linux/arm64" : "linux/amd64";
+  const machineEnvironment = async () => {
+    const config = await mkdtemp(join(fixtureDirectory, "machine-"));
+    return {
+      config,
+      tokenFile: join(config, "devboxes", "runner", "token"),
+      env: { DEVBOXES_API_URL: api.url.origin, DEVBOXES_TOKEN: "owner", XDG_CONFIG_HOME: config },
+    };
+  };
+
+  it("asks for the Organization, names the machine after the computer, saves its key for this user only, and leaves starting for later", async () => {
+    registrations.length = 0;
+    const { tokenFile, env } = await machineEnvironment();
+    const cli = await inTerminal(["machine", "add"], env);
+
+    expect(await cli.shows("Which Organization should run tasks on this machine?")).toBe(true);
+    expect(await cli.shows("Side project")).toBe(true);
+    cli.type("\x1b[B\r");
+    expect(await cli.shows("Name this machine")).toBe(true);
+    cli.type("\r");
+    expect(await cli.shows("Start this machine now?")).toBe(true);
+    cli.type("\x1b[C\r");
+    const exitCode = await cli.exited();
+    cli.kill();
+
+    const token = (await Bun.file(tokenFile).text()).trim();
+    expect(exitCode).toBe(0);
+    expect(registrations).toEqual([
+      { organizationId: organizations[1]?.id, name: hostname(), platform, cost: null },
+    ]);
+    expect(token).toStartWith("firops_runner_1_");
+    expect((await stat(tokenFile)).mode & 0o777).toBe(0o600);
+    expect(cli.screen()).toContain(tokenFile);
+    expect(cli.screen()).toContain("Start it later with: devboxes runner listen");
+    expect(cli.screen()).not.toContain(token);
+  });
+
+  it("adds a machine from flags outside a terminal and refuses to add the same computer twice", async () => {
+    registrations.length = 0;
+    const { tokenFile, env } = await machineEnvironment();
+    const add = [
+      "--json",
+      "machine",
+      "add",
+      "--organization",
+      organizations[0]?.id ?? "",
+      "--name",
+      "Build server",
+    ];
+
+    const added = await runCli(add, env);
+    const again = await runCli(add, env);
+
+    expect(added.exitCode).toBe(0);
+    expect(JSON.parse(added.stdout)).toEqual({
+      machine: { id: "machine-1", name: "Build server" },
+      tokenFile,
+    });
+    expect(again.exitCode).toBe(1);
+    expect(JSON.parse(again.stderr)).toMatchObject({ error: { code: "MACHINE_ALREADY_ADDED" } });
+    expect(registrations).toEqual([
+      { organizationId: organizations[0]?.id, name: "Build server", platform, cost: null },
+    ]);
+  });
+
+  it("adds the machine again and replaces the saved key when the API refuses it", async () => {
+    registrations.length = 0;
+    const { tokenFile, env } = await machineEnvironment();
+    const add = [
+      "--json",
+      "machine",
+      "add",
+      "--organization",
+      organizations[0]?.id ?? "",
+      "--name",
+      "Build server",
+    ];
+
+    await runCli(add, env);
+    const removed = (await Bun.file(tokenFile).text()).trim();
+    refusedKeys.add(removed);
+    const again = await runCli(add, env);
+
+    expect(again.exitCode).toBe(0);
+    expect(registrations).toHaveLength(2);
+    expect((await Bun.file(tokenFile).text()).trim()).toStartWith("firops_runner_2_");
+    expect((await stat(tokenFile)).mode & 0o777).toBe(0o600);
+    expect(again.stderr).toContain(tokenFile);
+    expect(again.stderr).not.toContain(removed);
   });
 });
 

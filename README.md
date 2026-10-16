@@ -108,9 +108,12 @@ its work ends.
 
 ## Run execution capacity
 
-Register a Runner through the discovered `capacity.register` application command.
-Use `devboxes runner listen --help` for credential-file, Docker socket, and state
-directory options.
+`devboxes machine add` registers this computer as a Runner through
+`capacity.register` and saves the Runner key, readable only by the current user,
+in `devboxes/runner/token` under the user's configuration directory.
+`devboxes runner listen` reads that file unless `--token-file` names another, and
+`--state-directory` doesn't move it. Use `devboxes runner listen --help` for the
+Docker socket and state directory options.
 
 ## Verify the CLI
 
