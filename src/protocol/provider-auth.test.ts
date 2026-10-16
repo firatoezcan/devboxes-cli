@@ -5,7 +5,7 @@ import {
   normalizeOpencodeProviderId,
   validateOpencodeProviderAuth,
   validateWorkspaceImageQualificationProviderAuthLease,
-} from "@firops/platform/protocol/provider-auth";
+} from "./provider-auth";
 
 describe("hydrateOpencodeProviderAuth", () => {
   it("maps canonical API and OAuth metadata into the OpenCode runtime shape", () => {

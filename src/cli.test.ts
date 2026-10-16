@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { JsonValueSchema } from "@firops/platform/protocol/provider-auth";
+import type { JsonValueSchema } from "./protocol/provider-auth";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Static } from "typebox";

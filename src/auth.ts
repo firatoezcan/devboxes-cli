@@ -2,9 +2,9 @@ import { URLPattern } from "node:url";
 
 import type { BetterFetchOption } from "@better-fetch/fetch";
 import { isCancel, password as passwordPrompt, select, text } from "@clack/prompts";
-import { writeConfig } from "@firops/connections/local/config";
-import { JsonValueSchema } from "@firops/platform/protocol/provider-auth";
-import { describeErrors } from "@firops/platform/values/validation-errors";
+import { writeConfig } from "./connections/config";
+import { JsonValueSchema } from "./protocol/provider-auth";
+import { describeErrors } from "./values/validation-errors";
 import { createAuthClient } from "better-auth/client";
 import { Option, type Command } from "commander";
 import { CookieJar } from "tough-cookie";
