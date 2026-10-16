@@ -160,6 +160,19 @@ without a repository. `/repository` answers a taskbox Run with
 the Git transport refuses one with `REPOSITORY_UNAVAILABLE`. Admission refuses
 such a Run a publish node and any `repositories` operation.
 
+When the agent calls a `sessions.dispatch` capability, the executor first packs
+the workspace as its checkpoint does, a taskbox's archive or a repository's
+changes bundle, and uploads it as a `handoff` artifact. An empty bundle uploads
+nothing. `/capability` then carries the artifact as `workspaceArtifactId`. The
+API passes it to `sessions.dispatch` as `workspace`, which accepts only a
+handoff of the calling Run. The new Session records it as its start workspace,
+and until the Session saves a checkpoint of its own, its payload's `taskbox` or
+its `/repository` answer names that workspace, with no conversation. Every pack
+and the upload that reads it run one at a time, because packs share their
+scratch files and refs. Run-end pruning deletes a handoff once its Run has ended,
+its upload has expired, and no Session without a checkpoint of its own starts
+from it.
+
 The executor embeds OpenCode with the repository's project configuration, so a
 repository can define agents and other OpenCode settings. OpenCode in the
 executor runs only its built-in plugins and the plugins of the executor and
