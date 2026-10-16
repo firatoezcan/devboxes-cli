@@ -1,4 +1,10 @@
 import { betterFetch } from "@better-fetch/fetch";
+import {
+  type CatalogCommand,
+  catalogCommands,
+  commandDocumentSchema,
+  InvalidCommandCatalog,
+} from "@firops/platform/protocol/command-catalog";
 import { JsonValueSchema } from "@firops/platform/protocol/provider-auth";
 import { describeErrors } from "@firops/platform/values/validation-errors";
 import { defaultTextMapGetter, ROOT_CONTEXT, trace } from "@opentelemetry/api";
@@ -14,17 +20,6 @@ import { cliUserAgent } from "./api";
  */
 export type CommandConnection = { origin: string; token: string; organizationId?: string };
 
-const operationSchema = Type.Object({
-  operationId: Type.String({ minLength: 1 }),
-  summary: Type.Optional(Type.String()),
-  "x-devboxes": Type.Object({
-    effect: Type.Union([Type.Literal("read"), Type.Literal("write")]),
-    authority: Type.String({ minLength: 1 }),
-  }),
-  requestBody: Type.Optional(Type.Unknown()),
-  responses: Type.Record(Type.String(), Type.Unknown()),
-});
-
 const organizationScopedOperationSchema = Type.Object({
   requestBody: Type.Object({
     content: Type.Object({
@@ -36,12 +31,6 @@ const organizationScopedOperationSchema = Type.Object({
 });
 const commandObjectInputSchema = Type.Record(Type.String(), JsonValueSchema);
 
-const documentSchema = Type.Object({
-  openapi: Type.String(),
-  paths: Type.Record(Type.String(), Type.Object({ post: Type.Optional(Type.Unknown()) })),
-  components: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-});
-
 export const failureSchema = Type.Object({
   code: Type.String(),
   message: Type.String(),
@@ -50,11 +39,10 @@ export const failureSchema = Type.Object({
 const errorSchema = Type.Object({ error: failureSchema });
 const systemErrorSchema = Type.Object({ code: Type.String() });
 
-type Command = Static<typeof operationSchema> & { path: string; method: "POST" };
 export type CommandDescription = {
   openapi: string;
-  commands: Command[];
-  components: NonNullable<Static<typeof documentSchema>["components"]>;
+  commands: CatalogCommand[];
+  components: NonNullable<Static<typeof commandDocumentSchema>["components"]>;
 };
 type RequestCorrelation = { traceId: string | null; requestId: string | null };
 export type CommandResponse = {
@@ -296,48 +284,30 @@ export const describeCommands = async (
 ): Promise<CommandDescription> => {
   const response = await requestJson(connection, "/api/openapi/json");
   const document = response.data;
-  if (!Value.Check(documentSchema, document)) {
+  if (!Value.Check(commandDocumentSchema, document)) {
     throw new CommandError(
       "INVALID_DISCOVERY",
-      `The API returned an invalid OpenAPI document: ${describeErrors(documentSchema, document)}.`,
+      `The API returned an invalid OpenAPI document: ${describeErrors(commandDocumentSchema, document)}.`,
     );
   }
-  const commands = [];
-  const ids = new Set<string>();
-  for (const [path, item] of Object.entries(document.paths)) {
-    const route = /^\/api\/commands\/([A-Za-z0-9_-]+)\/([A-Za-z0-9_-]+)$/.exec(path);
-    if (!route || item.post === undefined) continue;
-    const operation = item.post;
-    if (!Value.Check(operationSchema, operation)) {
-      throw new CommandError(
-        "INVALID_DISCOVERY",
-        `A command route has an invalid operation contract: ${describeErrors(operationSchema, operation)}.`,
-      );
-    }
-    if (operation.operationId !== `${route[1]}.${route[2]}`) {
-      throw new CommandError(
-        "INVALID_DISCOVERY",
-        `A command route has an invalid operation contract: /operationId must be ${route[1]}.${route[2]}.`,
-      );
-    }
-    if (ids.has(operation.operationId)) {
-      throw new CommandError("INVALID_DISCOVERY", "Command operation IDs must be unique.");
-    }
-    ids.add(operation.operationId);
-    commands.push({ ...operation, path, method: "POST" as const });
+  try {
+    return {
+      openapi: document.openapi,
+      commands: catalogCommands(document),
+      components: document.components ?? {},
+    };
+  } catch (error) {
+    if (error instanceof InvalidCommandCatalog)
+      throw new CommandError("INVALID_DISCOVERY", error.message);
+    throw error;
   }
-  return {
-    openapi: document.openapi,
-    commands,
-    components: document.components ?? {},
-  };
 };
 
 /** The advertised commands narrowed to one, or a refusal of a command the API does not advertise. */
 export const describeCommand = (
   description: CommandDescription,
   command: string,
-): CommandDescription & { commands: [Command] } => {
+): CommandDescription & { commands: [CatalogCommand] } => {
   const operation = description.commands.find((candidate) => candidate.operationId === command);
   if (!operation) {
     throw new CommandError(
