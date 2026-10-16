@@ -1647,6 +1647,46 @@ describe("devboxes signup and login", () => {
       await api.stop(true);
     }
   });
+  it("says what the approval page does, and shows its code in the page's two halves", async () => {
+    const api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request) => {
+        const { pathname } = new URL(request.url);
+        if (pathname === "/api/auth/device/code")
+          return Response.json({
+            device_code: "device-code",
+            user_code: "ABCDEFGH",
+            verification_uri_complete: new URL("/device?user_code=ABCDEFGH", request.url).href,
+            expires_in: 60,
+            interval: 0,
+          });
+        if (pathname === "/api/auth/device/token")
+          return Response.json({ access_token: "device-session", token_type: "Bearer" });
+        return Response.json({
+          session: {},
+          user: { id: "user", email: "device@example.com", name: "Device", emailVerified: true },
+        });
+      },
+    });
+    try {
+      const result = await runCli([
+        "--config",
+        join(fixtureDirectory, "device-text.json"),
+        "--api",
+        api.url.origin,
+        "login",
+        "--github",
+      ]);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toContain(
+        `Open ${api.url.origin}/device?user_code=ABCDEFGH&provider=github. If that browser is signed in to devboxes, approve the sign-in there. Otherwise sign in with GitHub first.\nCheck that the page shows code ABCD-EFGH. Waiting for approval...`,
+      );
+    } finally {
+      await api.stop(true);
+    }
+  });
   it.each([
     ["login", ""],
     ["signup", "&sign_up=true"],

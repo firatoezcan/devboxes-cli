@@ -3,6 +3,7 @@ import { URLPattern } from "node:url";
 import type { BetterFetchOption } from "@better-fetch/fetch";
 import { isCancel, password as passwordPrompt, select, text } from "@clack/prompts";
 import { writeConfig } from "@firops/connections/local/config";
+import { displayDeviceCode } from "@firops/platform/protocol/device-code";
 import { JsonValueSchema } from "@firops/platform/protocol/provider-auth";
 import { describeErrors } from "@firops/platform/values/validation-errors";
 import { createAuthClient } from "better-auth/client";
@@ -297,7 +298,7 @@ export const addAuthenticationCommands = (program: Command) => {
                     expiresIn: device.expires_in,
                   },
                 })
-              : `Open ${verification.href} to continue with ${choice.label}.\nConfirm that the page shows code ${device.user_code}. Waiting for approval...`
+              : `Open ${verification.href}. If that browser is signed in to devboxes, approve the sign-in there. Otherwise sign in with ${choice.label} first.\nCheck that the page shows code ${displayDeviceCode(device.user_code)}. Waiting for approval...`
           }\n`,
         );
         if (interactive) openInBrowser(verification.href);
