@@ -1,5 +1,11 @@
 # devboxes
 
+## 0.7.1
+
+### Patch Changes
+
+- 0e3ec91: 0.7.0 was tagged but never published, so this release ships the 0.7.0 changes. The public source of the CLI now typechecks with `@clack/prompts` 1.8, the version a fresh install of that source resolves.
+
 ## 0.7.0
 
 ### Minor Changes

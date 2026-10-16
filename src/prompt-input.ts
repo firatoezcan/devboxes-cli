@@ -28,10 +28,10 @@ const listedSchema = Type.Array(
 
 export type PromptContext = { connection: CommandConnection; description: CommandDescription };
 
-const answered = async <Answer>(prompt: Promise<Answer | symbol>) => {
+const answered = async <Answer>(prompt: Promise<Answer>) => {
   const answer = await prompt;
   if (isCancel(answer)) throw new CommandError("CANCELLED", "Command cancelled.");
-  return answer;
+  return answer as Exclude<Answer, symbol>;
 };
 
 const question = (path: string, field: Field) => {

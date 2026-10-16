@@ -1,6 +1,6 @@
 {
   "name": "@devboxes/cli-win32-x64",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "devboxes CLI native binary for Windows x64.",
   "license": "MIT",
   "repository": {
