@@ -270,8 +270,21 @@ describe("devboxes invoke", () => {
                 responses: {},
               },
             },
+            "/api/commands/sessions/inspect": {
+              post: {
+                operationId: "sessions.inspect",
+                "x-devboxes": { effect: "read", authority: "Organization member" },
+                responses: {},
+              },
+            },
           },
         });
+      if (pathname === "/api/commands/sessions/inspect") {
+        const token = request.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
+        return Response.json({
+          output: [token, encodeURIComponent(token), Buffer.from(`:${token}`).toString("base64")],
+        });
+      }
       if (pathname === "/api/commands/sessions/events") {
         eventsServed.resolve();
         return Response.json(events, { headers: { "x-request-id": "request-events" } });
@@ -315,6 +328,27 @@ describe("devboxes invoke", () => {
       expect(JSON.parse(result.stdout)).toMatchObject({ status: 200, data: [] });
     }
     expect(new Set(authorizations)).toEqual(new Set(["Bearer devboxes_delegate_ci"]));
+  });
+
+  it("prints no form of its token that a result quotes", async () => {
+    await writeFile(dispatchInput, "{}");
+    const token = "devboxes_delegate_a+b/c=d?e";
+    const result = await runCli(
+      ["--json", "invoke", "sessions.inspect", "--input", `@${dispatchInput}`],
+      { DEVBOXES_API_URL: api.url.origin, DEVBOXES_TOKEN: token },
+    );
+
+    expect(result.exitCode).toBe(0);
+    const { output } = JSON.parse(result.stdout).data;
+    expect(output).toHaveLength(3);
+    for (const [index, read] of [
+      (printed: string) => printed,
+      decodeURIComponent,
+      (printed: string) => Buffer.from(printed, "base64").toString("latin1"),
+    ].entries()) {
+      expect(output[index]).toContain("[redacted]");
+      expect(read(output[index])).not.toContain(token);
+    }
   });
 
   it("sends a delegation token to --api ahead of DEVBOXES_API_URL", async () => {

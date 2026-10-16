@@ -536,6 +536,7 @@ export const addAuthenticationCommands = (program: Command) => {
       fetchOptions: {
         auth: { type: "Bearer", token },
         redirect: "error",
+        jsonParser: (text) => credentialSafeJson(text, [token]),
       },
     }).$fetch("/sign-out", { method: "POST", body: {} });
     if (error && error.status !== 401) {

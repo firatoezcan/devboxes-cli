@@ -5,6 +5,7 @@ import {
   commandDocumentSchema,
 } from "@firops/platform/protocol/command-catalog";
 import { JsonValueSchema } from "@firops/platform/protocol/provider-auth";
+import { redactedSecret, secretRedactingReviver } from "@firops/platform/security/secret-redaction";
 import { describeErrors } from "@firops/platform/values/validation-errors";
 import { defaultTextMapGetter, ROOT_CONTEXT, trace } from "@opentelemetry/api";
 import { W3CTraceContextPropagator } from "@opentelemetry/core";
@@ -171,18 +172,15 @@ export const credentialSafeJson = (
   text: string,
   secrets: readonly (string | undefined)[],
   redactAuthTokens = false,
-): Static<typeof JsonValueSchema> =>
-  text
-    ? JSON.parse(text, (key: string, value: Static<typeof JsonValueSchema>) => {
-        if (!Value.Check(Type.String(), value)) return value;
-        if (redactAuthTokens && key === "token" && value) return "[redacted]";
-        let text = value;
-        for (const secret of secrets) {
-          if (secret) text = text.replaceAll(secret, "[redacted]");
-        }
-        return text;
-      })
-    : null;
+): Static<typeof JsonValueSchema> => {
+  if (!text) return null;
+  const redact = secretRedactingReviver(secrets.filter((secret) => secret !== undefined));
+  return JSON.parse(text, (key: string, value: Static<typeof JsonValueSchema>) =>
+    redactAuthTokens && key === "token" && Value.Check(Type.String({ minLength: 1 }), value)
+      ? redactedSecret
+      : redact(key, value),
+  );
+};
 
 /** The `endpoint` response as `schema` declares it, or a refusal that names every problem. */
 export const parseResponse = <Schema extends TSchema>(
