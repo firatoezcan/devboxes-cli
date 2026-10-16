@@ -61,13 +61,19 @@ Describing either operation shows this id input.
 ```sh
 devboxes commands
 devboxes describe organizations.create
-devboxes invoke organizations.create --input @organization.json
-devboxes invoke organizations.list --input @empty.json
+devboxes invoke organizations.create
 ```
 
-`organization.json` contains the documented command input, such as
-`{"name":"Example team","slug":"example-team"}`. `empty.json` contains `{}`.
-Use `--input -` to read JSON from stdin. `--json` selects machine-readable output.
+In a terminal, `devboxes invoke` asks for the operation's input field by field.
+A field such as `organizationId` or `projectId` offers a choice from the matching
+list operation, secrets such as keys and tokens are asked without showing what you
+type, and the optional fields come last, chosen from a list.
+
+Scripts and agents pass the input as JSON instead, from a file with
+`--input @organization.json` or from stdin with `--input -`. Without a terminal or
+with `--json`, `devboxes invoke` requires `--input`. `--json` selects
+machine-readable output.
+
 The API's OpenAPI contract defines inputs, results, authority, and errors.
 
 ## Join an Organization

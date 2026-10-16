@@ -1,9 +1,10 @@
-import { isCancel, password, select } from "@clack/prompts";
+import { isCancel, password, select, text } from "@clack/prompts";
 import type { Command } from "commander";
 import Type from "typebox";
 import Value from "typebox/value";
 
 import {
+  asksInTerminal,
   CommandError,
   describeCommand,
   describeCommands,
@@ -15,6 +16,7 @@ import {
 } from "./commands";
 import { loadCommandConnection } from "./connection";
 import { runDevboxesMcpServer } from "./mcp";
+import { promptCommandInput, promptField } from "./prompt-input";
 
 const connectStartSchema = Type.Object({
   attemptId: Type.String(),
@@ -79,9 +81,11 @@ export const addAccountCommands = (program: Command) => {
 
   const invoke = program
     .command("invoke")
-    .description("invoke a discovered command with JSON input")
+    .description(
+      "invoke a discovered command; on a terminal without --input, it asks for the input",
+    )
     .argument("<operationId>", "Discovered operation ID")
-    .requiredOption(
+    .option(
       "--input <source>",
       "Read JSON from @file or - for stdin; input is never shell-evaluated",
     );
@@ -90,14 +94,29 @@ export const addAccountCommands = (program: Command) => {
       api?: string;
       config?: string;
       json?: boolean;
-      input: string;
+      input?: string;
     }>();
     const connection = await loadCommandConnection(options);
-    const input = await readCommandInput(options.input);
-    const result = await invokeCommand(connection, {
-      command: operationId,
-      input,
-    });
+    let result: Awaited<ReturnType<typeof invokeCommand>>;
+    if (options.input !== undefined) {
+      result = await invokeCommand(connection, {
+        command: operationId,
+        input: await readCommandInput(options.input),
+      });
+    } else if (asksInTerminal(options.json)) {
+      const description = await describeCommands(connection);
+      const input = await promptCommandInput({ connection, description }, operationId);
+      result = await invokeCommand(
+        connection,
+        { command: operationId, input },
+        async () => description,
+      );
+    } else {
+      throw new CommandError(
+        "INPUT_REQUIRED",
+        "Pass the input with --input @file or --input -, or run the command in a terminal to be asked for it.",
+      );
+    }
     await writeOutput(`${JSON.stringify(result, null, options.json ? undefined : 2)}\n`);
     if (!options.json && Value.Check(Type.Object({ warning: Type.String() }), result.data))
       process.stderr.write(`Warning: ${result.data.warning}\n`);
@@ -107,8 +126,11 @@ export const addAccountCommands = (program: Command) => {
     .command("connect")
     .description("connect a Provider Account by signing in with the provider or with an API key")
     .argument("[providerId]", "Provider ID from providers.list; without it, choose one")
-    .requiredOption("--organization <id>", "Organization that gets the Provider Account")
-    .requiredOption("--label <label>", "Name of the Provider Account")
+    .option(
+      "--organization <id>",
+      "Organization that gets the Provider Account; without it, choose one",
+    )
+    .option("--label <label>", "Name of the Provider Account; without it, enter one")
     .option("--account <id>", "Provider Account whose credential the connection replaces")
     .option("--api-key", "connect an API key instead of signing in");
   connect.action(async (providerId?: string) => {
@@ -116,14 +138,35 @@ export const addAccountCommands = (program: Command) => {
       api?: string;
       config?: string;
       json?: boolean;
-      organization: string;
-      label: string;
+      organization?: string;
+      label?: string;
       account?: string;
       apiKey?: boolean;
     }>();
     const connection = await loadCommandConnection(options);
-    const organizationId = options.organization;
-    const interactive = !options.json && process.stdin.isTTY && process.stderr.isTTY;
+    const interactive = asksInTerminal(options.json);
+    if (!interactive && options.organization === undefined)
+      throw new CommandError(
+        "ORGANIZATION_REQUIRED",
+        "Name the Organization with --organization <id>, or run the command in a terminal to choose one.",
+      );
+    if (!interactive && options.label === undefined)
+      throw new CommandError(
+        "LABEL_REQUIRED",
+        "Name the Provider Account with --label <label>, or run the command in a terminal to enter one.",
+      );
+    const organizationId =
+      options.organization ??
+      parseResponse(
+        Type.String(),
+        await promptField(
+          { connection, description: await describeCommands(connection) },
+          "organizationId",
+          { type: "string", description: "The Organization that gets the Provider Account." },
+          {},
+        ),
+        "organizations.list",
+      );
     const providers = parseResponse(
       providersSchema,
       (await invokeCommand(connection, { command: "providers.list", input: { organizationId } }))
@@ -173,6 +216,16 @@ export const addAccountCommands = (program: Command) => {
     const { provider, signIn } = await choose();
     if (provider.unavailable !== null)
       throw new CommandError("PROVIDER_UNAVAILABLE", provider.unavailable);
+    const named =
+      options.label ??
+      (await text({
+        message: "Name of the Provider Account",
+        initialValue: provider.name,
+        validate: (value) => (value?.trim() ? undefined : "Enter a name."),
+        output: process.stderr,
+      }));
+    if (isCancel(named)) throw new CommandError("CANCELLED", "Connection cancelled.");
+    const label = named.trim();
     const pasted = async (message: string) => {
       if (!interactive && process.stdin.isTTY)
         throw new CommandError(
@@ -195,7 +248,7 @@ export const addAccountCommands = (program: Command) => {
             input: {
               organizationId,
               providerId: provider.id,
-              label: options.label,
+              label,
               ...(options.account && { accountId: options.account }),
             },
           })
@@ -244,11 +297,11 @@ export const addAccountCommands = (program: Command) => {
             options.account
               ? {
                   command: "connections.update",
-                  input: { organizationId, accountId: options.account, label: options.label, auth },
+                  input: { organizationId, accountId: options.account, label, auth },
                 }
               : {
                   command: "connections.add",
-                  input: { organizationId, providerId: provider.id, label: options.label, auth },
+                  input: { organizationId, providerId: provider.id, label, auth },
                 },
           )
         ).data,
@@ -258,7 +311,7 @@ export const addAccountCommands = (program: Command) => {
     await writeOutput(
       options.json
         ? `${JSON.stringify({ status: "completed", accountId })}\n`
-        : `Connected ${options.label} as Provider Account ${accountId}.\n`,
+        : `Connected ${label} as Provider Account ${accountId}.\n`,
     );
   });
 

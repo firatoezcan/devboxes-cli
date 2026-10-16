@@ -19,15 +19,43 @@ import { cliUserAgent } from "./api";
  */
 export type CommandConnection = { origin: string; token: string; organizationId?: string };
 
-const organizationScopedOperationSchema = Type.Object({
-  requestBody: Type.Object({
-    content: Type.Object({
-      "application/json": Type.Object({
-        schema: Type.Object({ properties: Type.Object({ organizationId: Type.Object({}) }) }),
-      }),
+const scalar = Type.Union([Type.String(), Type.Number(), Type.Boolean(), Type.Null()]);
+
+/** The part of JSON Schema that the API's command input schemas use. A writeOnly string is a secret. */
+const fieldSchema = Type.Cyclic(
+  {
+    Field: Type.Object({
+      type: Type.Optional(Type.Union([Type.String(), Type.Array(Type.String())])),
+      description: Type.Optional(Type.String()),
+      maxLength: Type.Optional(Type.Number()),
+      writeOnly: Type.Optional(Type.Boolean()),
+      properties: Type.Optional(Type.Record(Type.String(), Type.Ref("Field"))),
+      required: Type.Optional(Type.Array(Type.String())),
+      patternProperties: Type.Optional(Type.Record(Type.String(), Type.Ref("Field"))),
+      items: Type.Optional(Type.Ref("Field")),
+      anyOf: Type.Optional(Type.Array(Type.Ref("Field"))),
+      enum: Type.Optional(Type.Array(scalar)),
+      const: Type.Optional(scalar),
     }),
-  }),
+  },
+  "Field",
+);
+export type Field = Static<typeof fieldSchema>;
+const requestSchema = Type.Object({
+  content: Type.Object({ "application/json": Type.Object({ schema: fieldSchema }) }),
 });
+
+/** The input schema `operation` advertises, or undefined for an operation without input. */
+export const commandInputSchema = (operation: CatalogCommand): Field | undefined => {
+  if (operation.requestBody === undefined) return undefined;
+  if (!Value.Check(requestSchema, operation.requestBody))
+    throw new CommandError(
+      "INVALID_DISCOVERY",
+      `The input schema of ${operation.operationId} is invalid: ${describeErrors(requestSchema, operation.requestBody)}.`,
+    );
+  return operation.requestBody.content["application/json"].schema;
+};
+
 const commandObjectInputSchema = Type.Record(Type.String(), JsonValueSchema);
 
 export const failureSchema = Type.Object({
@@ -222,6 +250,10 @@ export const requestJson = async (
   );
 };
 
+/** Whether the CLI may ask in the terminal: outside --json, with stdin and stderr on a terminal. */
+export const asksInTerminal = (json: boolean | undefined) =>
+  !json && process.stdin.isTTY && process.stderr.isTTY;
+
 /** Opens `url` in the default browser, or asks the person to open it when that fails. */
 export const openInBrowser = (url: string) => {
   try {
@@ -322,7 +354,7 @@ export const invokeCommand = async (
   let input = invocation.input;
   if (
     connection.organizationId &&
-    Value.Check(organizationScopedOperationSchema, operation) &&
+    commandInputSchema(operation)?.properties?.organizationId &&
     Value.Check(commandObjectInputSchema, input)
   ) {
     input = { ...input, organizationId: connection.organizationId };

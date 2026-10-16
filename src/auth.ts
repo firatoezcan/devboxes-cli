@@ -14,6 +14,7 @@ import Value from "typebox/value";
 import { cliUserAgent } from "./api";
 import {
   apiOrigin,
+  asksInTerminal,
   CommandError,
   credentialSafeJson,
   failureSchema,
@@ -209,7 +210,7 @@ export const addAuthenticationCommands = (program: Command) => {
           "Account login cannot replace a scoped connection. Remove DEVBOXES_TOKEN before signing in to a local account.",
         );
       }
-      const interactive = !options.json && process.stdin.isTTY && process.stderr.isTTY;
+      const interactive = asksInTerminal(options.json);
       let choice = methods.find((entry) =>
         entry.method === "github"
           ? options.github
