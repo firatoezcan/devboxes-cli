@@ -51,7 +51,8 @@ boundaries, not compatibility guarantees for retired protocols.
 - `apps/elysia-opencode/src/executor/claude-code-launcher.ts` owns the
   launcher that runs a Claude subscription Run's Claude Code as its own uid.
 - `apps/firops-api/src/execution/managed.ts` owns managed launch of the Task
-  Pod from the `devboxes-task` SandboxTemplate.
+  Pod from the SandboxTemplate of the Task's machine size: `devboxes-task`,
+  `devboxes-task-large` or `devboxes-task-xl`.
 
 ## Native execution isolation
 
