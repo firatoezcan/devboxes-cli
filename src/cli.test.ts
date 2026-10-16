@@ -984,8 +984,9 @@ describe("devboxes connect", () => {
 
 describe("devboxes machine add", () => {
   const organizations = [
-    { id: "0198a0b0-0000-7000-8000-00000000000a", name: "Acme" },
-    { id: "0198a0b0-0000-7000-8000-00000000000b", name: "Side project" },
+    { id: "0198a0b0-0000-7000-8000-00000000000a", name: "Acme", role: "owner" },
+    { id: "0198a0b0-0000-7000-8000-00000000000c", name: "Client workspace", role: "member" },
+    { id: "0198a0b0-0000-7000-8000-00000000000b", name: "Side project", role: "owner" },
   ];
   const registrations: unknown[] = [];
   const refusedKeys = new Set<string>();
@@ -1033,11 +1034,15 @@ describe("devboxes machine add", () => {
     return {
       config,
       tokenFile: join(config, "devboxes", "runner", "token"),
-      env: { DEVBOXES_API_URL: api.url.origin, DEVBOXES_TOKEN: "owner", XDG_CONFIG_HOME: config },
+      env: {
+        DEVBOXES_API_URL: api.url.origin,
+        DEVBOXES_TOKEN: "machine-add-session",
+        XDG_CONFIG_HOME: config,
+      },
     };
   };
 
-  it("asks for the Organization, names the machine after the computer, saves its key for this user only, and leaves starting for later", async () => {
+  it("offers the Organizations the person owns, names the machine after the computer, saves its key for this user only, and leaves starting for later", async () => {
     registrations.length = 0;
     const { tokenFile, env } = await machineEnvironment();
     const cli = await inTerminal(["machine", "add"], env);
@@ -1055,7 +1060,7 @@ describe("devboxes machine add", () => {
     const token = (await Bun.file(tokenFile).text()).trim();
     expect(exitCode).toBe(0);
     expect(registrations).toEqual([
-      { organizationId: organizations[1]?.id, name: hostname(), platform, cost: null },
+      { organizationId: organizations[2]?.id, name: hostname(), platform, cost: null },
     ]);
     expect(token).toStartWith("firops_runner_1_");
     expect((await stat(tokenFile)).mode & 0o777).toBe(0o600);

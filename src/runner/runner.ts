@@ -26,7 +26,9 @@ const runnerDirectory = () => join(platformConfigHome(), "devboxes", "runner");
 const savedTokenFile = () => join(runnerDirectory(), "token");
 
 const organizationsSchema = Type.Object({
-  organizations: Type.Array(Type.Object({ id: Type.String(), name: Type.String() })),
+  organizations: Type.Array(
+    Type.Object({ id: Type.String(), name: Type.String(), role: Type.String() }),
+  ),
 });
 const registeredSchema = Type.Object({
   machine: Type.Object({ id: Type.String(), name: Type.String() }),
@@ -184,16 +186,17 @@ export const addRunnerCommands = (program: Command) => {
       ).data,
       "organizations.list",
     );
-    if (options.organization === undefined && organizations.length === 0)
+    const owned = organizations.filter((entry) => entry.role === "owner");
+    if (options.organization === undefined && owned.length === 0)
       throw new CommandError(
         "ORGANIZATION_NOT_FOUND",
-        "devboxes can't find an Organization you belong to.",
+        "devboxes can't find an Organization you own. Only an Organization's owner can add a machine.",
       );
     const chosen =
       options.organization ??
       (await select({
         message: "Which Organization should run tasks on this machine?",
-        options: organizations.map((entry) => ({ value: entry.id, label: entry.name })),
+        options: owned.map((entry) => ({ value: entry.id, label: entry.name })),
         output: process.stderr,
       }));
     if (isCancel(chosen)) throw new CommandError("CANCELLED", "Command cancelled.");

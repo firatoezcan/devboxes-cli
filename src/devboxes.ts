@@ -82,7 +82,7 @@ export const addAccountCommands = (program: Command) => {
   const invoke = program
     .command("invoke")
     .description(
-      "invoke a discovered command; on a terminal without --input, it asks for the input",
+      "invoke a discovered command. In a terminal, it asks for the input when --input is missing.",
     )
     .argument("<operationId>", "Discovered operation ID")
     .option(
@@ -125,12 +125,15 @@ export const addAccountCommands = (program: Command) => {
   const connect = program
     .command("connect")
     .description("connect a Provider Account by signing in with the provider or with an API key")
-    .argument("[providerId]", "Provider ID from providers.list; without it, choose one")
+    .argument(
+      "[providerId]",
+      "The provider ID from providers.list. In a terminal, devboxes asks for it.",
+    )
     .option(
       "--organization <id>",
-      "Organization that gets the Provider Account; without it, choose one",
+      "The Organization that gets the Provider Account. In a terminal, devboxes asks for it.",
     )
-    .option("--label <label>", "Name of the Provider Account; without it, enter one")
+    .option("--label <label>", "The Provider Account's name. In a terminal, devboxes asks for it.")
     .option("--account <id>", "Provider Account whose credential the connection replaces")
     .option("--api-key", "connect an API key instead of signing in");
   connect.action(async (providerId?: string) => {
@@ -230,7 +233,7 @@ export const addAccountCommands = (program: Command) => {
       if (!interactive && process.stdin.isTTY)
         throw new CommandError(
           "INPUT_REQUIRED",
-          "Pipe the key or code to stdin, or run without --json and with stderr on the terminal for a masked prompt.",
+          "Pipe the key or code to stdin, or run the command in a terminal with no --json to get a masked prompt.",
         );
       const value = interactive
         ? await password({ message, output: process.stderr })
