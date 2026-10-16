@@ -1,5 +1,11 @@
 import { betterFetch } from "@better-fetch/fetch";
+import {
+  type CatalogCommand,
+  catalogCommands,
+  commandDocumentSchema,
+} from "./protocol/command-catalog";
 import { JsonValueSchema } from "./protocol/provider-auth";
+import { redactedSecret, secretRedactingReviver } from "./security/secret-redaction";
 import { describeErrors } from "./values/validation-errors";
 import { defaultTextMapGetter, ROOT_CONTEXT, trace } from "@opentelemetry/api";
 import { W3CTraceContextPropagator } from "@opentelemetry/core";
@@ -14,33 +20,44 @@ import { cliUserAgent } from "./api";
  */
 export type CommandConnection = { origin: string; token: string; organizationId?: string };
 
-const operationSchema = Type.Object({
-  operationId: Type.String({ minLength: 1 }),
-  summary: Type.Optional(Type.String()),
-  "x-devboxes": Type.Object({
-    effect: Type.Union([Type.Literal("read"), Type.Literal("write")]),
-    authority: Type.String({ minLength: 1 }),
-  }),
-  requestBody: Type.Optional(Type.Unknown()),
-  responses: Type.Record(Type.String(), Type.Unknown()),
-});
+const scalar = Type.Union([Type.String(), Type.Number(), Type.Boolean(), Type.Null()]);
 
-const organizationScopedOperationSchema = Type.Object({
-  requestBody: Type.Object({
-    content: Type.Object({
-      "application/json": Type.Object({
-        schema: Type.Object({ properties: Type.Object({ organizationId: Type.Object({}) }) }),
-      }),
+/** The part of JSON Schema that the API's command input schemas use. A writeOnly string is a secret. */
+const fieldSchema = Type.Cyclic(
+  {
+    Field: Type.Object({
+      type: Type.Optional(Type.Union([Type.String(), Type.Array(Type.String())])),
+      description: Type.Optional(Type.String()),
+      maxLength: Type.Optional(Type.Number()),
+      writeOnly: Type.Optional(Type.Boolean()),
+      properties: Type.Optional(Type.Record(Type.String(), Type.Ref("Field"))),
+      required: Type.Optional(Type.Array(Type.String())),
+      patternProperties: Type.Optional(Type.Record(Type.String(), Type.Ref("Field"))),
+      items: Type.Optional(Type.Ref("Field")),
+      anyOf: Type.Optional(Type.Array(Type.Ref("Field"))),
+      enum: Type.Optional(Type.Array(scalar)),
+      const: Type.Optional(scalar),
     }),
-  }),
+  },
+  "Field",
+);
+export type Field = Static<typeof fieldSchema>;
+const requestSchema = Type.Object({
+  content: Type.Object({ "application/json": Type.Object({ schema: fieldSchema }) }),
 });
-const commandObjectInputSchema = Type.Record(Type.String(), JsonValueSchema);
 
-const documentSchema = Type.Object({
-  openapi: Type.String(),
-  paths: Type.Record(Type.String(), Type.Object({ post: Type.Optional(Type.Unknown()) })),
-  components: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-});
+/** The input schema `operation` advertises, or undefined for an operation without input. */
+export const commandInputSchema = (operation: CatalogCommand): Field | undefined => {
+  if (operation.requestBody === undefined) return undefined;
+  if (!Value.Check(requestSchema, operation.requestBody))
+    throw new CommandError(
+      "INVALID_DISCOVERY",
+      `The input schema of ${operation.operationId} is invalid: ${describeErrors(requestSchema, operation.requestBody)}.`,
+    );
+  return operation.requestBody.content["application/json"].schema;
+};
+
+const commandObjectInputSchema = Type.Record(Type.String(), JsonValueSchema);
 
 export const failureSchema = Type.Object({
   code: Type.String(),
@@ -50,11 +67,10 @@ export const failureSchema = Type.Object({
 const errorSchema = Type.Object({ error: failureSchema });
 const systemErrorSchema = Type.Object({ code: Type.String() });
 
-type Command = Static<typeof operationSchema> & { path: string; method: "POST" };
 export type CommandDescription = {
   openapi: string;
-  commands: Command[];
-  components: NonNullable<Static<typeof documentSchema>["components"]>;
+  commands: CatalogCommand[];
+  components: NonNullable<Static<typeof commandDocumentSchema>["components"]>;
 };
 type RequestCorrelation = { traceId: string | null; requestId: string | null };
 export type CommandResponse = {
@@ -79,9 +95,10 @@ export class CommandError extends Error {
   static from(cause: unknown) {
     if (cause instanceof CommandError) return cause;
     if (!(cause instanceof Error)) return new CommandError("COMMAND_FAILED", String(cause));
+    const kind = Value.Check(systemErrorSchema, cause) ? cause.code : cause.name;
     return new CommandError(
       "COMMAND_FAILED",
-      `${Value.Check(systemErrorSchema, cause) ? cause.code : cause.name}: ${cause.message}`,
+      cause.message.includes(kind) ? cause.message : `${kind}: ${cause.message}`,
     );
   }
 
@@ -155,18 +172,15 @@ export const credentialSafeJson = (
   text: string,
   secrets: readonly (string | undefined)[],
   redactAuthTokens = false,
-): Static<typeof JsonValueSchema> =>
-  text
-    ? JSON.parse(text, (key: string, value: Static<typeof JsonValueSchema>) => {
-        if (!Value.Check(Type.String(), value)) return value;
-        if (redactAuthTokens && key === "token" && value) return "[redacted]";
-        let text = value;
-        for (const secret of secrets) {
-          if (secret) text = text.replaceAll(secret, "[redacted]");
-        }
-        return text;
-      })
-    : null;
+): Static<typeof JsonValueSchema> => {
+  if (!text) return null;
+  const redact = secretRedactingReviver(secrets.filter((secret) => secret !== undefined));
+  return JSON.parse(text, (key: string, value: Static<typeof JsonValueSchema>) =>
+    redactAuthTokens && key === "token" && Value.Check(Type.String({ minLength: 1 }), value)
+      ? redactedSecret
+      : redact(key, value),
+  );
+};
 
 /** The `endpoint` response as `schema` declares it, or a refusal that names every problem. */
 export const parseResponse = <Schema extends TSchema>(
@@ -234,6 +248,10 @@ export const requestJson = async (
   );
 };
 
+/** Whether the CLI may ask in the terminal: outside --json, with stdin and stderr on a terminal. */
+export const asksInTerminal = (json: boolean | undefined) =>
+  !json && process.stdin.isTTY && process.stderr.isTTY;
+
 /** Opens `url` in the default browser, or asks the person to open it when that fails. */
 export const openInBrowser = (url: string) => {
   try {
@@ -295,39 +313,17 @@ export const describeCommands = async (
 ): Promise<CommandDescription> => {
   const response = await requestJson(connection, "/api/openapi/json");
   const document = response.data;
-  if (!Value.Check(documentSchema, document)) {
+  if (!Value.Check(commandDocumentSchema, document)) {
     throw new CommandError(
       "INVALID_DISCOVERY",
-      `The API returned an invalid OpenAPI document: ${describeErrors(documentSchema, document)}.`,
+      `The API returned an invalid OpenAPI document: ${describeErrors(commandDocumentSchema, document)}.`,
     );
   }
-  const commands = [];
-  const ids = new Set<string>();
-  for (const [path, item] of Object.entries(document.paths)) {
-    const route = /^\/api\/commands\/([A-Za-z0-9_-]+)\/([A-Za-z0-9_-]+)$/.exec(path);
-    if (!route || item.post === undefined) continue;
-    const operation = item.post;
-    if (!Value.Check(operationSchema, operation)) {
-      throw new CommandError(
-        "INVALID_DISCOVERY",
-        `A command route has an invalid operation contract: ${describeErrors(operationSchema, operation)}.`,
-      );
-    }
-    if (operation.operationId !== `${route[1]}.${route[2]}`) {
-      throw new CommandError(
-        "INVALID_DISCOVERY",
-        `A command route has an invalid operation contract: /operationId must be ${route[1]}.${route[2]}.`,
-      );
-    }
-    if (ids.has(operation.operationId)) {
-      throw new CommandError("INVALID_DISCOVERY", "Command operation IDs must be unique.");
-    }
-    ids.add(operation.operationId);
-    commands.push({ ...operation, path, method: "POST" as const });
-  }
+  const catalog = catalogCommands(document);
+  if ("problem" in catalog) throw new CommandError("INVALID_DISCOVERY", catalog.problem);
   return {
     openapi: document.openapi,
-    commands,
+    commands: catalog.commands,
     components: document.components ?? {},
   };
 };
@@ -336,7 +332,7 @@ export const describeCommands = async (
 export const describeCommand = (
   description: CommandDescription,
   command: string,
-): CommandDescription & { commands: [Command] } => {
+): CommandDescription & { commands: [CatalogCommand] } => {
   const operation = description.commands.find((candidate) => candidate.operationId === command);
   if (!operation) {
     throw new CommandError(
@@ -356,7 +352,7 @@ export const invokeCommand = async (
   let input = invocation.input;
   if (
     connection.organizationId &&
-    Value.Check(organizationScopedOperationSchema, operation) &&
+    commandInputSchema(operation)?.properties?.organizationId &&
     Value.Check(commandObjectInputSchema, input)
   ) {
     input = { ...input, organizationId: connection.organizationId };
@@ -365,7 +361,7 @@ export const invokeCommand = async (
 };
 
 /**
- * A Devboxes command tool. Its run refuses input that `input` rejects, and returns that refusal or a
+ * A devboxes command tool. Its run refuses input that `input` rejects, and returns that refusal or a
  * command failure as an error result the agent reads.
  */
 const commandTool = <Input extends TObject, Result>(
@@ -392,7 +388,7 @@ const commandTool = <Input extends TObject, Result>(
 });
 
 /**
- * The Devboxes command tools. `devboxes mcp` serves them over stdio, and the Chat native host
+ * The devboxes command tools. `devboxes mcp` serves them over stdio, and the Chat native host
  * runs them in its own process. Each call reads the advertised commands with `readCommands`, which
  * by default asks the API again.
  */
@@ -402,7 +398,7 @@ export const devboxesCommandTools = (
 ) => ({
   describe: commandTool(
     "devboxes_describe",
-    "List Devboxes command IDs, effects, and summaries when command is omitted. Pass an exact command ID to read its OpenAPI input, response, and authority contract before using devboxes_invoke. Discovery does not grant authority.",
+    "List devboxes command IDs, effects, and summaries when command is omitted. Pass an exact command ID to read its OpenAPI input, response, and authority contract before using devboxes_invoke. Discovery does not grant authority.",
     Type.Object({ command: Type.Optional(Type.String({ minLength: 1 })) }),
     async ({ command }) => {
       const description = await readCommands(connection);
@@ -418,7 +414,7 @@ export const devboxesCommandTools = (
   ),
   invoke: commandTool(
     "devboxes_invoke",
-    "Invoke an advertised Devboxes command. Supply JSON input directly, never a local file reference. HTTP acceptance is not evidence that asynchronous work completed.",
+    "Invoke an advertised devboxes command. Supply JSON input directly, never a local file reference. HTTP acceptance is not evidence that asynchronous work completed.",
     Type.Object({
       command: Type.String({ minLength: 1 }),
       // Tool arguments arrive as JSON, so the advertised schema accepts every value.

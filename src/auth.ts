@@ -14,6 +14,7 @@ import Value from "typebox/value";
 import { cliUserAgent } from "./api";
 import {
   apiOrigin,
+  asksInTerminal,
   CommandError,
   credentialSafeJson,
   failureSchema,
@@ -56,9 +57,15 @@ const sessionSelectionSchemas = new Map<string, TObject>([
 const oauthFailureSchema = Type.Object({ error: Type.String(), error_description: Type.String() });
 const listedSessionSchema = Type.Object({ id: Type.String(), token: Type.String() });
 
-const signInMethods: { method: "github" | "email"; flag: string; label: string }[] = [
+const signInMethods: {
+  method: "github" | "google" | "email" | "password";
+  flag: string;
+  label: string;
+}[] = [
   { method: "github", flag: "--github", label: "GitHub" },
-  { method: "email", flag: "--email <email>", label: "Email and password" },
+  { method: "google", flag: "--google", label: "Google" },
+  { method: "email", flag: "--email <email>", label: "Email code" },
+  { method: "password", flag: "--email <email> --password-stdin", label: "Email and password" },
 ];
 const deviceClientId = "devboxes-cli";
 
@@ -66,8 +73,9 @@ type AccountOptions = {
   api?: string;
   config?: string;
   github?: boolean;
+  google?: boolean;
   email?: string;
-  name?: string;
+  codeStdin?: boolean;
   passwordStdin?: boolean;
   json?: boolean;
 };
@@ -174,19 +182,51 @@ export const addAuthenticationCommands = (program: Command) => {
       .command(action)
       .description(
         action === "signup"
-          ? "create an account with GitHub or email and password"
-          : "sign in with GitHub or email and password",
+          ? "create an account with GitHub, Google, or your email and a password"
+          : "sign in with GitHub, Google, a code sent to your email, or your password",
       )
       .addOption(
         new Option("--github", "Continue with GitHub in a browser").conflicts([
+          "google",
           "email",
-          "name",
+          "codeStdin",
           "passwordStdin",
         ]),
       )
-      .option("--email <email>", "Use email and password with this account email")
-      .option("--password-stdin", "Read the password from stdin instead of a masked prompt");
-    if (action === "signup") command.option("--name <name>", "Display name for an email account");
+      .addOption(
+        new Option("--google", "Continue with Google in a browser").conflicts([
+          "email",
+          "codeStdin",
+          "passwordStdin",
+        ]),
+      );
+    if (action === "signup")
+      command
+        .option("--email <email>", "Create the account for this email address")
+        .option("--password-stdin", "Read the new account's password from stdin")
+        .addOption(
+          new Option(
+            "--code-stdin",
+            "Read the emailed code from stdin and finish creating the account",
+          ).conflicts("passwordStdin"),
+        );
+    else
+      command
+        .option(
+          "--email <email>",
+          "Sign in with this email address, by default with an emailed code",
+        )
+        .option("--code-stdin", "Read the emailed code from stdin and finish the sign-in")
+        .addOption(
+          new Option(
+            "--password-stdin",
+            "Sign in with the account password from stdin instead of a code",
+          ).conflicts("codeStdin"),
+        );
+    const methods =
+      action === "signup"
+        ? signInMethods.filter((entry) => entry.method !== "email")
+        : signInMethods;
     command.action(async () => {
       const options = command.optsWithGlobals<AccountOptions>();
       if (process.env.DEVBOXES_TOKEN !== undefined) {
@@ -195,43 +235,41 @@ export const addAuthenticationCommands = (program: Command) => {
           "Account login cannot replace a scoped connection. Remove DEVBOXES_TOKEN before signing in to a local account.",
         );
       }
-      const interactive = !options.json && process.stdin.isTTY && process.stderr.isTTY;
-      let choice = signInMethods.find((entry) =>
-        entry.method === "email" ? options.email !== undefined : options[entry.method],
+      const interactive = asksInTerminal(options.json);
+      let choice = methods.find((entry) =>
+        entry.method === "github" || entry.method === "google"
+          ? options[entry.method]
+          : options.email !== undefined &&
+            (entry.method === "password") === (action === "signup" || !!options.passwordStdin),
       );
       const context = await loadAccountContext(options);
       if (!choice) {
         if (!interactive) {
           throw new CommandError(
             "SIGN_IN_METHOD_REQUIRED",
-            "Choose a sign-in method: --github or --email <email>.",
-            { details: { methods: signInMethods.map(({ method, flag }) => ({ method, flag })) } },
+            "Choose a sign-in method: --github, --google or --email <email>.",
+            { details: { methods: methods.map(({ method, flag }) => ({ method, flag })) } },
           );
         }
         const selected = await select({
           message: action === "signup" ? "Create your account with" : "Sign in with",
-          options: signInMethods.map((entry) => ({ value: entry, label: entry.label })),
+          options: methods.map((entry) => ({ value: entry, label: entry.label })),
           output: process.stderr,
         });
         if (isCancel(selected)) throw new CommandError("CANCELLED", "Authentication cancelled.");
         choice = selected;
       }
-      const report = async (user: Static<typeof userSchema>, signedIn: boolean) => {
+      const report = async (user: Static<typeof userSchema>) => {
         await writeOutput(
           `${
             options.json
-              ? JSON.stringify({ user: Value.Clean(userSchema, user), signedIn })
-              : [
-                  signedIn ? `Signed in as ${user.email}.` : `Account created for ${user.email}.`,
-                  ...(action === "signup" && !user.emailVerified
-                    ? [`Open the verification link sent to ${user.email}.`]
-                    : []),
-                ].join(" ")
+              ? JSON.stringify({ user: Value.Clean(userSchema, user), signedIn: true })
+              : `Signed in as ${user.email}.`
           }\n`,
         );
       };
 
-      if (choice.method !== "email") {
+      if (choice.method === "github" || choice.method === "google") {
         const device = (
           await requestAuthentication(context, "/device/code", {
             method: "POST",
@@ -259,6 +297,7 @@ export const addAuthenticationCommands = (program: Command) => {
           );
         }
         verification.searchParams.set("provider", choice.method);
+        if (action === "signup") verification.searchParams.set("sign_up", "true");
         process.stderr.write(
           `${
             options.json
@@ -328,92 +367,150 @@ export const addAuthenticationCommands = (program: Command) => {
           (await requestAuthentication(context, "/get-session")).data,
           "/get-session",
         );
-        await report(session.user, true);
+        await report(session.user);
         return;
       }
 
       let email = options.email;
-      let name = options.name;
-      if (interactive) {
-        email ??= await promptText("Email");
-        if (action === "signup") name ??= await promptText("Name");
-      }
-      if (!email || (action === "signup" && !name)) {
+      if (interactive) email ??= await promptText("Email");
+      if (!email) {
         throw new CommandError(
           "INVALID_USAGE",
-          action === "signup"
-            ? "Email signup requires --email <email> and --name <name>."
-            : "Email login requires --email <email>.",
+          `Email ${action === "signup" ? "signup" : "login"} requires --email <email>.`,
         );
       }
-      let password: string;
-      if (options.passwordStdin) {
-        if (process.stdin.isTTY) {
-          throw new CommandError(
-            "PASSWORD_INPUT_REQUIRED",
-            "Pipe the password into --password-stdin, or omit that flag to use a masked prompt.",
-          );
-        }
-        password = (await Bun.stdin.text()).replace(/\r?\n$/, "");
-      } else {
-        if (!process.stdin.isTTY || !process.stderr.isTTY) {
-          throw new CommandError(
-            "PASSWORD_INPUT_REQUIRED",
-            "Use --password-stdin when no interactive terminal is available.",
-          );
-        }
-        const entered = await passwordPrompt({ message: "Password", output: process.stderr });
-        if (isCancel(entered)) throw new CommandError("CANCELLED", "Authentication cancelled.");
-        password = entered;
+      if (options.codeStdin && process.stdin.isTTY) {
+        throw new CommandError("CODE_INPUT_REQUIRED", "Pipe the emailed code into --code-stdin.");
       }
-      if (!password)
-        throw new CommandError("PASSWORD_INPUT_REQUIRED", "The password must not be empty.");
-      let response = await requestAuthentication(
-        context,
-        action === "signup" ? "/sign-up/email" : "/sign-in/email",
-        { method: "POST", body: { email, password, name } },
-      );
-      const challenge = response.data;
-      if (
-        Value.Check(
-          Type.Object({
-            twoFactorRedirect: Type.Literal(true),
-            twoFactorMethods: Type.Array(Type.String()),
-          }),
-          challenge,
-        )
-      ) {
-        delete context.config.sessionToken;
-        await writeConfig(context);
+      const readPassword = async () => {
+        let password: string;
+        if (options.passwordStdin) {
+          if (process.stdin.isTTY) {
+            throw new CommandError(
+              "PASSWORD_INPUT_REQUIRED",
+              `Pipe the password into --password-stdin, or run devboxes ${action} on its own and choose email and password.`,
+            );
+          }
+          password = (await Bun.stdin.text()).replace(/\r?\n$/, "");
+        } else {
+          const entered = await passwordPrompt({ message: "Password", output: process.stderr });
+          if (isCancel(entered)) throw new CommandError("CANCELLED", "Authentication cancelled.");
+          password = entered;
+        }
+        if (!password)
+          throw new CommandError("PASSWORD_INPUT_REQUIRED", "The password must not be empty.");
+        return password;
+      };
+      if (action === "signup") {
+        if (!options.codeStdin) {
+          await requestAuthentication(context, "/sign-up/email", {
+            method: "POST",
+            body: { email, password: await readPassword(), name: "" },
+          });
+          if (!interactive) {
+            await writeOutput(
+              `${
+                options.json
+                  ? JSON.stringify({ signedIn: false, codeSent: true })
+                  : `devboxes sent a code to ${email}. Pipe it into devboxes signup --email ${email} --code-stdin to finish creating your account.`
+              }\n`,
+            );
+            return;
+          }
+        }
+        const code = options.codeStdin
+          ? (await Bun.stdin.text()).trim()
+          : await promptText(`Code sent to ${email}`);
+        const verified = await requestAuthentication(context, "/email-otp/verify-email", {
+          method: "POST",
+          body: { email, otp: code },
+        });
+        await report(
+          parseResponse(authenticationSchema, verified.data, "/email-otp/verify-email").user,
+        );
+        return;
+      }
+      if (choice.method === "password") {
+        const password = await readPassword();
+        const signedIn = await authenticationResponse(context, "/sign-in/email", {
+          method: "POST",
+          body: { email, password },
+        });
+        if ("failure" in signedIn) {
+          if (signedIn.failure.code !== "EMAIL_NOT_VERIFIED") throw signedIn.failure;
+          throw new CommandError(
+            "EMAIL_NOT_VERIFIED",
+            `${email} is not verified yet. devboxes sent a new code to it. Pipe it into devboxes signup --email ${email} --code-stdin to finish creating your account.`,
+            signedIn.failure.options,
+          );
+        }
+        let response = signedIn;
+        const challenge = response.data;
+        if (
+          Value.Check(
+            Type.Object({
+              twoFactorRedirect: Type.Literal(true),
+              twoFactorMethods: Type.Array(Type.String()),
+            }),
+            challenge,
+          )
+        ) {
+          delete context.config.sessionToken;
+          await writeConfig(context);
+          if (!interactive) {
+            await writeOutput(
+              `${
+                options.json
+                  ? JSON.stringify({
+                      signedIn: false,
+                      twoFactorRequired: true,
+                      twoFactorMethods: challenge.twoFactorMethods,
+                    })
+                  : 'Two-factor verification is required. Pipe {"code":"<authenticator code>"} into devboxes auth /two-factor/verify-totp --input -, or {"code":"<backup code>"} into devboxes auth /two-factor/verify-backup-code --input -.'
+              }\n`,
+            );
+            return;
+          }
+          const code = (await promptText("Authenticator code or backup code")).replace(/\s/g, "");
+          response = await requestAuthentication(
+            context,
+            /^\d{6}$/.test(code) ? "/two-factor/verify-totp" : "/two-factor/verify-backup-code",
+            { method: "POST", body: { code } },
+          );
+        }
+        await report(parseResponse(authenticationSchema, response.data, "/sign-in/email").user);
+        return;
+      }
+      if (!options.codeStdin) {
+        await requestAuthentication(context, "/email-otp/send-verification-otp", {
+          method: "POST",
+          body: { email, type: "sign-in" },
+        });
         if (!interactive) {
           await writeOutput(
             `${
               options.json
-                ? JSON.stringify({
-                    signedIn: false,
-                    twoFactorRequired: true,
-                    twoFactorMethods: challenge.twoFactorMethods,
-                  })
-                : 'Two-factor verification is required. Pipe {"code":"<authenticator code>"} into devboxes auth /two-factor/verify-totp --input -, or {"code":"<backup code>"} into devboxes auth /two-factor/verify-backup-code --input -.'
+                ? JSON.stringify({ signedIn: false, codeSent: true })
+                : `If ${email} has a devboxes account, devboxes sent it a sign-in code. Pipe it into the same command with --code-stdin. To create an account, run devboxes signup.`
             }\n`,
           );
           return;
         }
-        const code = (await promptText("Authenticator code or backup code")).replace(/\s/g, "");
-        response = await requestAuthentication(
-          context,
-          /^\d{6}$/.test(code) ? "/two-factor/verify-totp" : "/two-factor/verify-backup-code",
-          { method: "POST", body: { code } },
-        );
       }
-      const authenticated = response.data;
-      if (!Value.Check(authenticationSchema, authenticated))
-        throw new CommandError(
-          "INVALID_AUTH_RESPONSE",
-          `Authentication did not return the expected user and session contract: ${describeErrors(authenticationSchema, authenticated)}.`,
-          { status: response.status },
-        );
-      await report(authenticated.user, authenticated.token !== null);
+      const code = options.codeStdin
+        ? (await Bun.stdin.text()).trim()
+        : await promptText(`Code sent to ${email}`);
+      const authenticated = parseResponse(
+        authenticationSchema,
+        (
+          await requestAuthentication(context, "/sign-in/email-otp", {
+            method: "POST",
+            body: { email, otp: code },
+          })
+        ).data,
+        "/sign-in/email-otp",
+      );
+      await report(authenticated.user);
     });
   }
 
@@ -439,6 +536,7 @@ export const addAuthenticationCommands = (program: Command) => {
       fetchOptions: {
         auth: { type: "Bearer", token },
         redirect: "error",
+        jsonParser: (text) => credentialSafeJson(text, [token]),
       },
     }).$fetch("/sign-out", { method: "POST", body: {} });
     if (error && error.status !== 401) {

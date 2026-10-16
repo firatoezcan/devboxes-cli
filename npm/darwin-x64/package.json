@@ -1,7 +1,7 @@
 {
   "name": "@devboxes/cli-darwin-x64",
-  "version": "0.6.0",
-  "description": "Devboxes CLI native binary for macOS x64.",
+  "version": "0.7.1",
+  "description": "devboxes CLI native binary for macOS x64.",
   "license": "MIT",
   "repository": {
     "type": "git",

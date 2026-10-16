@@ -73,7 +73,7 @@ export const taskEnvironmentKeyError = (key: string) => {
     normalizedKey.endsWith("_JSON_B64") ||
     runnerExactEnvironmentKeys.has(normalizedKey)
   ) {
-    return `Environment key ${normalizedKey} is reserved by Devboxes or the runner. Choose another name.`;
+    return `Environment key ${normalizedKey} is reserved by devboxes or the runner. Choose another name.`;
   }
   return null;
 };

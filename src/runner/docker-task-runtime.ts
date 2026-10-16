@@ -172,6 +172,44 @@ export class DockerOpencodeTaskRuntime {
     return filled;
   }
 
+  /**
+   * Whether a container of `image`, the image of the Task `taskId`, reaches `url` at
+   * `host.docker.internal`. It runs the executor that `create` staged as plain Bun, the one HTTP
+   * client that every Workspace Image runs.
+   */
+  async reaches(taskId: string, image: string, url: string) {
+    const probe = await this.docker.createContainer({
+      Image: image,
+      User: `${containerAgentUid}:${containerSharedGid}`,
+      Entrypoint: ["/usr/local/bin/devboxes-executor"],
+      Cmd: [
+        "--eval",
+        "await fetch(process.env.PROBE_URL, { signal: AbortSignal.timeout(10_000) })",
+      ],
+      Env: ["BUN_BE_BUN=1", `PROBE_URL=${url}`],
+      HostConfig: {
+        CapDrop: ["ALL"],
+        SecurityOpt: ["no-new-privileges"],
+        Mounts: [
+          {
+            Type: "bind",
+            Source: join(resolve(this.options.stateDirectory, taskId), "devboxes-executor"),
+            Target: "/usr/local/bin/devboxes-executor",
+            ReadOnly: true,
+          },
+        ],
+        ExtraHosts: ["host.docker.internal:host-gateway"],
+      },
+    });
+    try {
+      await probe.start();
+      const { StatusCode } = await probe.wait();
+      return StatusCode === 0;
+    } finally {
+      await probe.remove({ force: true });
+    }
+  }
+
   async create(task: NativeTaskLaunch) {
     const name = `devboxes-task-${task.id}`;
     const existing = await this.inspect(name);
@@ -209,8 +247,13 @@ export class DockerOpencodeTaskRuntime {
       StopTimeout: executorDrainSeconds,
       HostConfig: {
         AutoRemove: false,
+        // Docker's init becomes PID 1 and reaps the processes the agent's tools and Git orphan,
+        // which the executor never waits for.
+        Init: true,
         CapDrop: ["ALL"],
-        CapAdd: ["DAC_OVERRIDE", "SETGID", "SETUID"],
+        // KILL lets Docker's init, which stays root, forward a stop's SIGTERM to the executor after
+        // the executor dropped to the agent's uid and with it every capability.
+        CapAdd: ["DAC_OVERRIDE", "KILL", "SETGID", "SETUID"],
         SecurityOpt: ["no-new-privileges"],
         Mounts: [
           {

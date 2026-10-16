@@ -67,8 +67,10 @@ export const listen = async (options: {
     stateDirectory: directory,
   });
   const engine = await runtime.docker.info();
+  const rootless = engine.SecurityOptions.includes("name=rootless");
+  let relayReachable = !rootless;
   let hostname = "127.0.0.1";
-  if (!["Docker Desktop", "OrbStack"].includes(engine.OperatingSystem)) {
+  if (!rootless && !["Docker Desktop", "OrbStack"].includes(engine.OperatingSystem)) {
     const gateway = (await runtime.docker.getNetwork("bridge").inspect()).IPAM?.Config?.[0]
       ?.Gateway;
     const gatewayIsLocal =
@@ -175,6 +177,15 @@ export const listen = async (options: {
     });
     if (result.status !== "running") await container.remove();
     else if (!stopping) {
+      if (!relayReachable) {
+        if (!(await runtime.reaches(task.id, (await container.inspect()).Image, apiBaseUrl)))
+          throw new CommandError(
+            "DOCKER_ENGINE_UNSUPPORTED",
+            'Task containers can\'t reach this Runner. Turn on host loopback for rootless Docker (DOCKERD_ROOTLESS_ROOTLESSKIT_DISABLE_HOST_LOOPBACK=false) and map host.docker.internal to the host loopback address (host-gateway-ips: ["10.0.2.2"] in daemon.json).',
+          );
+        relayReachable = true;
+      }
+      if (stopping) return;
       await container.start();
       console.info(`Started Task ${task.id} in ${executorId}.`);
     }
@@ -203,8 +214,11 @@ export const listen = async (options: {
   process.once("SIGTERM", interrupt);
   let connected = false;
   let failures = 0;
-  const endsListener = ({ options: { status } }: CommandError) =>
-    status === 401 || status === 403 || (!connected && (status === 404 || status === 422));
+  const endsListener = ({ code, options: { status } }: CommandError) =>
+    code === "DOCKER_ENGINE_UNSUPPORTED" ||
+    status === 401 ||
+    status === 403 ||
+    (!connected && (status === 404 || status === 422));
   const poll = async () => {
     try {
       const assignments = await api("assignments", assignmentsSchema, {});

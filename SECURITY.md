@@ -11,7 +11,7 @@ and coordinate a fix or mitigation before public disclosure.
 
 This policy covers the latest published `devboxes` version: its account CLI,
 MCP server, local Docker runner, runner protocol, and provider-connection
-implementation. Reports about the hosted Devboxes platform are welcome at the
+implementation. Reports about the hosted devboxes platform are welcome at the
 same address.
 
 ## Runner trust boundary
@@ -33,8 +33,9 @@ not establish that a container stopped.
 ## Credential handling
 
 - The account configuration is written atomically with owner-only mode `0600`.
-- Store the Runner token from `capacity.register` in a regular, owner-only file
-  (`0600`). Protect that file and the Runner state directory from other local users.
+- `devboxes machine add` saves the Runner key from `capacity.register` in a
+  regular, owner-only file (`0600`). Protect that file and the Runner state
+  directory from other local users.
 - Each task's executor gets a token in its container environment as
   `DEVBOX_BACKEND_TOKEN`. Docker access permits inspection of that environment.
   The token works only at the listener's relay, an HTTP listener on the host's

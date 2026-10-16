@@ -18,5 +18,5 @@
     "types": ["bun-types", "node"],
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "scripts/**/*.ts", "../../packages/platform/types/**/*.d.ts"]
+  "include": ["src/**/*.ts", "scripts/**/*.ts"]
 }

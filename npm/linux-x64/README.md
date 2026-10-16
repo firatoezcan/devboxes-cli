@@ -1,6 +1,6 @@
 # @devboxes/cli-linux-x64
 
-This package contains the compiled Devboxes CLI for `linux/x64`. The
+This package contains the compiled devboxes CLI for `linux/x64`. The
 `devboxes` launcher selects it from the platform-specific optional dependencies.
 It contains no separate application implementation or test framework.
 

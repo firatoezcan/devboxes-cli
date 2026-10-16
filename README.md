@@ -1,21 +1,22 @@
-# Devboxes CLI
+# devboxes CLI
 
 The CLI discovers and invokes the application's API-owned commands. Its MCP
 server exposes the same discovery and invocation implementation to agents.
 
-The package launcher requires Bun 1.4.2 or later. Published native binaries
+The package launcher requires Bun 1.4.3 or later. Published native binaries
 include their runtime and do not require a separate JavaScript runtime.
 
-## Run from this checkout
+## Run from source
+
+Install dependencies with `bun install` in the public source repository, or
+with `pnpm install` at the root of the Dashboard workspace. Then run these
+commands from the package directory: the repository root of the public source,
+or `apps/devboxes-cli` in the Dashboard workspace.
 
 ```sh
-bun apps/devboxes-cli/src/cli.ts --help
-pnpm vp run devboxes#build:smoke
+bun src/cli.ts --help
+bun run build:smoke
 ```
-
-Start the API with `pnpm vp run dev:api` and use the printed HTTP origin on
-`127.0.0.1` with its assigned port. Local startup needs no DNS or certificate
-setup. Remote API connections require HTTPS.
 
 ## Create an account or sign in
 
@@ -24,23 +25,24 @@ devboxes signup
 devboxes login
 ```
 
-[Install the CLI and run operations](../docs/content/guides/cli.mdx#sign-in) describes the
-sign-in methods, the flags for scripts and agents, email verification, and
-two-factor completion.
+[Install the CLI and run operations](https://docs.devboxes.ai/guides/cli#sign-in)
+describes the sign-in methods, including email codes and passwords, the flags
+for scripts and agents, and two-factor completion.
 
 Released binaries embed `https://api.devboxes.ai` as the default API origin
 through `scripts/build-cli-binaries.ts`. A source run has no default: it uses a
 saved account's origin, and otherwise requires `--api` or `DEVBOXES_API_URL`.
 `--api` takes precedence over `DEVBOXES_API_URL`, both override the default, and
-a saved configuration keeps the origin it was created for.
+a saved configuration keeps the origin it was created for. A local API can use
+an HTTP origin on `127.0.0.1`. Remote API connections require HTTPS.
 
 Credentials are saved atomically with file mode `0600`. Use `--config <path>` to
 keep separate API origins or accounts in separate files. `devboxes logout`
 revokes the current session and clears its saved credential.
 
 `devboxes auth` reads Better Auth's generated schema and exposes the installed
-two-factor, password recovery, email verification, account, session, and
-factor-management endpoints. An endpoint that accepts both GET and POST requires `--method GET` or
+two-factor, email-code, password, account, session, and factor-management
+endpoints. An endpoint that accepts both GET and POST requires `--method GET` or
 `--method POST`. GET input supplies query parameters; template-path parameters
 use the same JSON object. Authentication operations follow the native owner's
 semantics. Enrollment results contain authenticator secrets and backup codes;
@@ -59,26 +61,32 @@ Describing either operation shows this id input.
 ```sh
 devboxes commands
 devboxes describe organizations.create
-devboxes invoke organizations.create --input @organization.json
-devboxes invoke organizations.list --input @empty.json
+devboxes invoke organizations.create
 ```
 
-`organization.json` contains the documented command input, such as
-`{"name":"Example team","slug":"example-team"}`. `empty.json` contains `{}`.
-Use `--input -` to read JSON from stdin. `--json` selects machine-readable output.
+In a terminal, `devboxes invoke` asks for the operation's input field by field.
+A field such as `organizationId` or `projectId` offers a choice from the matching
+list operation, secrets such as keys and tokens are asked without showing what you
+type, and the optional fields come last, chosen from a list.
+
+Scripts and agents pass the input as JSON instead, from a file with
+`--input @organization.json` or from stdin with `--input -`. Without a terminal or
+with `--json`, `devboxes invoke` requires `--input`. `--json` selects
+machine-readable output.
+
 The API's OpenAPI contract defines inputs, results, authority, and errors.
 
 ## Join an Organization
 
 An owner uses `invitations.create` to record an invitation for an email address.
-The intended recipient verifies that email through the native authentication
-flow, discovers the invitation with `invitations.received`, and accepts or
-declines with `invitations.respond`. Owners inspect and cancel invitations with
+The intended recipient signs in to an account with that verified email,
+discovers the invitation with `invitations.received`, and accepts or declines
+with `invitations.respond`. Owners inspect and cancel invitations with
 `invitations.list` and `invitations.cancel`.
 
-Invitation creation does not send a notification email. Account-verification
-and password-recovery email remain available. Admission requires the inviter to
-remain an active owner and cannot replace an active or suspended membership.
+Invitation creation does not send a notification email. Admission requires the
+inviter to remain an active owner and cannot replace an active or suspended
+membership.
 
 ## Use the same commands through MCP
 
@@ -100,25 +108,28 @@ its work ends.
 
 ## Run execution capacity
 
-Register a Runner through the discovered `capacity.register` application command.
-Use `devboxes runner listen --help` for credential-file, Docker socket, and state
-directory options.
+`devboxes machine add` registers this computer as a Runner through
+`capacity.register` and saves the Runner key, readable only by the current user,
+in `devboxes/runner/token` under the user's configuration directory.
+`devboxes runner listen` reads that file unless `--token-file` names another, and
+`--state-directory` doesn't move it. Use `devboxes runner listen --help` for the
+Docker socket and state directory options.
 
 ## Verify the CLI
 
-In the Dashboard workspace, run:
+From the package directory, run:
 
 ```sh
-pnpm vp run devboxes#test
-pnpm vp run devboxes#test:full
-pnpm vp run devboxes#build:smoke
+bun run test
+bun run test:full
+bun run build:smoke
 ```
 
-The tests use Bun and need no PostgreSQL or ClickHouse service. The smoke command
-compiles and executes the host binary. It does not prove another platform's
-binary can run.
+The tests use Bun and need no PostgreSQL or ClickHouse service. In the public
+source, `test` and `test:full` both run the whole suite. In the Dashboard
+workspace, `test` runs only the tests selected by changes since `origin/dev`.
+The smoke command compiles and executes the host binary. It does not prove
+another platform's binary can run.
 
-In the standalone public source checkout, `bun run test` and `bun run test:full`
-run the Bun suite without a private workspace runner or an `origin/dev` branch.
 The source export retains the local-config, provider-connection, and Docker
 socket contracts beside their exported implementations.

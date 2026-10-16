@@ -1,10 +1,12 @@
 import { afterAll, describe, expect, it } from "bun:test";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 
+import type { JsonValueSchema } from "./protocol/provider-auth";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import type { Static } from "typebox";
 
 import { apiOrigin } from "./commands";
 
@@ -53,6 +55,39 @@ const unusedOrigin = "http://127.0.0.1:9";
 const listen = ["--json", "--api", "https://api.example.com", "runner", "listen"];
 const localDocker = { DOCKER_HOST: undefined, DEVBOX_OPENCODE_DOCKER_SOCKET_PATH: undefined };
 
+/** Runs the CLI in a pseudo-terminal, with an `open` on PATH that only records its calls. */
+const inTerminal = async (args: string[], env: Record<string, string>) => {
+  const bin = await mkdtemp(join(fixtureDirectory, "bin-"));
+  const opened = join(bin, "opened");
+  await writeFile(join(bin, "open"), `#!/bin/sh\necho "$@" >> ${opened}\n`);
+  await chmod(join(bin, "open"), 0o755);
+  let screen = "";
+  const child = Bun.spawn([process.execPath, "src/cli.ts", ...args], {
+    cwd: join(import.meta.dir, ".."),
+    env: { ...process.env, ...env, PATH: `${bin}:${process.env.PATH}` },
+    terminal: {
+      cols: 120,
+      rows: 40,
+      data: (_terminal, data) => {
+        screen += new TextDecoder().decode(data);
+      },
+    },
+  });
+  return {
+    screen: () => screen,
+    shows: async (text: string) => {
+      for (let waited = 0; !screen.includes(text) && waited < 10_000; waited += 50)
+        await Bun.sleep(50);
+      return screen.includes(text);
+    },
+    type: (text: string) => child.terminal?.write(text),
+    exited: (milliseconds = 10_000) =>
+      Promise.race([child.exited, Bun.sleep(milliseconds).then(() => null)]),
+    kill: () => child.kill(),
+    opened: () => Bun.file(opened).exists(),
+  };
+};
+
 describe("devboxes entrypoint", () => {
   it("prints help instead of listening when invoked without a subcommand", async () => {
     const result = await runCli([]);
@@ -70,8 +105,8 @@ describe("devboxes entrypoint", () => {
   });
 
   it.each([
-    ["a missing required option", ["--json", "invoke", "sessions.list"]],
-    ["a trailing JSON flag", ["invoke", "sessions.list", "--json"]],
+    ["a missing required argument", ["--json", "describe"]],
+    ["a trailing JSON flag", ["describe", "--json"]],
     ["an unexpected argument", ["--json", "unknown-command"]],
   ])("writes %s as a structured error in JSON mode", async (_case, args) => {
     const result = await runCli(args);
@@ -103,6 +138,24 @@ describe("devboxes entrypoint", () => {
       "INVALID_RUNNER_TOKEN_FILE",
     ],
     [
+      "a machine that was never added",
+      listen,
+      { ...localDocker, XDG_CONFIG_HOME: join(fixtureDirectory, "never-added") },
+      "MACHINE_NOT_ADDED",
+    ],
+    [
+      "an Organization missing outside a terminal",
+      ["--json", "machine", "add", "--name", "Office Mac"],
+      { ...scoped, XDG_CONFIG_HOME: join(fixtureDirectory, "never-added") },
+      "ORGANIZATION_REQUIRED",
+    ],
+    [
+      "a machine name missing outside a terminal",
+      ["--json", "machine", "add", "--organization", "0198a0b0-0000-7000-8000-000000000001"],
+      { ...scoped, XDG_CONFIG_HOME: join(fixtureDirectory, "never-added") },
+      "NAME_REQUIRED",
+    ],
+    [
       "malformed command input",
       ["--json", "invoke", "organizations.create", "--input", `@${malformedInput}`],
       scoped,
@@ -119,6 +172,24 @@ describe("devboxes entrypoint", () => {
       ],
       scoped,
       "INPUT_FILE_NOT_FOUND",
+    ],
+    [
+      "command input missing outside a terminal",
+      ["--json", "invoke", "organizations.create"],
+      scoped,
+      "INPUT_REQUIRED",
+    ],
+    [
+      "an Organization missing outside a terminal",
+      ["--json", "connect", "openai", "--label", "OpenAI"],
+      scoped,
+      "ORGANIZATION_REQUIRED",
+    ],
+    [
+      "a Provider Account name missing outside a terminal",
+      ["--json", "connect", "openai", "--organization", "0198a0b0-0000-7000-8000-000000000001"],
+      scoped,
+      "LABEL_REQUIRED",
     ],
     [
       "an unparseable API origin",
@@ -153,7 +224,7 @@ describe("devboxes invoke", () => {
   const traceparents: (string | null)[] = [];
   const apiTraceresponse = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
   const authorizations: (string | null)[] = [];
-  // About 150 KB of output, like the Production failure. Bun 1.4.2 writes 256 KiB and more another way.
+  // About 150 KB of output, like the Production failure. Bun writes 256 KiB and more another way.
   // Each text starts with a C1 control sequence, which JSON.stringify leaves unescaped.
   const events = Array.from({ length: 600 }, (_, index) => ({
     index,
@@ -199,8 +270,21 @@ describe("devboxes invoke", () => {
                 responses: {},
               },
             },
+            "/api/commands/sessions/inspect": {
+              post: {
+                operationId: "sessions.inspect",
+                "x-devboxes": { effect: "read", authority: "Organization member" },
+                responses: {},
+              },
+            },
           },
         });
+      if (pathname === "/api/commands/sessions/inspect") {
+        const token = request.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
+        return Response.json({
+          output: [token, encodeURIComponent(token), Buffer.from(`:${token}`).toString("base64")],
+        });
+      }
       if (pathname === "/api/commands/sessions/events") {
         eventsServed.resolve();
         return Response.json(events, { headers: { "x-request-id": "request-events" } });
@@ -244,6 +328,27 @@ describe("devboxes invoke", () => {
       expect(JSON.parse(result.stdout)).toMatchObject({ status: 200, data: [] });
     }
     expect(new Set(authorizations)).toEqual(new Set(["Bearer devboxes_delegate_ci"]));
+  });
+
+  it("prints no form of its token that a result quotes", async () => {
+    await writeFile(dispatchInput, "{}");
+    const token = "devboxes_delegate_a+b/c=d?e";
+    const result = await runCli(
+      ["--json", "invoke", "sessions.inspect", "--input", `@${dispatchInput}`],
+      { DEVBOXES_API_URL: api.url.origin, DEVBOXES_TOKEN: token },
+    );
+
+    expect(result.exitCode).toBe(0);
+    const { output } = JSON.parse(result.stdout).data;
+    expect(output).toHaveLength(3);
+    for (const [index, read] of [
+      (printed: string) => printed,
+      decodeURIComponent,
+      (printed: string) => Buffer.from(printed, "base64").toString("latin1"),
+    ].entries()) {
+      expect(output[index]).toContain("[redacted]");
+      expect(read(output[index])).not.toContain(token);
+    }
   });
 
   it("sends a delegation token to --api ahead of DEVBOXES_API_URL", async () => {
@@ -367,6 +472,223 @@ describe("devboxes invoke", () => {
   });
 });
 
+describe("devboxes invoke in a terminal", () => {
+  const organizations = [
+    { id: "0198a0b0-0000-7000-8000-00000000000a", name: "Acme" },
+    { id: "0198a0b0-0000-7000-8000-00000000000b", name: "Side project" },
+  ];
+  const projects = [
+    { id: "0198a0b0-0000-7000-8000-0000000000c1", name: "Operations" },
+    { id: "0198a0b0-0000-7000-8000-0000000000c2", name: "Website" },
+  ];
+  const uuid = { type: "string", pattern: "^[0-9a-f-]{36}$" };
+  const operation = (operationId: string, schema: Static<typeof JsonValueSchema>) => ({
+    post: {
+      operationId,
+      "x-devboxes": { effect: "write", authority: "Organization member" },
+      requestBody: { content: { "application/json": { schema } } },
+      responses: {},
+    },
+  });
+  const requests: { path: string; body: unknown }[] = [];
+  let projectsRefused = false;
+  const api = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: async (request) => {
+      const { pathname } = new URL(request.url);
+      if (pathname === "/api/openapi/json")
+        return Response.json({
+          openapi: "3.0.3",
+          paths: {
+            "/api/commands/organizations/list": operation("organizations.list", {
+              type: "object",
+              properties: {},
+            }),
+            "/api/commands/projects/list": operation("projects.list", {
+              type: "object",
+              properties: { organizationId: uuid },
+              required: ["organizationId"],
+            }),
+            "/api/commands/sessions/dispatch": operation("sessions.dispatch", {
+              type: "object",
+              properties: {
+                organizationId: uuid,
+                projectId: uuid,
+                title: { type: "string", minLength: 1, maxLength: 300 },
+                instruction: { type: "string", minLength: 1, maxLength: 100000 },
+                blueprint: {
+                  type: "string",
+                  description:
+                    "Name of the Blueprint that runs the work. Without it, the work uses the Project's Blueprint.",
+                },
+                awaitWorkspaceImage: { type: "boolean" },
+              },
+              required: ["organizationId", "projectId", "title", "instruction"],
+            }),
+            "/api/commands/connections/add": operation("connections.add", {
+              type: "object",
+              properties: {
+                organizationId: uuid,
+                label: { type: "string", minLength: 1 },
+                limit: {
+                  type: ["integer", "null"],
+                  minimum: 1,
+                  description: "The most tasks at once.",
+                },
+                auth: {
+                  anyOf: [
+                    {
+                      type: "object",
+                      properties: {
+                        type: { const: "api" },
+                        key: { type: "string", writeOnly: true },
+                      },
+                      required: ["type", "key"],
+                    },
+                    {
+                      type: "object",
+                      properties: { type: { const: "oauth" }, refresh: { type: "boolean" } },
+                      required: ["type", "refresh"],
+                    },
+                  ],
+                },
+                scopes: { type: "array", items: { enum: ["read", "write"] } },
+                tier: {
+                  anyOf: [
+                    { const: "standard", type: "string" },
+                    { const: "priority", type: "string" },
+                  ],
+                },
+              },
+              required: ["organizationId", "label", "limit", "auth", "scopes", "tier"],
+            }),
+          },
+        });
+      const body = await request.json();
+      requests.push({ path: pathname, body });
+      if (pathname === "/api/commands/organizations/list") return Response.json({ organizations });
+      if (pathname === "/api/commands/projects/list")
+        return projectsRefused
+          ? Response.json(
+              { error: { code: "FORBIDDEN", message: "Only members can list Projects." } },
+              { status: 403 },
+            )
+          : Response.json(projects);
+      return Response.json({ sessionId: "session-1" });
+    },
+  });
+  afterAll(() => api.stop(true));
+  const connection = { DEVBOXES_API_URL: api.url.origin, DEVBOXES_TOKEN: "person" };
+
+  it("asks for the input field by field, with pickers for listed IDs, and offers the optional fields", async () => {
+    requests.length = 0;
+    const cli = await inTerminal(["invoke", "sessions.dispatch"], connection);
+
+    expect(await cli.shows("Side project")).toBe(true);
+    cli.type("\r");
+    expect(await cli.shows("Website")).toBe(true);
+    cli.type("\x1b[B\r");
+    expect(await cli.shows("title")).toBe(true);
+    cli.type("Churn report\r");
+    expect(await cli.shows("instruction")).toBe(true);
+    cli.type("Write this week's churn report.\r\r");
+    expect(await cli.shows("Also set")).toBe(true);
+    cli.type(" \r");
+    expect(await cli.shows("blueprint: Name of the Blueprint that runs the work.")).toBe(true);
+    cli.type("Weekly churn report\r");
+    const exitCode = await cli.exited();
+    cli.kill();
+
+    expect(exitCode).toBe(0);
+    expect(cli.screen()).toContain('"sessionId": "session-1"');
+    expect(requests).toEqual([
+      { path: "/api/commands/organizations/list", body: {} },
+      { path: "/api/commands/projects/list", body: { organizationId: organizations[0]?.id } },
+      {
+        path: "/api/commands/sessions/dispatch",
+        body: {
+          organizationId: organizations[0]?.id,
+          projectId: projects[1]?.id,
+          title: "Churn report",
+          instruction: "Write this week's churn report.",
+          blueprint: "Weekly churn report",
+        },
+      },
+    ]);
+  });
+
+  it("asks for an ID by typing when its list refuses", async () => {
+    requests.length = 0;
+    projectsRefused = true;
+    const cli = await inTerminal(["invoke", "sessions.dispatch"], connection);
+
+    expect(await cli.shows("Side project")).toBe(true);
+    cli.type("\r");
+    expect(await cli.shows("projectId")).toBe(true);
+    cli.type(`${projects[0]?.id}\r`);
+    expect(await cli.shows("title")).toBe(true);
+    cli.type("Churn report\r");
+    expect(await cli.shows("instruction")).toBe(true);
+    cli.type("Write this week's churn report.\r\r");
+    expect(await cli.shows("Also set")).toBe(true);
+    cli.type("\r");
+    const exitCode = await cli.exited();
+    cli.kill();
+    projectsRefused = false;
+
+    expect(exitCode).toBe(0);
+    expect(requests.at(-1)).toEqual({
+      path: "/api/commands/sessions/dispatch",
+      body: {
+        organizationId: organizations[0]?.id,
+        projectId: projects[0]?.id,
+        title: "Churn report",
+        instruction: "Write this week's churn report.",
+      },
+    });
+  });
+
+  it("asks which kind a union is, whether to set a nullable field, and which values an enum list holds, and masks a secret", async () => {
+    requests.length = 0;
+    const key = `sk-test-${crypto.randomUUID()}`;
+    const cli = await inTerminal(["invoke", "connections.add"], connection);
+
+    expect(await cli.shows("Side project"), cli.screen()).toBe(true);
+    cli.type("\x1b[B\r");
+    expect(await cli.shows("label")).toBe(true);
+    cli.type("Claude\r");
+    expect(await cli.shows("Set limit")).toBe(true);
+    cli.type("\r");
+    expect(await cli.shows("limit: The most tasks at once.")).toBe(true);
+    cli.type("5\r");
+    expect(await cli.shows("type oauth")).toBe(true);
+    cli.type("\r");
+    expect(await cli.shows("auth.key")).toBe(true);
+    cli.type(`${key}\r`);
+    expect(await cli.shows("scopes")).toBe(true);
+    cli.type("\x1b[B \r");
+    expect(await cli.shows("priority")).toBe(true);
+    cli.type("\x1b[B\r");
+    const exitCode = await cli.exited();
+    cli.kill();
+
+    expect(exitCode).toBe(0);
+    expect(cli.screen()).not.toContain(key);
+    expect(requests.at(-1)).toEqual({
+      path: "/api/commands/connections/add",
+      body: {
+        organizationId: organizations[1]?.id,
+        label: "Claude",
+        limit: 5,
+        auth: { type: "api", key },
+        scopes: ["write"],
+        tier: "priority",
+      },
+    });
+  });
+});
+
 describe("devboxes connect", () => {
   const organizationId = "0198a0b0-0000-7000-8000-000000000001";
   const code = `pasted-code-${crypto.randomUUID()}#state`;
@@ -399,12 +721,15 @@ describe("devboxes connect", () => {
               "providers.connect-complete",
               "connections.add",
               "connections.update",
+              "organizations.list",
             ].map((operationId) => [
               `/api/commands/${operationId.replace(".", "/")}`,
               operation(operationId),
             ]),
           ),
         });
+      if (pathname === "/api/commands/organizations/list")
+        return Response.json({ organizations: [{ id: organizationId, name: "Acme" }] });
       if (pathname === "/api/commands/providers/list") {
         const unavailable = owner ? null : ownerOnly;
         return Response.json([
@@ -465,39 +790,6 @@ describe("devboxes connect", () => {
     completions.length = 0;
     accountWrites.length = 0;
   };
-  /** Runs the CLI in a pseudo-terminal, with an `open` on PATH that only records its calls. */
-  const inTerminal = async (args: string[]) => {
-    const bin = await mkdtemp(join(fixtureDirectory, "bin-"));
-    const opened = join(bin, "opened");
-    await writeFile(join(bin, "open"), `#!/bin/sh\necho "$@" >> ${opened}\n`);
-    await chmod(join(bin, "open"), 0o755);
-    let screen = "";
-    const child = Bun.spawn([process.execPath, "src/cli.ts", ...args], {
-      cwd: join(import.meta.dir, ".."),
-      env: { ...process.env, ...connection, PATH: `${bin}:${process.env.PATH}` },
-      terminal: {
-        cols: 120,
-        rows: 40,
-        data: (_terminal, data) => {
-          screen += new TextDecoder().decode(data);
-        },
-      },
-    });
-    return {
-      screen: () => screen,
-      shows: async (text: string) => {
-        for (let waited = 0; !screen.includes(text) && waited < 10_000; waited += 50)
-          await Bun.sleep(50);
-        return screen.includes(text);
-      },
-      type: (text: string) => child.terminal?.write(text),
-      exited: (milliseconds = 10_000) =>
-        Promise.race([child.exited, Bun.sleep(milliseconds).then(() => null)]),
-      kill: () => child.kill(),
-      opened: () => Bun.file(opened).exists(),
-    };
-  };
-
   it("shows the sign-in URL, sends the pasted code, and never prints the code", async () => {
     reset();
     const result = await runCli(
@@ -621,7 +913,7 @@ describe("devboxes connect", () => {
 
   it("refuses to read a key or code from a terminal that shows what is typed", async () => {
     reset();
-    const cli = await inTerminal([...connectTo("anthropic"), "--json"]);
+    const cli = await inTerminal([...connectTo("anthropic"), "--json"], connection);
 
     if ((await cli.exited(5_000)) === null) cli.type(`${key}\r\x04`);
     const exitCode = await cli.exited();
@@ -643,7 +935,7 @@ describe("devboxes connect", () => {
 
   it("lets a person choose every provider's sign-in or API key, greys out what they can't connect, and masks the key", async () => {
     reset();
-    const cli = await inTerminal(connectTo());
+    const cli = await inTerminal(connectTo(), connection);
 
     expect(await cli.shows("xAI API key")).toBe(true);
     cli.type("\x1b[B\r");
@@ -679,10 +971,37 @@ describe("devboxes connect", () => {
     expect(await cli.opened()).toBe(false);
   });
 
+  it("asks for the Organization and the Provider Account's name when they are missing", async () => {
+    reset();
+    const cli = await inTerminal(["connect", "anthropic"], connection);
+
+    expect(await cli.shows("Acme")).toBe(true);
+    cli.type("\r");
+    expect(await cli.shows("Name of the Provider Account")).toBe(true);
+    cli.type(" key\r");
+    expect(await cli.shows("Paste the Anthropic API key")).toBe(true);
+    cli.type(`${key}\r`);
+    const exitCode = await cli.exited();
+    cli.kill();
+
+    expect(exitCode).toBe(0);
+    expect(accountWrites).toEqual([
+      {
+        operation: "/api/commands/connections/add",
+        body: {
+          organizationId,
+          providerId: "anthropic",
+          label: "Anthropic key",
+          auth: { type: "api", key },
+        },
+      },
+    ]);
+  });
+
   it("won't connect a greyed-out option that Enter chose", async () => {
     reset();
     owner = false;
-    const cli = await inTerminal(connectTo());
+    const cli = await inTerminal(connectTo(), connection);
 
     expect(await cli.shows("xAI (browser sign-in)")).toBe(true);
     cli.type("\r");
@@ -697,6 +1016,148 @@ describe("devboxes connect", () => {
   });
 });
 
+describe("devboxes machine add", () => {
+  const organizations = [
+    { id: "0198a0b0-0000-7000-8000-00000000000a", name: "Acme", role: "owner" },
+    { id: "0198a0b0-0000-7000-8000-00000000000c", name: "Client workspace", role: "member" },
+    { id: "0198a0b0-0000-7000-8000-00000000000b", name: "Side project", role: "owner" },
+  ];
+  const registrations: unknown[] = [];
+  const refusedKeys = new Set<string>();
+  const api = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: async (request) => {
+      const { pathname } = new URL(request.url);
+      if (pathname === "/api/openapi/json")
+        return Response.json({
+          openapi: "3.0.3",
+          paths: Object.fromEntries(
+            [
+              ["organizations.list", "read", "Current account session"],
+              ["capacity.register", "write", "Organization owner"],
+            ].map(([operationId = "", effect, authority]) => [
+              `/api/commands/${operationId.replace(".", "/")}`,
+              { post: { operationId, "x-devboxes": { effect, authority }, responses: {} } },
+            ]),
+          ),
+        });
+      if (pathname === "/api/commands/organizations/list") return Response.json({ organizations });
+      if (pathname === "/api/internal/execution/runners/assignments")
+        return refusedKeys.has(request.headers.get("authorization")?.replace("Bearer ", "") ?? "")
+          ? Response.json(
+              { error: { code: "RUNNER_REVOKED", message: "The Runner is unavailable." } },
+              { status: 401 },
+            )
+          : Response.json({ tasks: [] });
+      const body = await request.json();
+      registrations.push(body);
+      return Response.json(
+        {
+          machine: { id: "machine-1", name: body.name },
+          token: `firops_runner_${registrations.length}_${crypto.randomUUID()}`,
+        },
+        { status: 201 },
+      );
+    },
+  });
+  afterAll(() => api.stop(true));
+  const platform = process.arch === "arm64" ? "linux/arm64" : "linux/amd64";
+  const machineEnvironment = async () => {
+    const config = await mkdtemp(join(fixtureDirectory, "machine-"));
+    return {
+      config,
+      tokenFile: join(config, "devboxes", "runner", "token"),
+      env: {
+        DEVBOXES_API_URL: api.url.origin,
+        DEVBOXES_TOKEN: "machine-add-session",
+        XDG_CONFIG_HOME: config,
+      },
+    };
+  };
+
+  it("offers the Organizations the person owns, names the machine after the computer, saves its key for this user only, and leaves starting for later", async () => {
+    registrations.length = 0;
+    const { tokenFile, env } = await machineEnvironment();
+    const cli = await inTerminal(["machine", "add"], env);
+
+    expect(await cli.shows("Which Organization should run tasks on this machine?")).toBe(true);
+    expect(await cli.shows("Side project")).toBe(true);
+    cli.type("\x1b[B\r");
+    expect(await cli.shows("Name this machine")).toBe(true);
+    cli.type("\r");
+    expect(await cli.shows("Start this machine now?")).toBe(true);
+    cli.type("\x1b[C\r");
+    const exitCode = await cli.exited();
+    cli.kill();
+
+    const token = (await Bun.file(tokenFile).text()).trim();
+    expect(exitCode).toBe(0);
+    expect(registrations).toEqual([
+      { organizationId: organizations[2]?.id, name: hostname(), platform, cost: null },
+    ]);
+    expect(token).toStartWith("firops_runner_1_");
+    expect((await stat(tokenFile)).mode & 0o777).toBe(0o600);
+    expect(cli.screen()).toContain(tokenFile);
+    expect(cli.screen()).toContain("Start it later with: devboxes runner listen");
+    expect(cli.screen()).not.toContain(token);
+  });
+
+  it("adds a machine from flags outside a terminal and refuses to add the same computer twice", async () => {
+    registrations.length = 0;
+    const { tokenFile, env } = await machineEnvironment();
+    const add = [
+      "--json",
+      "machine",
+      "add",
+      "--organization",
+      organizations[0]?.id ?? "",
+      "--name",
+      "Build server",
+    ];
+
+    const added = await runCli(add, env);
+    const again = await runCli(add, env);
+
+    expect(added.exitCode).toBe(0);
+    expect(JSON.parse(added.stdout)).toEqual({
+      machine: { id: "machine-1", name: "Build server" },
+      tokenFile,
+    });
+    expect(again.exitCode).toBe(1);
+    expect(JSON.parse(again.stderr)).toMatchObject({ error: { code: "MACHINE_ALREADY_ADDED" } });
+    expect(registrations).toEqual([
+      { organizationId: organizations[0]?.id, name: "Build server", platform, cost: null },
+    ]);
+  });
+
+  it("adds the machine again and replaces the saved key when the API refuses it", async () => {
+    registrations.length = 0;
+    const { tokenFile, env } = await machineEnvironment();
+    const add = [
+      "--json",
+      "machine",
+      "add",
+      "--organization",
+      organizations[0]?.id ?? "",
+      "--name",
+      "Build server",
+    ];
+
+    await runCli(add, env);
+    const removed = (await Bun.file(tokenFile).text()).trim();
+    refusedKeys.add(removed);
+    const again = await runCli(add, env);
+
+    expect(again.exitCode).toBe(0);
+    expect(registrations).toHaveLength(2);
+    expect((await Bun.file(tokenFile).text()).trim()).toStartWith("firops_runner_2_");
+    expect((await stat(tokenFile)).mode & 0o777).toBe(0o600);
+    expect(again.stderr).toContain(tokenFile);
+    expect(again.stderr).not.toContain(removed);
+  });
+});
+
 describe("devboxes runner listen", () => {
   const runnerTokenFile = join(fixtureDirectory, "runner-token");
   const engine = { name: "Test Engine", gateway: "127.0.0.1" };
@@ -704,7 +1165,8 @@ describe("devboxes runner listen", () => {
     unix: join(fixtureDirectory, "docker.sock"),
     fetch: (request) => {
       const { pathname } = new URL(request.url);
-      if (pathname.endsWith("/info")) return Response.json({ OperatingSystem: engine.name });
+      if (pathname.endsWith("/info"))
+        return Response.json({ OperatingSystem: engine.name, SecurityOptions: [] });
       if (pathname.endsWith("/networks/bridge"))
         return Response.json({ IPAM: { Config: [{ Gateway: engine.gateway }] } });
       return Response.json({ message: `Unexpected ${pathname}` }, { status: 500 });
@@ -1034,15 +1496,25 @@ describe("devboxes failure report", () => {
 
     expect(result.exitCode).toBe(1);
     expect(JSON.parse(result.stderr)).toMatchObject({
-      error: { code: "COMMAND_FAILED", message: expect.stringContaining("ConnectionRefused") },
+      error: {
+        code: "COMMAND_FAILED",
+        message: expect.stringMatching(/^ECONNREFUSED: (?!ECONNREFUSED)/),
+      },
     });
   });
 });
 
 describe("devboxes signup and login", () => {
-  it.each(["signup", "login"])(
+  const github = { method: "github", flag: "--github" };
+  const google = { method: "google", flag: "--google" };
+  const emailCode = { method: "email", flag: "--email <email>" };
+  const password = { method: "password", flag: "--email <email> --password-stdin" };
+  it.each([
+    ["signup", [github, google, password]],
+    ["login", [github, google, emailCode, password]],
+  ] as const)(
     "%s lists every sign-in method instead of prompting without a terminal",
-    async (action) => {
+    async (action, methods) => {
       const result = await runCli([
         "--json",
         "--config",
@@ -1056,12 +1528,7 @@ describe("devboxes signup and login", () => {
       expect(JSON.parse(result.stderr)).toMatchObject({
         error: {
           code: "SIGN_IN_METHOD_REQUIRED",
-          details: {
-            methods: [
-              { method: "github", flag: "--github" },
-              { method: "email", flag: "--email <email>" },
-            ],
-          },
+          details: { methods },
         },
       });
     },
@@ -1147,7 +1614,7 @@ describe("devboxes signup and login", () => {
           return Response.json({
             device_code: "device-code",
             user_code: "ABCDEFGH",
-            verification_uri_complete: new URL("/api/device?user_code=ABCDEFGH", request.url).href,
+            verification_uri_complete: new URL("/device?user_code=ABCDEFGH", request.url).href,
             expires_in: 60,
             interval: 0,
           });
@@ -1180,6 +1647,61 @@ describe("devboxes signup and login", () => {
       await api.stop(true);
     }
   });
+  it.each([
+    ["login", ""],
+    ["signup", "&sign_up=true"],
+  ] as const)(
+    "runs %s --google through the browser approval page that starts Google",
+    async (action, signUp) => {
+      const api = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: (request) => {
+          const { pathname } = new URL(request.url);
+          if (pathname === "/api/auth/device/code")
+            return Response.json({
+              device_code: "device-code",
+              user_code: "ABCDEFGH",
+              verification_uri_complete: new URL("/device?user_code=ABCDEFGH", request.url).href,
+              expires_in: 60,
+              interval: 0,
+            });
+          if (pathname === "/api/auth/device/token")
+            return Response.json({ access_token: "device-session", token_type: "Bearer" });
+          return Response.json({
+            session: {},
+            user: { id: "user", email: "google@example.com", name: "Google", emailVerified: true },
+          });
+        },
+      });
+      try {
+        const result = await runCli([
+          "--json",
+          "--config",
+          join(fixtureDirectory, `device-google-${action}.json`),
+          "--api",
+          api.url.origin,
+          action,
+          "--google",
+        ]);
+
+        expect(result.exitCode).toBe(0);
+        expect(JSON.parse(result.stderr.trim().split("\n")[0] ?? "")).toEqual({
+          verification: {
+            url: `${api.url.origin}/device?user_code=ABCDEFGH&provider=google${signUp}`,
+            userCode: "ABCDEFGH",
+            expiresIn: 60,
+          },
+        });
+        expect(JSON.parse(result.stdout)).toMatchObject({
+          signedIn: true,
+          user: { email: "google@example.com" },
+        });
+      } finally {
+        await api.stop(true);
+      }
+    },
+  );
   it("stops waiting for browser approval with the error of an unreadable token response", async () => {
     const api = Bun.serve({
       hostname: "127.0.0.1",
@@ -1189,7 +1711,7 @@ describe("devboxes signup and login", () => {
           return Response.json({
             device_code: "device-code",
             user_code: "ABCDEFGH",
-            verification_uri_complete: new URL("/api/device?user_code=ABCDEFGH", request.url).href,
+            verification_uri_complete: new URL("/device?user_code=ABCDEFGH", request.url).href,
             expires_in: 60,
             interval: 0,
           });
@@ -1237,8 +1759,7 @@ describe("devboxes signup and login", () => {
             return Response.json({
               device_code: "device-code",
               user_code: "ABCDEFGH",
-              verification_uri_complete: new URL("/api/device?user_code=ABCDEFGH", request.url)
-                .href,
+              verification_uri_complete: new URL("/device?user_code=ABCDEFGH", request.url).href,
               expires_in: 60,
               interval: 0,
             });

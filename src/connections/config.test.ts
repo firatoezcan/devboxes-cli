@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import { loadContext, writeConfig } from "./config";
 
-describe("Devboxes configuration", () => {
+describe("devboxes configuration", () => {
   const origin = "http://127.0.0.1:3000";
   let configDir: string;
 

@@ -1,5 +1,24 @@
 # devboxes
 
+## 0.7.1
+
+### Patch Changes
+
+- 0e3ec91: 0.7.0 was tagged but never published, so this release ships the 0.7.0 changes. The public source of the CLI now typechecks with `@clack/prompts` 1.8, the version a fresh install of that source resolves.
+
+## 0.7.0
+
+### Minor Changes
+
+- 0c37839: Sign up with GitHub or with an email and a password, and sign in with GitHub, a code that devboxes emails you, or your password. `devboxes signup --email <email>` asks for a password, or reads it with `--password-stdin`, then asks for the six-digit code that devboxes emails you and signs you in. Outside a terminal it creates the account and stops, and `devboxes signup --email <email> --code-stdin` on the same computer finishes it. `devboxes signup --github` creates an account for a GitHub account that isn't linked to one yet. `devboxes login --email` asks for the six-digit code that devboxes emails you; outside a terminal it sends the code and stops, and `--code-stdin` finishes the sign-in. `devboxes login` creates no account. Scripts pipe the password into `devboxes login --email <email> --password-stdin`, which asks for your second factor when two-factor authentication is on. `devboxes signup` no longer takes `--name`.
+- 4b69edc: Run `devboxes invoke <operation>` in a terminal and it asks for the input field by field, from the schema the API advertises. A field such as `organizationId` or `projectId` offers a choice from the matching list operation; enums, booleans, unions and nullable fields get a choice or a yes/no question, secrets such as keys and tokens are asked with the typed characters hidden, and the optional fields are offered last. The API marks those secret inputs `writeOnly`. `--input @file` and `--input -` work as before; outside a terminal or with `--json`, `devboxes invoke` requires `--input` and otherwise fails with `INPUT_REQUIRED`. In a terminal, `devboxes connect` asks for the Organization unless you pass `--organization`, and for the Provider Account's name unless you pass `--label`; outside a terminal or with `--json`, it requires both flags and otherwise fails with `ORGANIZATION_REQUIRED` or `LABEL_REQUIRED`.
+- 4f6cf18: `devboxes machine add` adds this computer as a Runner of an Organization. It asks for the Organization and the machine's name, which starts as the computer's name, registers the machine for its processor through `capacity.register`, and saves the Runner key in a file only the current user can read. In a terminal it then offers to start the Runner. Outside a terminal or with `--json`, `--organization` and `--name` are required. A computer whose saved key still works fails with `MACHINE_ALREADY_ADDED`; when the API refuses the saved key, for example after the machine was removed, the command adds the machine again and replaces the key. `devboxes runner listen` reads the saved key unless `--token-file` names another file, and says to run `devboxes machine add` first when there is no saved key.
+- 7aa7d8e: `devboxes runner listen` runs on rootless Docker. Before it starts the first Task, it checks that a container of the Task's image reaches the Runner. When a Task container can't reach the Runner, the Runner stops with `DOCKER_ENGINE_UNSUPPORTED` and names the two Docker settings to turn on.
+
+### Patch Changes
+
+- f534e71: `devboxes machine add` offers only the Organizations you own, because only an owner can add a machine. The list needs at least one Organization your account owns, or the command fails with `ORGANIZATION_NOT_FOUND`. The help text of `devboxes connect` and `devboxes invoke` says when the CLI asks questions in a terminal.
+
 ## 0.6.0
 
 ### Minor Changes

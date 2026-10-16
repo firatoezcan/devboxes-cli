@@ -628,8 +628,7 @@ const completeAnthropicPkceFlow = async (
     throw new ProviderSignInFailed({
       status: 422,
       code: "SIGN_IN_CODE_MISMATCH",
-      message:
-        "The sign-in code doesn't match this sign-in attempt; start again with devboxes connect",
+      message: "devboxes couldn't check the code. Start the sign-in again.",
     });
   const response = await fetch(descriptor.tokenUrl, {
     method: "POST",

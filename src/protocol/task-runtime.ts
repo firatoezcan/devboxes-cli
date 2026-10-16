@@ -12,6 +12,14 @@ export const containerWorkspace = "/workspace";
 /** Where the managed executor-bootstrap init container stages the executor for the Task container. */
 export const managedExecutorDir = "/run/devboxes/executor";
 export const managedExecutorPath = `${managedExecutorDir}/devboxes-executor`;
+/**
+ * The variables through which the API names, for each Kubernetes architecture the Task may run on,
+ * the executor build that executor-bootstrap stages on a node of that architecture.
+ */
+export const managedExecutorVariables = {
+  amd64: { url: "DEVBOX_EXECUTOR_AMD64_URL", sha256: "DEVBOX_EXECUTOR_AMD64_SHA256" },
+  arm64: { url: "DEVBOX_EXECUTOR_ARM64_URL", sha256: "DEVBOX_EXECUTOR_ARM64_SHA256" },
+} as const;
 /** Where executor-bootstrap prepares managedTmpSubPath, which the Task container mounts at /tmp. */
 export const managedTmpVolumeDir = "/run/devboxes/tmp";
 export const managedTmpSubPath = "tmp";
