@@ -456,17 +456,37 @@ export const addAuthenticationCommands = (program: Command) => {
                       twoFactorRequired: true,
                       twoFactorMethods: challenge.twoFactorMethods,
                     })
-                  : 'Two-factor verification is required. Pipe {"code":"<authenticator code>"} into devboxes auth /two-factor/verify-totp --input -, or {"code":"<backup code>"} into devboxes auth /two-factor/verify-backup-code --input -.'
+                  : 'Two-factor verification is required. Pipe {"code":"<authenticator code>"} into devboxes auth /two-factor/verify-totp --input -, or {"code":"<backup code>"} into devboxes auth /two-factor/verify-backup-code --input -. To get a code by email, pipe {} into devboxes auth /two-factor/send-otp --input -, then {"code":"<emailed code>"} into devboxes auth /two-factor/verify-otp --input -.'
               }\n`,
             );
             return;
           }
-          const code = (await promptText("Authenticator code or backup code")).replace(/\s/g, "");
-          response = await requestAuthentication(
-            context,
-            /^\d{6}$/.test(code) ? "/two-factor/verify-totp" : "/two-factor/verify-backup-code",
-            { method: "POST", body: { code } },
-          );
+          const emailed = await select({
+            message: "Second factor",
+            options: [
+              { value: false, label: "Authenticator app or backup code" },
+              { value: true, label: `Email a code to ${email}` },
+            ],
+            output: process.stderr,
+          });
+          if (isCancel(emailed)) throw new CommandError("CANCELLED", "Authentication cancelled.");
+          if (emailed) {
+            await requestAuthentication(context, "/two-factor/send-otp", {
+              method: "POST",
+              body: {},
+            });
+            response = await requestAuthentication(context, "/two-factor/verify-otp", {
+              method: "POST",
+              body: { code: await promptText(`Code sent to ${email}`) },
+            });
+          } else {
+            const code = (await promptText("Authenticator code or backup code")).replace(/\s/g, "");
+            response = await requestAuthentication(
+              context,
+              /^\d{6}$/.test(code) ? "/two-factor/verify-totp" : "/two-factor/verify-backup-code",
+              { method: "POST", body: { code } },
+            );
+          }
         }
         await report(parseResponse(authenticationSchema, response.data, "/sign-in/email").user);
         return;
