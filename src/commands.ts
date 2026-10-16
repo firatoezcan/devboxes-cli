@@ -3,7 +3,6 @@ import {
   type CatalogCommand,
   catalogCommands,
   commandDocumentSchema,
-  InvalidCommandCatalog,
 } from "@firops/platform/protocol/command-catalog";
 import { JsonValueSchema } from "@firops/platform/protocol/provider-auth";
 import { describeErrors } from "@firops/platform/values/validation-errors";
@@ -290,17 +289,13 @@ export const describeCommands = async (
       `The API returned an invalid OpenAPI document: ${describeErrors(commandDocumentSchema, document)}.`,
     );
   }
-  try {
-    return {
-      openapi: document.openapi,
-      commands: catalogCommands(document),
-      components: document.components ?? {},
-    };
-  } catch (error) {
-    if (error instanceof InvalidCommandCatalog)
-      throw new CommandError("INVALID_DISCOVERY", error.message);
-    throw error;
-  }
+  const catalog = catalogCommands(document);
+  if ("problem" in catalog) throw new CommandError("INVALID_DISCOVERY", catalog.problem);
+  return {
+    openapi: document.openapi,
+    commands: catalog.commands,
+    components: document.components ?? {},
+  };
 };
 
 /** The advertised commands narrowed to one, or a refusal of a command the API does not advertise. */
