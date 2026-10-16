@@ -137,6 +137,14 @@ at the checkpoint, the API records the branch's open pull request or opens one
 with the Session's title. A failed request to GitHub there records nothing and
 does not fail the node, so the next such Run tries again.
 
+Every `/nodes` answer carries `pullRequest`: the number of the pull request
+that the Run's publication recorded, or null. The daemon release moves the
+executor channel before the API rolls, so the executor reads an answer without
+`pullRequest` from the previous API as null. Once the publish node succeeds,
+the executor names that pull request in the context of every later agent turn,
+so a node after it updates the pull request by its number and never looks it
+up.
+
 A Run of a taskbox Project has no repository. Its payload's `taskbox` names the
 workspace archive that the Session's checkpoint saved, or null for none, and is
 null in every other Run. The executor of a taskbox Run uses no Git: it unpacks
