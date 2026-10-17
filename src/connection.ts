@@ -14,21 +14,6 @@ export type AccountContext = DevboxesContext & {
 export const loadAccountContext = async (
   options: Pick<DevboxesCliOptions, "config" | "api">,
 ): Promise<AccountContext> => {
-  if (
-    [
-      "DEVBOX_API_BASE_URL",
-      "DEVBOX_AUTH_BASE_URL",
-      "DEVBOX_CLI_SESSION_TOKEN",
-      "DEVBOX_ORGANIZATION_ID",
-      "DEVBOX_RUNNER_API_KEY",
-      "DEVBOX_RUNNER_NAME",
-    ].some((key) => process.env[key] !== undefined)
-  ) {
-    throw new CommandError(
-      "LEGACY_CONNECTION",
-      "Use DEVBOXES_TOKEN for a scoped connection, or a saved account configuration.",
-    );
-  }
   const context = await loadContext(options);
   const { config } = context;
   if ((config.sessionToken || config.cookieJar) && !config.apiBaseUrl) {
