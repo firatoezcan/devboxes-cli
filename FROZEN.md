@@ -36,6 +36,13 @@ boundaries, not compatibility guarantees for retired protocols.
   each executor's token, accepts only Task callbacks with it, and forwards them
   to the API with the Runner credential and the token's Task in
   `devboxes-task`. The API accepts no token from a Runner's container.
+- `apps/firops-api/src/execution/capabilities.ts` owns the capability
+  callbacks: `/capabilities` lists the Run's capabilities with their argument
+  schemas, and `/capability` runs one. It is the authority for a
+  capability's `nodes`: in a Run that carries a workspace, it refuses a call
+  with `CAPABILITY_NOT_IN_STEP` unless one of those agent nodes runs. A Review or
+  recheck runs no step, so `nodes` does not apply there. The executor names those
+  steps to the agent and refuses the call outside them before it reaches the API.
 - `apps/firops-api/src/execution/tool-cache.ts` owns the tool cache callbacks:
   `/tool-cache`, `/tool-cache-upload` and `/tool-cache-ack`.
   `apps/elysia-opencode/src/executor/execution.ts` restores and saves the
