@@ -26,7 +26,7 @@ const listedSchema = Type.Array(
   }),
 );
 
-export type PromptContext = { connection: CommandConnection; description: CommandDescription };
+type PromptContext = { connection: CommandConnection; description: CommandDescription };
 
 const answered = async <Answer>(prompt: Promise<Answer>) => {
   const answer = await prompt;

@@ -73,7 +73,7 @@ export type CommandDescription = {
   components: NonNullable<Static<typeof commandDocumentSchema>["components"]>;
 };
 type RequestCorrelation = { traceId: string | null; requestId: string | null };
-export type CommandResponse = {
+type CommandResponse = {
   status: number;
   data: Static<typeof JsonValueSchema>;
 } & RequestCorrelation;
