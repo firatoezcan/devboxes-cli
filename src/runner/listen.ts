@@ -175,7 +175,7 @@ export const listen = async (options: {
       containerId,
       observation: "created",
     });
-    if (result.status !== "running") await container.remove();
+    if (result.status !== "running") await container.remove({ v: true });
     else if (!stopping) {
       if (!relayReachable) {
         if (!(await runtime.reaches(task.id, (await container.inspect()).Image, apiBaseUrl)))
@@ -268,12 +268,12 @@ export const listen = async (options: {
             result.status === "cancelled" ||
             result.status === "paused"
           ) {
-            await runtime.docker.getContainer(executor.Id).remove();
+            await runtime.docker.getContainer(executor.Id).remove({ v: true });
             await rm(join(directory, task.id), { recursive: true, force: true });
           } else {
             console.error(`Retained failed executor ${executorId} for inspection.`);
             console.error(
-              `Remove it when you no longer need it: docker rm ${executorId} && rm -rf '${join(directory, task.id).replaceAll("'", "'\\''")}'`,
+              `Remove it when you no longer need it: docker rm --volumes ${executorId} && rm -rf '${join(directory, task.id).replaceAll("'", "'\\''")}'`,
             );
           }
           console.info(`Task ${task.id} ended as ${result.status}.`);
