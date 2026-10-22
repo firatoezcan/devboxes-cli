@@ -65,16 +65,20 @@ boundaries, not compatibility guarantees for retired protocols.
   Sandbox and its Pod `devboxes.ai/task-id`. Firops' `managed-task-egress-floor`
   selects Pods by that label, and its `devboxes-runners-task-egress` admission
   policy admits exactly that name, that policy shape and the Task's Sandbox as
-  the policy's only owner. For a Run that receives a host-bound secret it adds
-  the `egress` native sidecar.
+  the policy's only owner. It gives every managed Task the `egress` native
+  sidecar.
 - `packages/platform/src/protocol/egress.ts` defines the egress sidecar's
   environment, the configuration that
   `apps/firops-api/src/execution/egress.ts` answers at
   `/api/internal/execution/tasks/egress`, and the files the sidecar writes to
   `/run/devboxes/egress` for the executor. Only the Task's `egress`-audience
-  token authenticates there, never its Run token.
-  `apps/firops-api/src/execution/egress-proxy.ts` is the sidecar, and
-  `apps/elysia-opencode/src/executor/execution.ts` reads its files.
+  token authenticates there, at `/api/internal/execution/tasks/egress/model`,
+  which answers the model credential's current value, and at
+  `/api/internal/execution/tasks/egress/credential`, never its Run token.
+  `apps/firops-api/src/execution/egress-proxy.ts` is the
+  sidecar, `apps/elysia-opencode/src/executor/executor-proxy.ts` routes the
+  executor through it, and `apps/elysia-opencode/src/executor/execution.ts`
+  reads its files.
 
 ## Native execution isolation
 
@@ -104,19 +108,55 @@ Admission records a Run's secret bindings, each host-bound secret's key, hosts
 and `swapIn` without its value, in the Run's snapshot. The Pod, the payload and
 the egress route read that record, and the payload and the egress route refuse
 the Task with `SECRET_BINDING_CHANGED` when the Project's live secrets no longer
-bind exactly what it records. A managed Task whose Run has a binding runs
-agent-vault in its `egress` native sidecar, as uid 1003 without capabilities.
+bind exactly what it records. Every managed Task runs agent-vault in its
+`egress` native sidecar, as uid 1003 without capabilities.
 The sidecar and agent-vault mark themselves non-dumpable before the executor
 starts, so no process of the Task container can read their memory, environment
 or root filesystem through the shared process namespace. Only the sidecar holds
-the egress token and the values of host-bound secrets. agent-vault serves its
-management API on a Unix socket in the sidecar's private `emptyDir`, and its
-proxy on the Pod's loopback. The sidecar writes the proxy's CA certificate and
-URL, with a proxy session, into an `emptyDir` that the executor mounts
-read-only. When the payload names bound secrets, the executor refuses to start
-without the proxy URL; with it, the executor gives the agent `HTTPS_PROXY` and
-a CA bundle of the image's trusted CAs plus the proxy's, and redacts the
-session.
+the egress token, the Run token and the values of host-bound secrets, and only
+it reads the Run's model credential. agent-vault serves its management API on
+a Unix socket in
+the sidecar's private `emptyDir`, and its proxy on the Pod's loopback. The
+sidecar writes the proxy's CA certificate, the executor's proxy URL and the
+agent's proxy URL, each with its own proxy session, into an `emptyDir` that the
+executor mounts read-only. The executor's URL is mode 0600 for uid 1003, so
+bootstrap reads it as root before the privilege drop and keeps it only in
+memory. The executor sends through it only its model requests, its requests to
+the devboxes API and its requests to a sign-in's token host: the first two carry
+a header whose value only the executor's memory holds, so a request whose
+headers the agent configures, such as a remote MCP server's, goes around it.
+Bootstrap takes the stand-in Run token as the sign of a managed Task, and
+refuses to start without that URL. When the payload names bound secrets, the
+executor
+refuses to start without the agent's proxy URL; with it, the executor gives the
+agent `HTTPS_PROXY` and a CA bundle of the image's trusted CAs plus the
+proxy's, and redacts the session.
+
+On managed capacity, the executor holds only the fixed stand-ins of
+`credentialStandIns` in `packages/platform/src/protocol/egress.ts`: its
+`DEVBOX_BACKEND_TOKEN` is `__devboxes-run-token__`, and the payload and
+`providers/runtime-read` give each part of the model credential as
+`__devboxes-model-key__`, `__devboxes-model-access__` and
+`__devboxes-model-refresh__`, which no secret's stand-in can equal. The
+executor's proxy session sets the Run token as the Authorization header of
+requests to the devboxes API, in place of the executor's own, and leaves every
+other header as sent. It swaps the access token or key in headers of requests
+to the model's hosts, and on a sign-in's token host, even one that also serves
+the model, only the refresh token, in a request's body. agent-vault doesn't store the model credential: it
+resolves it at each request from the sidecar's hook, a Unix socket only uid
+1003 may connect to, and the hook reads the Provider Account's current
+credential from `egress/model`, so a renewal by any holder of the account
+applies to the next request and a restarted sidecar keeps nothing stale. A
+response from a sign-in's token host goes through the same hook, which stores
+the renewed tokens through the compare-and-swap at `egress/credential`, retried
+on a network failure or a 5xx, and answers stand-ins in their place, an ID
+token as `__devboxes-redacted-id-token__`. It reads a JSON or form-encoded
+answer, and fails one whose tokens it can't replace and one of any other
+content type. `providers/runtime-write` refuses a managed Task with
+`MANAGED_CREDENTIAL_WRITE`. When the API refuses the `egress` sidecar's
+configuration for the rest of the Task, or the devboxes API URL isn't HTTPS on
+port 443, the sidecar exits with code 78 and the reason as its termination
+message, and the Task ends with that reason before it starts, without a retry.
 
 A host-bound secret's variable holds the stand-in `__devboxes_<KEY>__`. In an
 HTTPS request to one of the secret's hosts on port 443, the proxy swaps the
