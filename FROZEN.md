@@ -65,7 +65,16 @@ boundaries, not compatibility guarantees for retired protocols.
   Sandbox and its Pod `devboxes.ai/task-id`. Firops' `managed-task-egress-floor`
   selects Pods by that label, and its `devboxes-runners-task-egress` admission
   policy admits exactly that name, that policy shape and the Task's Sandbox as
-  the policy's only owner.
+  the policy's only owner. For a Run that receives a host-bound secret it adds
+  the `egress` native sidecar.
+- `packages/platform/src/protocol/egress.ts` defines the egress sidecar's
+  environment, the configuration that
+  `apps/firops-api/src/execution/egress.ts` answers at
+  `/api/internal/execution/tasks/egress`, and the files the sidecar writes to
+  `/run/devboxes/egress` for the executor. Only the Task's `egress`-audience
+  token authenticates there, never its Run token.
+  `apps/firops-api/src/execution/egress-proxy.ts` is the sidecar, and
+  `apps/elysia-opencode/src/executor/execution.ts` reads its files.
 
 ## Native execution isolation
 
@@ -90,6 +99,35 @@ environment, and drops to uid 1001 before importing the native execution
 module. The in-process uid change makes the executor non-dumpable under Docker
 and under gVisor, the managed runtime, so other uid 1001 processes cannot read
 its environment, memory or file descriptors.
+
+Admission records a Run's secret bindings, each host-bound secret's key, hosts
+and `swapIn` without its value, in the Run's snapshot. The Pod, the payload and
+the egress route read that record, and the payload and the egress route refuse
+the Task with `SECRET_BINDING_CHANGED` when the Project's live secrets no longer
+bind exactly what it records. A managed Task whose Run has a binding runs
+agent-vault in its `egress` native sidecar, as uid 1003 without capabilities.
+The sidecar and agent-vault mark themselves non-dumpable before the executor
+starts, so no process of the Task container can read their memory, environment
+or root filesystem through the shared process namespace. Only the sidecar holds
+the egress token and the values of host-bound secrets. agent-vault serves its
+management API on a Unix socket in the sidecar's private `emptyDir`, and its
+proxy on the Pod's loopback. The sidecar writes the proxy's CA certificate and
+URL, with a proxy session, into an `emptyDir` that the executor mounts
+read-only. When the payload names bound secrets, the executor refuses to start
+without the proxy URL; with it, the executor gives the agent `HTTPS_PROXY` and
+a CA bundle of the image's trusted CAs plus the proxy's, and redacts the
+session.
+
+A host-bound secret's variable holds the stand-in `__devboxes_<KEY>__`. In an
+HTTPS request to one of the secret's hosts on port 443, the proxy swaps the
+stand-in for the value in the parts of the request the secret names, and swaps
+the value back in the response. The header of `deploy/images/agent-vault.patch`
+states what the swap and the swap-back cover. The proxy splices every other
+HTTPS connection through without decrypting it, and it refuses private upstream
+addresses, so the agent reaches only public addresses through it. An
+unprotected secret reaches the Task as its value. A self-hosted Runner never
+runs a Task whose Run would receive a host-bound secret: admission refuses the
+Run.
 
 A Claude subscription Run's Claude Code runs as uid 1002, which the agent can't
 read, signal or trace:
