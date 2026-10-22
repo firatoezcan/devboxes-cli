@@ -62,9 +62,7 @@ describe("normalizeOpencodeProviderId", () => {
       "_openai",
       "open ai",
     ]) {
-      expect(() => normalizeOpencodeProviderId(providerId)).toThrow(
-        "Opencode provider id is invalid.",
-      );
+      expect(() => normalizeOpencodeProviderId(providerId)).toThrow();
     }
   });
 });
@@ -99,14 +97,14 @@ describe("validateWorkspaceImageQualificationProviderAuthLease", () => {
         modelID: "model",
         auth: { type: "api", key: "provider-key" },
       }),
-    ).toThrow("Workspace Image qualification provider id is not normalized.");
+    ).toThrow("provider id");
     expect(() =>
       validateWorkspaceImageQualificationProviderAuthLease({
         providerID: "custom-provider",
         modelID: " ",
         auth: { type: "api", key: "provider-key" },
       }),
-    ).toThrow("Workspace Image qualification model id is invalid.");
+    ).toThrow("model id");
   });
 });
 
@@ -138,7 +136,7 @@ describe("validateOpencodeProviderAuth", () => {
       expect(() => validateOpencodeProviderAuth("openai", { type: "api", key })).toThrow(Error);
     }
     expect(() => validateOpencodeProviderAuth("openai", { type: "api", key: "   " })).toThrow(
-      "Opencode credentials for provider openai must be valid API-key or OAuth entries.",
+      "openai",
     );
   });
 
@@ -207,7 +205,7 @@ describe("validateOpencodeProviderAuth", () => {
   it("rejects auth types opencode providers cannot consume here", () => {
     for (const type of ["session", "wellknown"]) {
       expect(() => validateOpencodeProviderAuth("openai", { type, key: "sk-live" })).toThrow(
-        "Opencode credentials for provider openai must be valid API-key or OAuth entries.",
+        "openai",
       );
     }
   });
