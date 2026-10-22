@@ -261,6 +261,15 @@ home path with a signed read URL for its current archive on the executor's
 platform. `/tool-cache-upload` signs an archive's upload, and `/tool-cache-ack`
 makes it the path's current archive only while the archive the Run restored, or
 the absence of one, is still current. Review and recheck Runs get no paths.
+`/tool-cache` also returns `entryLimit`: without a paid plan, the largest
+archive of one path that `/tool-cache-upload` registers (`bytes`) and the reason
+the executor reports for a larger one (`refusal`). It is null on a paid plan and
+on a deployment that sells no plans, where nothing limits an archive. The
+executor reads it once, with the restore at the Run's start, stops packing a
+path once its archive passes `bytes`, and reports `refusal` as that path's save
+outcome without registering it. `/tool-cache-upload` checks the plan again when
+the archive is registered and refuses a larger declared archive with
+`TOOL_CACHE_ENTRY_TOO_LARGE`.
 Every tool cache failure, including an API without these routes, becomes part
 of a notice and never fails the Run. The restore notice is a section of the
 Run's first prompt, after its instruction, so it never takes a model turn of its
