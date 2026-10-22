@@ -1,6 +1,6 @@
 # Runner and executor contract
 
-The [zero-user reset](../../docs/product/session-decisions.md#current-owner-correction-zero-user-cli-first-reset)
+The [zero-user reset](../../docs/decisions/DEC-zero-user-reset.md)
 and [ruthless MVP directive](../../docs/product/ruthless-mvp-directive.md) govern
 the current API, CLI, and executor together. This file describes current
 boundaries, not compatibility guarantees for retired protocols.
