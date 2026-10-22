@@ -208,10 +208,10 @@ for its checkpoint, through the tool cache's safe pack and unpack, and sends a
 null `repositoryStartSha` in `/started`, which the API accepts only from a Run
 without a repository. Only an executor from before taskboxes asks
 `/repository` for a taskbox Run: a Runner's gets `EXECUTOR_OUTDATED`, and a
-managed one, which runs the API's own release, gets `EXECUTOR_RELEASE_MISMATCH`
-and alerts the devboxes team. The Git transport refuses one with
-`REPOSITORY_UNAVAILABLE`. Admission refuses such a Run a publish node and any
-`repositories` operation.
+managed one, which runs the API's own release, gets `EXECUTOR_RELEASE_MISMATCH`,
+alerts the devboxes team, and fails the Run on devboxes' side. The Git transport
+refuses one with `REPOSITORY_UNAVAILABLE`. Admission refuses such a Run a
+publish node and any `repositories` operation.
 
 When the agent calls a `sessions.dispatch` capability, the executor first packs
 the workspace as its checkpoint does, a taskbox's archive or a repository's
