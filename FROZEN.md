@@ -206,10 +206,12 @@ null in every other Run. The executor of a taskbox Run uses no Git: it unpacks
 that gzip tar into a plain workspace directory, saves the directory the same way
 for its checkpoint, through the tool cache's safe pack and unpack, and sends a
 null `repositoryStartSha` in `/started`, which the API accepts only from a Run
-without a repository. `/repository` answers a taskbox Run with
-`EXECUTOR_OUTDATED`, because only an executor from before taskboxes asks it, and
-the Git transport refuses one with `REPOSITORY_UNAVAILABLE`. Admission refuses
-such a Run a publish node and any `repositories` operation.
+without a repository. Only an executor from before taskboxes asks
+`/repository` for a taskbox Run: a Runner's gets `EXECUTOR_OUTDATED`, and a
+managed one, which runs the API's own release, gets `EXECUTOR_RELEASE_MISMATCH`
+and alerts the devboxes team. The Git transport refuses one with
+`REPOSITORY_UNAVAILABLE`. Admission refuses such a Run a publish node and any
+`repositories` operation.
 
 When the agent calls a `sessions.dispatch` capability, the executor first packs
 the workspace as its checkpoint does, a taskbox's archive or a repository's
