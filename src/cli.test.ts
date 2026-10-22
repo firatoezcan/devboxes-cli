@@ -245,7 +245,11 @@ describe("devboxes invoke", () => {
             "/api/commands/sessions/dispatch": {
               post: {
                 operationId: "sessions.dispatch",
-                "x-devboxes": { effect: "write", authority: "Organization member" },
+                "x-devboxes": {
+                  effect: "write",
+                  elevated: false,
+                  authority: "Organization member",
+                },
                 responses: {},
               },
             },
@@ -259,7 +263,11 @@ describe("devboxes invoke", () => {
             "/api/commands/delegations/create": {
               post: {
                 operationId: "delegations.create",
-                "x-devboxes": { effect: "write", authority: "Current account session" },
+                "x-devboxes": {
+                  effect: "write",
+                  elevated: false,
+                  authority: "Current account session",
+                },
                 responses: {},
               },
             },
@@ -472,6 +480,46 @@ describe("devboxes invoke", () => {
   });
 });
 
+describe("devboxes commands", () => {
+  type Contract = { effect: "write"; elevated?: string; roles?: string[]; authority: string };
+  const document = (contract: Contract) => ({
+    openapi: "3.0.3",
+    paths: {
+      "/api/commands/billing/portal": {
+        post: { operationId: "billing.portal", "x-devboxes": contract, responses: {} },
+      },
+    },
+  });
+  const list = async (contract: Contract) => {
+    using api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => Response.json(document(contract)),
+    });
+    return await runCli(["commands"], {
+      DEVBOXES_API_URL: api.url.origin,
+      DEVBOXES_TOKEN: "scoped",
+    });
+  };
+
+  it("lists the commands of a newer API, whose writes name an elevated class and carry fields it doesn't know", async () => {
+    const listed = await list({
+      effect: "write",
+      elevated: "money",
+      roles: ["owner"],
+      authority: "Organization owner",
+    });
+    expect(listed.stdout).toBe("billing.portal\twrite\n");
+    expect(listed.exitCode).toBe(0);
+  });
+
+  it("refuses a document whose write doesn't say whether it is elevated", async () => {
+    const listed = await list({ effect: "write", authority: "Organization owner" });
+    expect(listed.stderr).toContain("must have required properties elevated");
+    expect(listed.exitCode).not.toBe(0);
+  });
+});
+
 describe("devboxes invoke in a terminal", () => {
   const organizations = [
     { id: "0198a0b0-0000-7000-8000-00000000000a", name: "Acme" },
@@ -485,7 +533,7 @@ describe("devboxes invoke in a terminal", () => {
   const operation = (operationId: string, schema: Static<typeof JsonValueSchema>) => ({
     post: {
       operationId,
-      "x-devboxes": { effect: "write", authority: "Organization member" },
+      "x-devboxes": { effect: "write", elevated: false, authority: "Organization member" },
       requestBody: { content: { "application/json": { schema } } },
       responses: {},
     },
@@ -702,7 +750,7 @@ describe("devboxes connect", () => {
   const operation = (operationId: string) => ({
     post: {
       operationId,
-      "x-devboxes": { effect: "write", authority: "Organization owner" },
+      "x-devboxes": { effect: "write", elevated: false, authority: "Organization owner" },
       responses: {},
     },
   });
@@ -1038,7 +1086,16 @@ describe("devboxes machine add", () => {
               ["capacity.register", "write", "Organization owner"],
             ].map(([operationId = "", effect, authority]) => [
               `/api/commands/${operationId.replace(".", "/")}`,
-              { post: { operationId, "x-devboxes": { effect, authority }, responses: {} } },
+              {
+                post: {
+                  operationId,
+                  "x-devboxes":
+                    effect === "write"
+                      ? { effect, elevated: false, authority }
+                      : { effect, authority },
+                  responses: {},
+                },
+              },
             ]),
           ),
         });
