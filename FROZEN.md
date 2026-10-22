@@ -59,7 +59,13 @@ boundaries, not compatibility guarantees for retired protocols.
   launcher that runs a Claude subscription Run's Claude Code as its own uid.
 - `apps/firops-api/src/execution/managed.ts` owns managed launch of the Task
   Pod from the SandboxTemplate of the Task's machine size: `devboxes-task`,
-  `devboxes-task-large` or `devboxes-task-xl`.
+  `devboxes-task-large` or `devboxes-task-xl`. Before the Sandbox, it creates
+  the CiliumNetworkPolicy `task-egress-<task id>` that
+  `apps/firops-api/src/execution/egress-policy.ts` builds, and it labels the
+  Sandbox and its Pod `devboxes.ai/task-id`. Firops' `managed-task-egress-floor`
+  selects Pods by that label, and its `devboxes-runners-task-egress` admission
+  policy admits exactly that name, that policy shape and the Task's Sandbox as
+  the policy's only owner.
 
 ## Native execution isolation
 
