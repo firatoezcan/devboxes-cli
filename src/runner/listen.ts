@@ -6,34 +6,18 @@ import { join, resolve } from "node:path";
 
 import { DockerOpencodeTaskRuntime } from "@firops/devbox/runner/docker-task-runtime";
 import type { JsonValue } from "@firops/platform/protocol/json";
-import { ClaudeCodeArtifactSchema } from "@firops/platform/protocol/task-runtime";
+import {
+  type RunnerAssignmentsSchema,
+  type RunnerClaimSchema,
+  runnerAnswers,
+} from "@firops/platform/protocol/runner-callbacks";
 import { proxy } from "hono/proxy";
 import { jwtVerify, SignJWT } from "jose";
-import Type, { type Static, type TSchema } from "typebox";
+import Type, { type Static } from "typebox";
 import Value from "typebox/value";
 
 import { CommandError, parseResponse, requestJson } from "../commands";
 
-const taskSchema = Type.Object({
-  id: Type.String(),
-  executorId: Type.Union([Type.String(), Type.Null()]),
-  containerId: Type.Union([Type.String(), Type.Null()]),
-  image: Type.String(),
-  platform: Type.Union([Type.Literal("linux/amd64"), Type.Literal("linux/arm64")]),
-  daemon: Type.Object({ sha256: Type.String(), version: Type.String(), url: Type.String() }),
-  claudeCode: Type.Union([ClaudeCodeArtifactSchema, Type.Null()]),
-  traceparent: Type.String({ minLength: 1 }),
-  status: Type.String(),
-});
-const assignmentSchema = Type.Object({
-  id: Type.String(),
-  executorId: Type.Union([Type.String(), Type.Null()]),
-  containerId: Type.Union([Type.String(), Type.Null()]),
-  status: Type.String(),
-});
-const assignmentsSchema = Type.Object({ tasks: Type.Array(assignmentSchema) });
-const claimSchema = Type.Object({ task: Type.Union([taskSchema, Type.Null()]) });
-const reconcileSchema = Type.Object({ status: Type.String() });
 /** The relay's signing key and port, kept so that running executors outlast a listener restart. */
 const relayStateSchema = Type.Object({
   key: Type.String({ minLength: 43 }),
@@ -186,26 +170,28 @@ export const listen = async (options: {
       { mode: 0o600, flag: "wx" },
     );
   const apiBaseUrl = `http://host.docker.internal:${relay.port}/api`;
-  const api = async <Schema extends TSchema>(
-    operation: string,
-    schema: Schema,
+  const api = async <Operation extends keyof typeof runnerAnswers>(
+    operation: Operation,
     body: JsonValue,
-  ): Promise<Static<Schema>> => {
+  ): Promise<Static<(typeof runnerAnswers)[Operation]>> => {
     const { data } = await requestJson(
       { origin: options.apiOrigin, token },
       `/api/internal/execution/runners/${operation}`,
       body,
     );
-    return parseResponse(schema, data, operation);
+    return parseResponse(runnerAnswers[operation], data, operation);
   };
   let stopping = false;
   const interrupt = () => {
     stopping = true;
   };
-  const startCreated = async (task: Static<typeof assignmentSchema>, containerId: string) => {
+  const startCreated = async (
+    task: Static<typeof RunnerAssignmentsSchema>["tasks"][number],
+    containerId: string,
+  ) => {
     const executorId = task.executorId ?? `devboxes-task-${task.id}`;
     const container = runtime.docker.getContainer(containerId);
-    const result = await api("reconcile", reconcileSchema, {
+    const result = await api("reconcile", {
       taskId: task.id,
       executorId,
       containerId,
@@ -230,7 +216,7 @@ export const listen = async (options: {
   // one start runs beside the poll loop and its failure surfaces on the next cycle.
   const starting = new Map<string, Promise<void>>();
   let startFailure: CommandError | null = null;
-  const startClaimed = async (task: Static<typeof taskSchema>) => {
+  const startClaimed = async (task: NonNullable<Static<typeof RunnerClaimSchema>["task"]>) => {
     const existing = await runtime.inspect(task.executorId ?? `devboxes-task-${task.id}`);
     if (!existing) {
       const container = await runtime.create({
@@ -257,7 +243,7 @@ export const listen = async (options: {
     (!connected && (status === 404 || status === 422));
   const poll = async () => {
     try {
-      const assignments = await api("assignments", assignmentsSchema, {});
+      const assignments = await api("assignments", {});
       connected = true;
       for (const task of assignments.tasks) {
         if (stopping) break;
@@ -272,7 +258,7 @@ export const listen = async (options: {
             task.status === "cancel_requested"
           )
             await rm(join(directory, task.id), { recursive: true, force: true });
-          const result = await api("reconcile", reconcileSchema, {
+          const result = await api("reconcile", {
             taskId: task.id,
             executorId: task.executorId,
             containerId: task.containerId,
@@ -286,7 +272,7 @@ export const listen = async (options: {
           await startCreated(task, executor.Id);
           continue;
         }
-        const result = await api("reconcile", reconcileSchema, {
+        const result = await api("reconcile", {
           taskId: task.id,
           executorId,
           containerId: executor.Id,
@@ -322,7 +308,7 @@ export const listen = async (options: {
         throw failure;
       }
       if (starting.size === 0) {
-        const { task } = await api("claim", claimSchema, {});
+        const { task } = await api("claim", {});
         if (task && !stopping && task.containerId === null)
           starting.set(
             task.id,

@@ -27,6 +27,9 @@ boundaries, not compatibility guarantees for retired protocols.
 - `packages/platform/src/protocol/daemon-artifact.ts` defines the daemon
   release's bootstrap protocol and platforms. The API takes the executor digest
   that a Runner claim returns from that release.
+- `packages/platform/src/protocol/runner-callbacks.ts` defines what the Runner's
+  claim, assignments and reconcile routes answer. Each schema is its route's
+  `response`, which the API validates, and what `devboxes runner` parses.
 - `apps/firops-api/src/execution/runners.ts` owns
   `/api/internal/execution/runners` claims, assignments, stop reports, and
   Runner heartbeat expiry.
