@@ -169,9 +169,9 @@ states what the swap and the swap-back cover. The proxy splices every other
 HTTPS connection to port 443 or 80 through without decrypting it, and it
 refuses any other port and private upstream addresses, so the agent reaches
 only public addresses on ports 443 and 80 through it. An
-unprotected secret reaches the Task as its value. A self-hosted Runner never
-runs a Task whose Run would receive a host-bound secret: admission refuses the
-Run.
+unprotected secret reaches the Task as its value. On a self-hosted Runner, a
+Task receives every secret's real value: a host-bound secret's value, and a
+database's stored URL, with the read-only login when the Run may only read.
 
 A Claude subscription Run's Claude Code runs as uid 1002, which the agent can't
 read, signal or trace:
