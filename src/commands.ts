@@ -432,4 +432,17 @@ export const devboxesCommandTools = (
     }),
     (input) => invokeCommand(connection, { command: "chat.zoom", input }, readCommands),
   ),
+  erase: commandTool(
+    "devboxes_erase",
+    "Erase messages of this conversation's Chat log, by the ids devboxes_zoom shows with n 1, when a person in this conversation asks for it: their text and who wrote them go, with the Organization memory entries they saved. Their posts in the chat stay.",
+    Type.Object({
+      conversationId: Type.String({ minLength: 1 }),
+      ids: Type.Array(Type.Integer({ minimum: 0 }), {
+        minItems: 1,
+        maxItems: 100,
+        uniqueItems: true,
+      }),
+    }),
+    (input) => invokeCommand(connection, { command: "chat.erase-messages", input }, readCommands),
+  ),
 });
