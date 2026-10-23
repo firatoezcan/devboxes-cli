@@ -422,4 +422,14 @@ export const devboxesCommandTools = (
     }),
     (invocation) => invokeCommand(connection, invocation, readCommands),
   ),
+  zoom: commandTool(
+    "devboxes_zoom",
+    "Open a line of a Chat log into the two lines it was made from, or a message whole with n 1. Pass this conversation's conversationId for its log, or none for Organization memory.",
+    Type.Object({
+      conversationId: Type.Optional(Type.String({ minLength: 1 })),
+      id: Type.Integer({ minimum: 0 }),
+      n: Type.Integer({ minimum: 1 }),
+    }),
+    (input) => invokeCommand(connection, { command: "chat.zoom", input }, readCommands),
+  ),
 });
