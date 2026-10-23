@@ -14,7 +14,7 @@ import {
   readCommandInput,
   writeOutput,
 } from "./commands";
-import { loadCommandConnection } from "./connection";
+import { loadCommandConnection, type LogIn } from "./connection";
 import { runDevboxesMcpServer } from "./mcp";
 import { promptCommandInput, promptField } from "./prompt-input";
 
@@ -40,13 +40,13 @@ const connectCompleteSchema = Type.Union([
   Type.Object({ status: Type.Literal("completed"), accountId: Type.String() }),
 ]);
 
-export const addAccountCommands = (program: Command) => {
+export const addAccountCommands = (program: Command, logIn: LogIn) => {
   const commands = program
     .command("commands")
     .description("list every advertised application command");
   commands.action(async () => {
     const options = commands.optsWithGlobals<{ api?: string; config?: string; json?: boolean }>();
-    const connection = await loadCommandConnection(options);
+    const connection = await loadCommandConnection(options, logIn);
     const description = await describeCommands(connection);
     if (options.json) {
       await writeOutput(`${JSON.stringify(description)}\n`);
@@ -69,7 +69,7 @@ export const addAccountCommands = (program: Command) => {
     .argument("<operationId>", "Discovered operation ID");
   describe.action(async (operationId: string) => {
     const options = describe.optsWithGlobals<{ api?: string; config?: string; json?: boolean }>();
-    const connection = await loadCommandConnection(options);
+    const connection = await loadCommandConnection(options, logIn);
     await writeOutput(
       `${JSON.stringify(
         describeCommand(await describeCommands(connection), operationId),
@@ -96,7 +96,7 @@ export const addAccountCommands = (program: Command) => {
       json?: boolean;
       input?: string;
     }>();
-    const connection = await loadCommandConnection(options);
+    const connection = await loadCommandConnection(options, logIn);
     let result: Awaited<ReturnType<typeof invokeCommand>>;
     if (options.input !== undefined) {
       result = await invokeCommand(connection, {
@@ -146,7 +146,7 @@ export const addAccountCommands = (program: Command) => {
       account?: string;
       apiKey?: boolean;
     }>();
-    const connection = await loadCommandConnection(options);
+    const connection = await loadCommandConnection(options, logIn);
     const interactive = asksInTerminal(options.json);
     if (!interactive && options.organization === undefined)
       throw new CommandError(
@@ -322,9 +322,7 @@ export const addAccountCommands = (program: Command) => {
     .command("mcp")
     .description("serve devboxes describe and invoke tools over stdio");
   mcp.action(async () => {
-    const connection = await loadCommandConnection(
-      mcp.optsWithGlobals<{ api?: string; config?: string }>(),
-    );
-    await runDevboxesMcpServer(connection);
+    const options = mcp.optsWithGlobals<{ api?: string; config?: string }>();
+    await runDevboxesMcpServer(() => loadCommandConnection({ ...options, json: true }));
   });
 };

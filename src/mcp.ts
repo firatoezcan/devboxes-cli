@@ -23,8 +23,12 @@ const mcpResult = ({
   structuredContent: result,
 });
 
-export const runDevboxesMcpServer = async (connection: CommandConnection) => {
-  const { describe, invoke } = devboxesCommandTools(connection);
+/**
+ * Serves the devboxes command tools over stdio. Each request loads its connection with `connect`, so
+ * a `devboxes login` in another terminal reaches the next call.
+ */
+export const runDevboxesMcpServer = async (connect: () => Promise<CommandConnection>) => {
+  const { describe, invoke } = devboxesCommandTools(await connect());
   const server = new Server(
     { name: "devboxes", version: cliVersion },
     { capabilities: { tools: {} } },
@@ -46,8 +50,9 @@ export const runDevboxesMcpServer = async (connection: CommandConnection) => {
     ],
   }));
   server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
-    if (params.name === describe.name) return mcpResult(await describe.run(params.arguments));
-    if (params.name === invoke.name) return mcpResult(await invoke.run(params.arguments));
+    const tools = devboxesCommandTools(await connect());
+    if (params.name === describe.name) return mcpResult(await tools.describe.run(params.arguments));
+    if (params.name === invoke.name) return mcpResult(await tools.invoke.run(params.arguments));
     throw new McpError(ErrorCode.InvalidParams, `Tool ${params.name} not found`);
   });
 

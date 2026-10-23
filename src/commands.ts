@@ -18,7 +18,16 @@ import { cliUserAgent } from "./api";
  * `organizationId` is the one Organization the token is bound to, such as a Chat turn's. Every
  * command that takes an `organizationId` receives it in place of the one its input names.
  */
-export type CommandConnection = { origin: string; token: string; organizationId?: string };
+export type CommandConnection = {
+  origin: string;
+  token: string;
+  organizationId?: string;
+  /**
+   * Signs the person at the terminal in again and answers the new session token, for an account
+   * session that may ask: `requestJson` then sends a request refused with SESSION_NOT_FRESH once more.
+   */
+  signInAgain?: () => Promise<string>;
+};
 
 const scalar = Type.Union([Type.String(), Type.Number(), Type.Boolean(), Type.Null()]);
 
@@ -235,6 +244,12 @@ export const requestJson = async (
       correlation,
     });
   if (Value.Check(errorSchema, error)) {
+    if (error.error.code === "SESSION_NOT_FRESH" && connection.signInAgain)
+      return requestJson(
+        { ...connection, token: await connection.signInAgain(), signInAgain: undefined },
+        path,
+        body,
+      );
     throw new CommandError(error.error.code, error.error.message, {
       status: error.status,
       details: error.error.details,

@@ -5,8 +5,23 @@ import { Command } from "commander";
 import { cliVersion, defaultApiOrigin } from "./api";
 import { addAuthenticationCommands } from "./auth";
 import { CommandError } from "./commands";
+import type { LogIn } from "./connection";
 import { addAccountCommands } from "./devboxes";
 import { addRunnerCommands } from "./runner/runner";
+
+/** Runs `devboxes login` again under the same --config and --api, for a change that needs it. */
+const logInAgain: LogIn = async ({ config, api }) => {
+  process.stderr.write("This change needs a recent sign-in. Sign in again to continue.\n");
+  await createDevboxesCommand().parseAsync(
+    [
+      ...Bun.argv.slice(0, 2),
+      ...(config === undefined ? [] : ["--config", config]),
+      ...(api === undefined ? [] : ["--api", api]),
+      "login",
+    ],
+    { from: "node" },
+  );
+};
 
 export const createDevboxesCommand = () => {
   const program = new Command()
@@ -34,7 +49,7 @@ export const createDevboxesCommand = () => {
     .option("--json", "Write machine-readable results and errors");
 
   addRunnerCommands(program);
-  addAccountCommands(program);
+  addAccountCommands(program, logInAgain);
   addAuthenticationCommands(program);
   program.action(() => program.outputHelp());
   return program;

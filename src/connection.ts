@@ -3,9 +3,30 @@ import {
   type DevboxesCliOptions,
   type DevboxesContext,
 } from "@firops/connections/local/config";
+import Type from "typebox";
 
 import { defaultApiOrigin } from "./api";
-import { apiOrigin, CommandError, type CommandConnection } from "./commands";
+import {
+  apiOrigin,
+  asksInTerminal,
+  CommandError,
+  parseResponse,
+  requestJson,
+  type CommandConnection,
+} from "./commands";
+
+/** Signs the person in again with `devboxes login` under `options`. */
+export type LogIn = (options: Pick<DevboxesCliOptions, "config" | "api">) => Promise<void>;
+
+const inspectedAccountSchema = Type.Object({
+  account: Type.Object({ id: Type.String(), email: Type.String() }),
+});
+
+/** The account that `connection` acts as. */
+const accountOf = async (connection: CommandConnection) => {
+  const { data } = await requestJson(connection, "/api/commands/account/inspect", {});
+  return parseResponse(inspectedAccountSchema, data, "account.inspect").account;
+};
 
 export type AccountContext = DevboxesContext & {
   config: DevboxesContext["config"] & { apiBaseUrl: string };
@@ -38,8 +59,14 @@ export const loadAccountContext = async (
   return { ...context, config: { ...config, apiBaseUrl: `${origin}/api` } };
 };
 
+/**
+ * The connection a command uses: DEVBOXES_TOKEN's delegation, or the saved account session. At a
+ * terminal, `logIn` lets an account session sign in again when a change needs a recent sign-in; the
+ * change is sent again only when the same account signed in.
+ */
 export const loadCommandConnection = async (
-  options: Pick<DevboxesCliOptions, "config" | "api">,
+  options: Pick<DevboxesCliOptions, "config" | "api"> & { json?: boolean },
+  logIn?: LogIn,
 ): Promise<CommandConnection> => {
   const token = process.env.DEVBOXES_TOKEN;
   if (token !== undefined) {
@@ -66,5 +93,23 @@ export const loadCommandConnection = async (
       "Sign in with devboxes login before invoking commands.",
     );
   }
-  return { origin: apiOrigin(context.config.apiBaseUrl), token: tokenFromConfig };
+  const connection = { origin: apiOrigin(context.config.apiBaseUrl), token: tokenFromConfig };
+  return {
+    ...connection,
+    ...(logIn &&
+      asksInTerminal(options.json) && {
+        signInAgain: async () => {
+          const before = await accountOf(connection);
+          await logIn(options);
+          const next = await loadCommandConnection(options);
+          const after = await accountOf(next);
+          if (after.id !== before.id)
+            throw new CommandError(
+              "ACCOUNT_CHANGED",
+              `You signed in as ${after.email}, not ${before.email}, so devboxes didn't send the change. Sign in as ${before.email} and repeat it.`,
+            );
+          return next.token;
+        },
+      }),
+  };
 };

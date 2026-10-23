@@ -1957,6 +1957,200 @@ describe("devboxes signup and login", () => {
   );
 });
 
+describe("devboxes after a refusal for an old sign-in", () => {
+  const requests: string[] = [];
+  const api = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: async (request) => {
+      const { pathname } = new URL(request.url);
+      if (pathname === "/api/openapi/json")
+        return Response.json({
+          openapi: "3.0.3",
+          paths: {
+            "/api/commands/organizations/update": {
+              post: {
+                operationId: "organizations.update",
+                "x-devboxes": {
+                  effect: "write",
+                  elevated: true,
+                  roles: ["owner", "admin"],
+                  authority: "Organization owner or admin",
+                },
+                requestBody: {
+                  content: {
+                    "application/json": {
+                      schema: {
+                        type: "object",
+                        properties: {
+                          organizationId: { type: "string" },
+                          name: { type: "string" },
+                        },
+                        required: ["organizationId", "name"],
+                      },
+                    },
+                  },
+                },
+                responses: {},
+              },
+            },
+          },
+        });
+      const authorization = request.headers.get("authorization");
+      requests.push(`${pathname} ${authorization}`);
+      if (pathname === "/api/auth/email-otp/send-verification-otp")
+        return Response.json({ success: true });
+      if (pathname === "/api/commands/account/inspect") {
+        const id = authorization === "Bearer other-session" ? "other" : "owner";
+        return Response.json({ account: { id, name: id, email: `${id}@example.com` } });
+      }
+      if (pathname === "/api/auth/sign-in/email-otp") {
+        const { email } = (await request.json()) as { email: string };
+        const id = email === "other@example.com" ? "other" : "owner";
+        const token = id === "other" ? "other-session" : "fresh-session";
+        return Response.json(
+          { token, user: { id, email, name: id, emailVerified: true } },
+          { headers: { "set-auth-token": token } },
+        );
+      }
+      return authorization === "Bearer fresh-session"
+        ? Response.json({ id: "organization" })
+        : Response.json(
+            {
+              error: {
+                code: "SESSION_NOT_FRESH",
+                message:
+                  "This change needs a sign-in from the last 10 minutes. Sign in again, then repeat it.",
+              },
+            },
+            { status: 403 },
+          );
+    },
+  });
+  afterAll(() => api.stop(true));
+  const rename = join(fixtureDirectory, "rename.json");
+  /** A saved account config whose session devboxes signed in more than 10 minutes ago. */
+  const staleAccount = async (name: string) => {
+    const config = join(fixtureDirectory, name);
+    await writeFile(
+      config,
+      JSON.stringify({ apiBaseUrl: `${api.url.origin}/api`, sessionToken: "stale-session" }),
+    );
+    await chmod(config, 0o600);
+    await writeFile(rename, JSON.stringify({ organizationId: "organization", name: "Renamed" }));
+    return config;
+  };
+
+  it("signs the person in again in a terminal and sends the change once more", async () => {
+    requests.length = 0;
+    const config = await staleAccount("stale-terminal.json");
+    const cli = await inTerminal(
+      ["--config", config, "invoke", "organizations.update", "--input", `@${rename}`],
+      {},
+    );
+
+    expect(await cli.shows("This change needs a recent sign-in.")).toBe(true);
+    expect(await cli.shows("Sign in with")).toBe(true);
+    cli.type("\x1b[B\x1b[B\r");
+    expect(await cli.shows("◇"), cli.screen()).toBe(true);
+    cli.type("owner@example.com\r");
+    expect(await cli.shows("Code sent to owner@example.com"), cli.screen()).toBe(true);
+    cli.type("123456\r");
+    const exitCode = await cli.exited();
+    cli.kill();
+
+    expect(exitCode).toBe(0);
+    expect(cli.screen()).toContain('"id": "organization"');
+    expect(requests.filter((sent) => sent.startsWith("/api/commands/"))).toEqual([
+      "/api/commands/organizations/update Bearer stale-session",
+      "/api/commands/account/inspect Bearer stale-session",
+      "/api/commands/account/inspect Bearer fresh-session",
+      "/api/commands/organizations/update Bearer fresh-session",
+    ]);
+  });
+
+  it("doesn't send the change again when the person signs in as another account", async () => {
+    requests.length = 0;
+    const config = await staleAccount("stale-switch.json");
+    const cli = await inTerminal(
+      ["--config", config, "invoke", "organizations.update", "--input", `@${rename}`],
+      {},
+    );
+
+    expect(await cli.shows("Sign in with")).toBe(true);
+    cli.type("\x1b[B\x1b[B\r");
+    expect(await cli.shows("◇"), cli.screen()).toBe(true);
+    cli.type("other@example.com\r");
+    expect(await cli.shows("Code sent to other@example.com"), cli.screen()).toBe(true);
+    cli.type("123456\r");
+    const exitCode = await cli.exited();
+    cli.kill();
+
+    expect(exitCode).toBe(1);
+    expect(cli.screen()).toContain("ACCOUNT_CHANGED");
+    expect(requests.filter((sent) => sent.includes("organizations/update"))).toEqual([
+      "/api/commands/organizations/update Bearer stale-session",
+    ]);
+  });
+
+  it("answers the refusal as it came without a terminal", async () => {
+    requests.length = 0;
+    const config = await staleAccount("stale-json.json");
+    const result = await runCli([
+      "--json",
+      "--config",
+      config,
+      "invoke",
+      "organizations.update",
+      "--input",
+      `@${rename}`,
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.stderr)).toMatchObject({ error: { code: "SESSION_NOT_FRESH" } });
+    expect(requests).toEqual(["/api/commands/organizations/update Bearer stale-session"]);
+  });
+
+  it("serves an MCP call with the session a later devboxes login saved", async () => {
+    requests.length = 0;
+    const config = await staleAccount("stale-mcp.json");
+    const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
+    await client.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: ["src/cli.ts", "--config", config, "mcp"],
+        cwd: join(import.meta.dir, ".."),
+        env: { PATH: process.env.PATH ?? "" },
+      }),
+    );
+    const update = () =>
+      client.callTool({
+        name: "devboxes_invoke",
+        arguments: {
+          command: "organizations.update",
+          input: { organizationId: "organization", name: "Renamed" },
+        },
+      });
+    try {
+      const refused = await update();
+      await writeFile(
+        config,
+        JSON.stringify({ apiBaseUrl: `${api.url.origin}/api`, sessionToken: "fresh-session" }),
+      );
+      const renamed = await update();
+
+      expect(refused.structuredContent).toMatchObject({ error: { code: "SESSION_NOT_FRESH" } });
+      expect(renamed.isError).toBeUndefined();
+      expect(requests).toEqual([
+        "/api/commands/organizations/update Bearer stale-session",
+        "/api/commands/organizations/update Bearer fresh-session",
+      ]);
+    } finally {
+      await client.close();
+    }
+  });
+});
+
 describe("CLI API origin", () => {
   it("allows HTTPS and local HTTP without accepting credential or URL escapes", () => {
     expect(apiOrigin("https://api.example.com/api")).toBe("https://api.example.com");
