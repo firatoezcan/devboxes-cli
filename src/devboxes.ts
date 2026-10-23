@@ -9,6 +9,7 @@ import {
   describeCommand,
   describeCommands,
   invokeCommand,
+  httpUrl,
   openInBrowser,
   parseResponse,
   readCommandInput,
@@ -184,6 +185,11 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
             "PROVIDER_NOT_FOUND",
             `providers.list has no provider ${providerId}.`,
           );
+        if (!provider.deviceFlow && !provider.apiKey)
+          throw new CommandError(
+            "PROVIDER_NOT_CONNECTABLE",
+            `${provider.name} takes neither a sign-in nor an API key.`,
+          );
         if (options.apiKey && !provider.apiKey)
           throw new CommandError(
             "API_KEY_UNSUPPORTED",
@@ -258,10 +264,16 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
         ).data,
         "providers.connect-start",
       );
+      const verificationUrl = httpUrl(started.verificationUrl);
+      if (!verificationUrl)
+        throw new CommandError(
+          "INVALID_RESPONSE",
+          "The providers.connect-start response is invalid: /verificationUrl must be an HTTP URL.",
+        );
       process.stderr.write(
-        `Open ${started.verificationUrl} to sign in.${started.userCode === null ? "" : ` Confirm that the page shows code ${started.userCode}.`}\n`,
+        `Open ${verificationUrl.href} to sign in.${started.userCode === null ? "" : ` Confirm that the page shows code ${started.userCode}.`}\n`,
       );
-      if (interactive) openInBrowser(started.verificationUrl);
+      if (interactive) openInBrowser(verificationUrl);
       const complete = async (code?: string) =>
         parseResponse(
           connectCompleteSchema,

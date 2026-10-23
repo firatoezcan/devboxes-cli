@@ -267,15 +267,27 @@ export const requestJson = async (
 export const asksInTerminal = (json: boolean | undefined) =>
   !json && process.stdin.isTTY && process.stderr.isTTY;
 
-/** Opens `url` in the default browser, or asks the person to open it when that fails. */
-export const openInBrowser = (url: string) => {
+/**
+ * `value` as an HTTP or HTTPS URL, or null. The CLI opens no other URL in a browser, because the
+ * operating system hands any other scheme to whatever handler it has for it.
+ */
+export const httpUrl = (value: string) => {
+  const url = URL.parse(value);
+  return url && ["http:", "https:"].includes(url.protocol) ? url : null;
+};
+
+/**
+ * Opens `url`, an HTTP or HTTPS URL from `httpUrl`, in the default browser, or asks the person to
+ * open it when that fails.
+ */
+export const openInBrowser = (url: URL) => {
   try {
     Bun.spawn(
       process.platform === "darwin"
-        ? ["open", url]
+        ? ["open", url.href]
         : process.platform === "win32"
-          ? ["rundll32", "url.dll,FileProtocolHandler", url]
-          : ["xdg-open", url],
+          ? ["rundll32", "url.dll,FileProtocolHandler", url.href]
+          : ["xdg-open", url.href],
       { stdio: ["ignore", "ignore", "ignore"] },
     ).unref();
   } catch {

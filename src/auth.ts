@@ -20,6 +20,7 @@ import {
   credentialSafeJson,
   failureSchema,
   injectCallerTrace,
+  httpUrl,
   openInBrowser,
   parseResponse,
   readCommandInput,
@@ -279,8 +280,8 @@ export const addAuthenticationCommands = (program: Command) => {
             `Device authorization did not return its codes and an HTTP verification URL: ${describeErrors(deviceCodeSchema, device)}.`,
           );
         }
-        const verification = URL.parse(device.verification_uri_complete);
-        if (!verification || !["http:", "https:"].includes(verification.protocol)) {
+        const verification = httpUrl(device.verification_uri_complete);
+        if (!verification) {
           throw new CommandError(
             "INVALID_AUTH_RESPONSE",
             "Device authorization did not return its codes and an HTTP verification URL: /verification_uri_complete must be an HTTP URL.",
@@ -301,7 +302,7 @@ export const addAuthenticationCommands = (program: Command) => {
               : `Open ${verification.href}. If that browser is signed in to devboxes, approve the sign-in there. Otherwise sign in with ${choice.label} first.\nCheck that the page shows code ${displayDeviceCode(device.user_code)}. Waiting for approval...`
           }\n`,
         );
-        if (interactive) openInBrowser(verification.href);
+        if (interactive) openInBrowser(verification);
         const expiresAt = Date.now() + device.expires_in * 1000;
         let interval = device.interval;
         let wait = interval;

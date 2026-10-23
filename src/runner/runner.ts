@@ -106,9 +106,13 @@ export const addRunnerCommands = (program: Command) => {
     .description("Launch assigned Tasks and observe their Docker executors")
     .option(
       "--token-file <path>",
-      "Runner key file from devboxes machine add; defaults to the one it saved",
+      "Runner key file from devboxes machine add, owner-only (0600; on Windows, its access-control list decides); defaults to the one it saved",
     )
-    .option("--state-directory <path>", "Downloaded daemon binary cache", runnerDirectory())
+    .option(
+      "--state-directory <path>",
+      "Runner state with the relay's signing key, owner-only (0700; on Windows, its access-control list decides)",
+      runnerDirectory(),
+    )
     .option("--docker-socket <path>", "Docker socket path");
   command.action(async () => {
     const options = command.optsWithGlobals<{

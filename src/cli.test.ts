@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from "bun:test";
-import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -49,17 +49,54 @@ await chmod(sharedTokenFile, 0o644);
 await writeFile(emptyTokenFile, "\n");
 await chmod(emptyTokenFile, 0o600);
 await writeFile(malformedInput, "{ not json");
+const privateTokenFile = join(fixtureDirectory, "private-token");
+await writeFile(privateTokenFile, "firops_runner_fixture\n");
+await chmod(privateTokenFile, 0o600);
+const sharedStateDirectory = join(fixtureDirectory, "shared-state");
+await mkdir(sharedStateDirectory);
+await chmod(sharedStateDirectory, 0o777);
+const sharedRelayKeyDirectory = join(fixtureDirectory, "shared-relay-key");
+await mkdir(sharedRelayKeyDirectory, { mode: 0o700 });
+await writeFile(
+  join(sharedRelayKeyDirectory, "relay.json"),
+  JSON.stringify({ key: "k".repeat(43), port: 9 }),
+);
+await chmod(join(sharedRelayKeyDirectory, "relay.json"), 0o644);
+const linkedTokenFile = join(fixtureDirectory, "linked-token");
+await symlink(privateTokenFile, linkedTokenFile);
+const unreadableTokenFile = join(fixtureDirectory, "unreadable-token");
+await writeFile(unreadableTokenFile, "firops_runner_fixture\n");
+await chmod(unreadableTokenFile, 0o000);
+const fifoTokenFile = join(fixtureDirectory, "fifo-token");
+if (!Bun.spawnSync(["mkfifo", "-m", "600", fifoTokenFile]).success)
+  throw new Error("mkfifo did not create the FIFO token file.");
+const linkedRelayKeyDirectory = join(fixtureDirectory, "linked-relay-key");
+await mkdir(linkedRelayKeyDirectory, { mode: 0o700 });
+await writeFile(
+  join(fixtureDirectory, "private-relay.json"),
+  JSON.stringify({ key: "k".repeat(43), port: 9 }),
+);
+await chmod(join(fixtureDirectory, "private-relay.json"), 0o600);
+await symlink(
+  join(fixtureDirectory, "private-relay.json"),
+  join(linkedRelayKeyDirectory, "relay.json"),
+);
 const scoped = { DEVBOXES_API_URL: "https://api.example.com", DEVBOXES_TOKEN: "scoped" };
 const unusedOrigin = "http://127.0.0.1:9";
 const listen = ["--json", "--api", "https://api.example.com", "runner", "listen"];
 const localDocker = { DOCKER_HOST: undefined, DEVBOX_OPENCODE_DOCKER_SOCKET_PATH: undefined };
 
-/** Runs the CLI in a pseudo-terminal, with an `open` on PATH that only records its calls. */
+/**
+ * Runs the CLI in a pseudo-terminal, with an `open` and an `xdg-open` on PATH that only record
+ * their calls.
+ */
 const inTerminal = async (args: string[], env: Record<string, string>) => {
   const bin = await mkdtemp(join(fixtureDirectory, "bin-"));
   const opened = join(bin, "opened");
-  await writeFile(join(bin, "open"), `#!/bin/sh\necho "$@" >> ${opened}\n`);
-  await chmod(join(bin, "open"), 0o755);
+  for (const launcher of ["open", "xdg-open"]) {
+    await writeFile(join(bin, launcher), `#!/bin/sh\necho "$@" >> ${opened}\n`);
+    await chmod(join(bin, launcher), 0o755);
+  }
   let screen = "";
   const child = Bun.spawn([process.execPath, "src/cli.ts", ...args], {
     cwd: join(import.meta.dir, ".."),
@@ -135,6 +172,42 @@ describe("devboxes entrypoint", () => {
       [...listen, "--token-file", join(fixtureDirectory, "absent")],
       localDocker,
       "INVALID_RUNNER_TOKEN_FILE",
+    ],
+    [
+      "a state directory other users can write",
+      [...listen, "--token-file", privateTokenFile, "--state-directory", sharedStateDirectory],
+      localDocker,
+      "INVALID_RUNNER_STATE_DIRECTORY",
+    ],
+    [
+      "a state directory other users can write, after a token file that links to a private file",
+      [...listen, "--token-file", linkedTokenFile, "--state-directory", sharedStateDirectory],
+      localDocker,
+      "INVALID_RUNNER_STATE_DIRECTORY",
+    ],
+    [
+      "a token file this user cannot read",
+      [...listen, "--token-file", unreadableTokenFile],
+      localDocker,
+      "INVALID_RUNNER_TOKEN_FILE",
+    ],
+    [
+      "a token file that is a FIFO",
+      [...listen, "--token-file", fifoTokenFile],
+      localDocker,
+      "INVALID_RUNNER_TOKEN_FILE",
+    ],
+    [
+      "a relay key that is a symbolic link",
+      [...listen, "--token-file", privateTokenFile, "--state-directory", linkedRelayKeyDirectory],
+      localDocker,
+      "INVALID_RUNNER_STATE_DIRECTORY",
+    ],
+    [
+      "a relay key other users can read",
+      [...listen, "--token-file", privateTokenFile, "--state-directory", sharedRelayKeyDirectory],
+      localDocker,
+      "INVALID_RUNNER_STATE_DIRECTORY",
     ],
     [
       "a machine that was never added",
@@ -823,6 +896,8 @@ describe("devboxes connect", () => {
           },
           { id: "anthropic", name: "Anthropic", deviceFlow: false, apiKey: true, unavailable },
           { id: "xai", name: "xAI", deviceFlow: true, apiKey: true, unavailable: managersOnly },
+          { id: "local", name: "Local", deviceFlow: false, apiKey: false, unavailable },
+          { id: "handler", name: "Handler", deviceFlow: true, apiKey: false, unavailable },
         ]);
       }
       if (pathname === "/api/commands/providers/connect-start") {
@@ -830,8 +905,11 @@ describe("devboxes connect", () => {
         starts.push(body);
         return Response.json({
           attemptId: "attempt-1",
-          userCode: body.providerId === "openai" ? "ABCD-1234" : null,
-          verificationUrl: `https://sign-in.example/${body.providerId}?state=state`,
+          userCode: ["openai", "handler"].includes(body.providerId) ? "ABCD-1234" : null,
+          verificationUrl:
+            body.providerId === "handler"
+              ? "file:///Applications/Calculator.app"
+              : `https://sign-in.example/${body.providerId}?state=state`,
           intervalSeconds: 0,
           expiresAt: null,
         });
@@ -904,6 +982,28 @@ describe("devboxes connect", () => {
     }
     expect(starts).toEqual([]);
     expect(accountWrites).toEqual([]);
+  });
+
+  it("refuses a provider that takes neither a sign-in nor an API key, before it reads a key", async () => {
+    reset();
+    const result = await runCli(connectTo("local"), connection, undefined, `${key}\n`);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toStartWith("PROVIDER_NOT_CONNECTABLE");
+    expect(accountWrites).toEqual([]);
+  });
+
+  it("refuses a sign-in URL that is not HTTP, before it shows or opens it", async () => {
+    reset();
+    const cli = await inTerminal(connectTo("handler"), connection);
+    const exitCode = await cli.exited();
+    cli.kill();
+
+    expect(exitCode).toBe(1);
+    expect(cli.screen()).toContain("INVALID_RESPONSE");
+    expect(cli.screen()).not.toContain("file:");
+    expect(await cli.opened()).toBe(false);
+    expect(completions).toEqual([]);
   });
 
   it("polls a device sign-in until the provider approves it, and fails when the provider refuses", async () => {
