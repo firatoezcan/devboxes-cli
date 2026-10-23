@@ -750,8 +750,8 @@ describe("devboxes connect", () => {
   const organizationId = "0198a0b0-0000-7000-8000-000000000001";
   const code = `pasted-code-${crypto.randomUUID()}#state`;
   const key = `sk-ant-api03-${crypto.randomUUID()}`;
-  const ownerOnly = "Only an Organization owner can connect a Provider Account.";
-  let owner = true;
+  const managersOnly = "Only an Organization owner or admin can connect a Provider Account.";
+  let manages = true;
   let completeAnswers: object[] = [];
   const starts: unknown[] = [];
   const completions: unknown[] = [];
@@ -759,7 +759,7 @@ describe("devboxes connect", () => {
   const operation = (operationId: string) => ({
     post: {
       operationId,
-      "x-devboxes": { effect: "write", authority: "Organization owner" },
+      "x-devboxes": { effect: "write", authority: "Organization owner or admin" },
       responses: {},
     },
   });
@@ -788,7 +788,7 @@ describe("devboxes connect", () => {
       if (pathname === "/api/commands/organizations/list")
         return Response.json({ organizations: [{ id: organizationId, name: "Acme" }] });
       if (pathname === "/api/commands/providers/list") {
-        const unavailable = owner ? null : ownerOnly;
+        const unavailable = manages ? null : managersOnly;
         return Response.json([
           { id: "openai", name: "OpenAI", deviceFlow: true, apiKey: true, unavailable },
           {
@@ -799,7 +799,7 @@ describe("devboxes connect", () => {
             unavailable,
           },
           { id: "anthropic", name: "Anthropic", deviceFlow: false, apiKey: true, unavailable },
-          { id: "xai", name: "xAI", deviceFlow: true, apiKey: true, unavailable: ownerOnly },
+          { id: "xai", name: "xAI", deviceFlow: true, apiKey: true, unavailable: managersOnly },
         ]);
       }
       if (pathname === "/api/commands/providers/connect-start") {
@@ -841,7 +841,7 @@ describe("devboxes connect", () => {
   ];
   const connection = { DEVBOXES_API_URL: api.url.origin, DEVBOXES_TOKEN: "connect-token" };
   const reset = () => {
-    owner = true;
+    manages = true;
     completeAnswers = [];
     starts.length = 0;
     completions.length = 0;
@@ -865,7 +865,7 @@ describe("devboxes connect", () => {
 
   it("refuses a provider the person can't connect, with the reason, before it starts a sign-in or reads a key", async () => {
     reset();
-    owner = false;
+    manages = false;
     const signIn = await runCli(
       connectTo("claude-subscription"),
       connection,
@@ -876,7 +876,7 @@ describe("devboxes connect", () => {
 
     for (const result of [signIn, apiKey]) {
       expect(result.exitCode).toBe(1);
-      expect(result.stderr).toStartWith(`PROVIDER_UNAVAILABLE: ${ownerOnly}`);
+      expect(result.stderr).toStartWith(`PROVIDER_UNAVAILABLE: ${managersOnly}`);
       expect(result.stderr).not.toContain("Open ");
     }
     expect(starts).toEqual([]);
@@ -1008,7 +1008,7 @@ describe("devboxes connect", () => {
       "Claude subscription (browser sign-in)",
       "Anthropic API key",
       "xAI (browser sign-in)",
-      ownerOnly,
+      managersOnly,
     ])
       expect(cli.screen()).toContain(option);
     expect(cli.screen()).not.toContain("Claude subscription API key");
@@ -1057,7 +1057,7 @@ describe("devboxes connect", () => {
 
   it("won't connect a greyed-out option that Enter chose", async () => {
     reset();
-    owner = false;
+    manages = false;
     const cli = await inTerminal(connectTo(), connection);
 
     expect(await cli.shows("xAI (browser sign-in)")).toBe(true);
@@ -1066,7 +1066,7 @@ describe("devboxes connect", () => {
     cli.kill();
 
     expect(exitCode).toBe(1);
-    expect(cli.screen()).toContain(`PROVIDER_UNAVAILABLE: ${ownerOnly}`);
+    expect(cli.screen()).toContain(`PROVIDER_UNAVAILABLE: ${managersOnly}`);
     expect(cli.screen()).not.toContain("Open ");
     expect(starts).toEqual([]);
     expect(await cli.opened()).toBe(false);
@@ -1077,10 +1077,11 @@ describe("devboxes machine add", () => {
   const organizations = [
     { id: "0198a0b0-0000-7000-8000-00000000000a", name: "Acme", role: "owner" },
     { id: "0198a0b0-0000-7000-8000-00000000000c", name: "Client workspace", role: "member" },
-    { id: "0198a0b0-0000-7000-8000-00000000000b", name: "Side project", role: "owner" },
+    { id: "0198a0b0-0000-7000-8000-00000000000b", name: "Side project", role: "admin" },
   ];
   const registrations: unknown[] = [];
   const refusedKeys = new Set<string>();
+  let registerRoles = ["owner", "admin"];
   const api = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -1091,17 +1092,20 @@ describe("devboxes machine add", () => {
           openapi: "3.0.3",
           paths: Object.fromEntries(
             [
-              ["organizations.list", "read", "Current account session"],
-              ["capacity.register", "write", "Organization owner"],
-            ].map(([operationId = "", effect, authority]) => [
-              `/api/commands/${operationId.replace(".", "/")}`,
               {
-                post: {
-                  operationId,
-                  "x-devboxes": { effect, authority },
-                  responses: {},
-                },
+                operationId: "organizations.list",
+                effect: "read",
+                authority: "Current account session",
               },
+              {
+                operationId: "capacity.register",
+                effect: "write",
+                authority: "Organization owner or admin",
+                roles: registerRoles,
+              },
+            ].map(({ operationId, ...contract }) => [
+              `/api/commands/${operationId.replace(".", "/")}`,
+              { post: { operationId, "x-devboxes": contract, responses: {} } },
             ]),
           ),
         });
@@ -1139,7 +1143,7 @@ describe("devboxes machine add", () => {
     };
   };
 
-  it("offers the Organizations the person owns, names the machine after the computer, saves its key for this user only, and leaves starting for later", async () => {
+  it("offers the Organizations whose role capacity.register's contract names, names the machine after the computer, saves its key for this user only, and leaves starting for later", async () => {
     registrations.length = 0;
     const { tokenFile, env } = await machineEnvironment();
     const cli = await inTerminal(["machine", "add"], env);
@@ -1164,6 +1168,19 @@ describe("devboxes machine add", () => {
     expect(cli.screen()).toContain(tokenFile);
     expect(cli.screen()).toContain("Start it later with: devboxes runner listen");
     expect(cli.screen()).not.toContain(token);
+  });
+
+  it("offers no Organization whose role capacity.register's served roles leave out", async () => {
+    registerRoles = ["owner"];
+    try {
+      const { env } = await machineEnvironment();
+      const cli = await inTerminal(["machine", "add"], env);
+      expect(await cli.shows("Acme")).toBe(true);
+      expect(cli.screen()).not.toContain("Side project");
+      cli.kill();
+    } finally {
+      registerRoles = ["owner", "admin"];
+    }
   });
 
   it("adds a machine from flags outside a terminal and refuses to add the same computer twice", async () => {

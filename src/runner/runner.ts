@@ -186,17 +186,22 @@ export const addRunnerCommands = (program: Command) => {
       ).data,
       "organizations.list",
     );
-    const owned = organizations.filter((entry) => entry.role === "owner");
-    if (options.organization === undefined && owned.length === 0)
+    const roles = description.commands.find(
+      (command) => command.operationId === "capacity.register",
+    )?.["x-devboxes"].roles;
+    const managed = roles
+      ? organizations.filter((entry) => roles.includes(entry.role))
+      : organizations;
+    if (options.organization === undefined && managed.length === 0)
       throw new CommandError(
         "ORGANIZATION_NOT_FOUND",
-        "devboxes can't find an Organization you own. Only an Organization's owner can add a machine.",
+        `devboxes can't find an Organization where you can add a machine.${roles ? ` Only an Organization's ${roles.join(" or ")} can add one.` : ""}`,
       );
     const chosen =
       options.organization ??
       (await select({
         message: "Which Organization should run tasks on this machine?",
-        options: owned.map((entry) => ({ value: entry.id, label: entry.name })),
+        options: managed.map((entry) => ({ value: entry.id, label: entry.name })),
         output: process.stderr,
       }));
     if (isCancel(chosen)) throw new CommandError("CANCELLED", "Command cancelled.");
