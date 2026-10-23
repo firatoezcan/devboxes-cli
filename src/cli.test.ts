@@ -247,7 +247,6 @@ describe("devboxes invoke", () => {
                 operationId: "sessions.dispatch",
                 "x-devboxes": {
                   effect: "write",
-                  elevated: false,
                   authority: "Organization member",
                 },
                 responses: {},
@@ -265,7 +264,6 @@ describe("devboxes invoke", () => {
                 operationId: "delegations.create",
                 "x-devboxes": {
                   effect: "write",
-                  elevated: false,
                   authority: "Current account session",
                 },
                 responses: {},
@@ -481,7 +479,13 @@ describe("devboxes invoke", () => {
 });
 
 describe("devboxes commands", () => {
-  type Contract = { effect: "write"; elevated?: string; roles?: string[]; authority: string };
+  type Contract = {
+    effect: "write";
+    elevated?: boolean;
+    elevation?: string;
+    roles?: string[];
+    authority: string;
+  };
   const document = (contract: Contract) => ({
     openapi: "3.0.3",
     paths: {
@@ -502,20 +506,25 @@ describe("devboxes commands", () => {
     });
   };
 
-  it("lists the commands of a newer API, whose writes name an elevated class and carry fields it doesn't know", async () => {
-    const listed = await list({
-      effect: "write",
-      elevated: "money",
-      roles: ["owner"],
-      authority: "Organization owner",
-    });
-    expect(listed.stdout).toBe("billing.portal\twrite\n");
-    expect(listed.exitCode).toBe(0);
+  it("lists an elevated write, and one that leaves `elevated` out, ignoring fields a newer API adds", async () => {
+    const contracts: Contract[] = [
+      { effect: "write", elevated: true, elevation: "money", roles: ["owner"], authority: "Owner" },
+      { effect: "write", authority: "Organization owner" },
+    ];
+    for (const contract of contracts) {
+      const listed = await list(contract);
+      expect(listed.stdout).toBe("billing.portal\twrite\n");
+      expect(listed.exitCode).toBe(0);
+    }
   });
 
-  it("refuses a document whose write doesn't say whether it is elevated", async () => {
-    const listed = await list({ effect: "write", authority: "Organization owner" });
-    expect(listed.stderr).toContain("must have required properties elevated");
+  it("refuses a document whose write serves `elevated` as anything but true", async () => {
+    const listed = await list({
+      effect: "write",
+      elevated: false,
+      authority: "Organization owner",
+    });
+    expect(listed.stderr).toContain("/x-devboxes/elevated must be equal to constant");
     expect(listed.exitCode).not.toBe(0);
   });
 });
@@ -533,7 +542,7 @@ describe("devboxes invoke in a terminal", () => {
   const operation = (operationId: string, schema: Static<typeof JsonValueSchema>) => ({
     post: {
       operationId,
-      "x-devboxes": { effect: "write", elevated: false, authority: "Organization member" },
+      "x-devboxes": { effect: "write", authority: "Organization member" },
       requestBody: { content: { "application/json": { schema } } },
       responses: {},
     },
@@ -750,7 +759,7 @@ describe("devboxes connect", () => {
   const operation = (operationId: string) => ({
     post: {
       operationId,
-      "x-devboxes": { effect: "write", elevated: false, authority: "Organization owner" },
+      "x-devboxes": { effect: "write", authority: "Organization owner" },
       responses: {},
     },
   });
@@ -1089,10 +1098,7 @@ describe("devboxes machine add", () => {
               {
                 post: {
                   operationId,
-                  "x-devboxes":
-                    effect === "write"
-                      ? { effect, elevated: false, authority }
-                      : { effect, authority },
+                  "x-devboxes": { effect, authority },
                   responses: {},
                 },
               },
