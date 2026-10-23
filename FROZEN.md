@@ -13,6 +13,11 @@ boundaries, not compatibility guarantees for retired protocols.
   executor sends on every callback and Git request.
 - `packages/platform/src/protocol/runner-payload.ts` defines the native Task
   payload, execution snapshot, inputs, and Review results.
+- `packages/platform/src/protocol/execution-callbacks.ts` defines what each Task
+  callback answers. Each schema is its route's `response`, which the API
+  validates, and what the executor parses. Only Git's smart HTTP transport and
+  `/capability` answer raw, and `law:callbacks-declare-their-answer` holds
+  every other callback to a declared answer.
 - `packages/platform/src/protocol/task-runtime.ts` defines the Task container
   layout: the uids and gid, the home and workspace paths, the managed executor
   path, the executor environment, the executor drain time, and Runner heartbeat
@@ -231,9 +236,7 @@ with the Session's title. A failed request to GitHub there records nothing and
 does not fail the node, so the next such Run tries again.
 
 Every `/nodes` answer carries `pullRequest`: the number of the pull request
-that the Run's publication recorded, or null. The daemon release moves the
-executor channel before the API rolls, so the executor reads an answer without
-`pullRequest` from the previous API as null. Once the publish node succeeds,
+that the Run's publication recorded, or null. Once the publish node succeeds,
 the executor names that pull request in the context of every later agent turn,
 so a node after it updates the pull request by its number and never looks it
 up.

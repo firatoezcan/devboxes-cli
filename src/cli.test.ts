@@ -246,7 +246,7 @@ describe("devboxes invoke", () => {
                 operationId: "sessions.dispatch",
                 "x-devboxes": {
                   effect: "write",
-                  roles: ["owner", "admin", "member"],
+                  roles: ["owner", "admin", "member", "reviewer", "viewer"],
                   authority: "Organization member",
                 },
                 responses: {},
@@ -257,7 +257,7 @@ describe("devboxes invoke", () => {
                 operationId: "sessions.list",
                 "x-devboxes": {
                   effect: "read",
-                  roles: ["owner", "admin", "member"],
+                  roles: ["owner", "admin", "member", "reviewer", "viewer"],
                   authority: "Organization member",
                 },
                 responses: {},
@@ -268,7 +268,7 @@ describe("devboxes invoke", () => {
                 operationId: "delegations.create",
                 "x-devboxes": {
                   effect: "write",
-                  roles: [],
+                  roles: ["owner", "admin", "member", "reviewer", "viewer"],
                   authority: "Current account session",
                 },
                 responses: {},
@@ -279,7 +279,7 @@ describe("devboxes invoke", () => {
                 operationId: "sessions.events",
                 "x-devboxes": {
                   effect: "read",
-                  roles: ["owner", "admin", "member"],
+                  roles: ["owner", "admin", "member", "reviewer", "viewer"],
                   authority: "Organization member",
                 },
                 responses: {},
@@ -290,7 +290,7 @@ describe("devboxes invoke", () => {
                 operationId: "sessions.inspect",
                 "x-devboxes": {
                   effect: "read",
-                  roles: ["owner", "admin", "member"],
+                  roles: ["owner", "admin", "member", "reviewer", "viewer"],
                   authority: "Organization member",
                 },
                 responses: {},
@@ -559,7 +559,7 @@ describe("devboxes invoke in a terminal", () => {
       operationId,
       "x-devboxes": {
         effect: "write",
-        roles: ["owner", "admin", "member"],
+        roles: ["owner", "admin", "member", "reviewer", "viewer"],
         authority: "Organization member",
       },
       requestBody: { content: { "application/json": { schema } } },
@@ -1476,7 +1476,7 @@ describe("devboxes mcp", () => {
         operationId,
         "x-devboxes": {
           effect: "read",
-          roles: ["owner", "admin", "member"],
+          roles: ["owner", "admin", "member", "reviewer", "viewer"],
           authority: "Organization member",
         },
         responses: {},
