@@ -166,8 +166,9 @@ HTTPS request to one of the secret's hosts on port 443, the proxy swaps the
 stand-in for the value in the parts of the request the secret names, and swaps
 the value back in the response. The header of `deploy/images/agent-vault.patch`
 states what the swap and the swap-back cover. The proxy splices every other
-HTTPS connection through without decrypting it, and it refuses private upstream
-addresses, so the agent reaches only public addresses through it. An
+HTTPS connection to port 443 or 80 through without decrypting it, and it
+refuses any other port and private upstream addresses, so the agent reaches
+only public addresses on ports 443 and 80 through it. An
 unprotected secret reaches the Task as its value. A self-hosted Runner never
 runs a Task whose Run would receive a host-bound secret: admission refuses the
 Run.
