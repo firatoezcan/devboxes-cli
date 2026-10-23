@@ -74,7 +74,16 @@ boundaries, not compatibility guarantees for retired protocols.
   selects Pods by that label, and its `devboxes-runners-task-egress` admission
   policy admits exactly that name, that policy shape and the Task's Sandbox as
   the policy's only owner. It gives every managed Task the `egress` native
-  sidecar.
+  sidecar. For a Run with databases it also creates, after the Task's Sandbox
+  and owned by it, the database Pod: the Sandbox `devboxes-taskdb-<task id>`,
+  labelled `devboxes.ai/task-database`, required on the Task Pod's node, with
+  its headless Service, and its policy `task-database-<task id>`. Firops'
+  `devboxes-runners-task-database` admits that policy's shape and owner, and
+  `devboxes-runners-sandbox-labels` binds each of the two labels to its
+  Sandbox's name. The API stores each Sandbox's uid from its create answer; a
+  Sandbox under either name with another uid, a lost create answer included,
+  is deleted with both policies, and the Run retries with a new attempt and an
+  alert.
 - `packages/platform/src/protocol/egress.ts` defines the egress sidecar's
   environment, the configuration that `apps/firops-api/src/execution/egress.ts`
   answers at `/api/internal/execution/tasks/egress`, and the files the sidecar
@@ -86,7 +95,15 @@ boundaries, not compatibility guarantees for retired protocols.
   `apps/firops-api/src/execution/egress-proxy.ts` is the sidecar,
   `apps/elysia-opencode/src/executor/executor-proxy.ts` routes the executor
   through it, and `apps/elysia-opencode/src/executor/execution.ts` reads its
-  files.
+  files. The database Pod's init container,
+  `apps/firops-api/src/execution/database-config.ts`, reads the Run's
+  databases at `/api/internal/execution/tasks/egress/databases`, where only the
+  Task's `database`-audience token authenticates, and writes each database's
+  PgBouncer configuration; each database's container runs PgBouncer on it, and
+  the kubelet restarts it. `apps/firops-api/src/execution/task-api.ts` is both
+  Pods' client of the API and its URL check. Until the database Pod the API
+  created, by its stored uid, is Ready at its Service name, the payload answers
+  `503 DATABASE_POD_STARTING`.
 
 ## Native execution isolation
 
@@ -163,6 +180,16 @@ type. `providers/runtime-write` refuses a managed Task with
 configuration for the rest of the Task, or the devboxes API URL isn't HTTPS on
 port 443, the sidecar exits with code 78 and the reason as its termination
 message, and the Task ends with that reason before it starts, without a retry.
+The database Pod's init container ends the Task the same way; any other failure
+of it exits 1 with its reason as the termination message. Before the Run
+starts, any other exit of the Pod's containers, or a database Pod not Ready five
+minutes after its creation while nothing waits for capacity, retries the Run
+with a new attempt, naming the cause. After the Run starts, a database Pod that
+went away or stayed not Ready for five minutes fails the Run as devboxes'
+failure. Each alert carries the database Pod's conditions and its containers'
+last state. Admission refuses a managed Run whose Project would give it more
+than `databasesPerRunMax` databases with `DATABASE_LIMIT`; a Runner Run has no
+such limit.
 
 A host-bound secret's variable holds the stand-in `__devboxes_<KEY>__`. In an
 HTTPS request to one of the secret's hosts on port 443, the proxy swaps the
