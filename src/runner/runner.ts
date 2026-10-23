@@ -13,6 +13,7 @@ import {
   asksInTerminal,
   type CommandConnection,
   CommandError,
+  describeCommand,
   describeCommands,
   invokeCommand,
   parseResponse,
@@ -186,16 +187,12 @@ export const addRunnerCommands = (program: Command) => {
       ).data,
       "organizations.list",
     );
-    const roles = description.commands.find(
-      (command) => command.operationId === "capacity.register",
-    )?.["x-devboxes"].roles;
-    const managed = roles
-      ? organizations.filter((entry) => roles.includes(entry.role))
-      : organizations;
+    const { roles } = describeCommand(description, "capacity.register").commands[0]["x-devboxes"];
+    const managed = organizations.filter((entry) => roles.includes(entry.role));
     if (options.organization === undefined && managed.length === 0)
       throw new CommandError(
         "ORGANIZATION_NOT_FOUND",
-        `devboxes can't find an Organization where you can add a machine.${roles ? ` Only an Organization's ${roles.join(" or ")} can add one.` : ""}`,
+        `devboxes can't find an Organization where you can add a machine. Only an Organization's ${roles.join(" or ")} can add one.`,
       );
     const chosen =
       options.organization ??

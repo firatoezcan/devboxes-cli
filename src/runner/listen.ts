@@ -4,7 +4,7 @@ import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { DockerOpencodeTaskRuntime } from "@firops/devbox/runner/docker-task-runtime";
-import { JsonValueSchema } from "@firops/platform/protocol/provider-auth";
+import type { JsonValue } from "@firops/platform/protocol/json";
 import { ClaudeCodeArtifactSchema } from "@firops/platform/protocol/task-runtime";
 import { proxy } from "hono/proxy";
 import { jwtVerify, SignJWT } from "jose";
@@ -153,7 +153,7 @@ export const listen = async (options: {
   const api = async <Schema extends TSchema>(
     operation: string,
     schema: Schema,
-    body: Static<typeof JsonValueSchema>,
+    body: JsonValue,
   ): Promise<Static<Schema>> => {
     const { data } = await requestJson(
       { origin: options.apiOrigin, token },

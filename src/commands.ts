@@ -4,7 +4,7 @@ import {
   catalogCommands,
   commandDocumentSchema,
 } from "@firops/platform/protocol/command-catalog";
-import { JsonValueSchema } from "@firops/platform/protocol/provider-auth";
+import { JsonValueSchema, type JsonValue } from "@firops/platform/protocol/json";
 import { redactedSecret, secretRedactingReviver } from "@firops/platform/security/secret-redaction";
 import { describeErrors } from "@firops/platform/values/validation-errors";
 import { defaultTextMapGetter, ROOT_CONTEXT, trace } from "@opentelemetry/api";
@@ -75,7 +75,7 @@ export type CommandDescription = {
 type RequestCorrelation = { traceId: string | null; requestId: string | null };
 type CommandResponse = {
   status: number;
-  data: Static<typeof JsonValueSchema>;
+  data: JsonValue;
 } & RequestCorrelation;
 
 export class CommandError extends Error {
@@ -84,7 +84,7 @@ export class CommandError extends Error {
     message: string,
     readonly options: {
       status?: number;
-      details?: Static<typeof JsonValueSchema>;
+      details?: JsonValue;
       correlation?: RequestCorrelation;
     } = {},
   ) {
@@ -172,10 +172,10 @@ export const credentialSafeJson = (
   text: string,
   secrets: readonly (string | undefined)[],
   redactAuthTokens = false,
-): Static<typeof JsonValueSchema> => {
+): JsonValue => {
   if (!text) return null;
   const redact = secretRedactingReviver(secrets.filter((secret) => secret !== undefined));
-  return JSON.parse(text, (key: string, value: Static<typeof JsonValueSchema>) =>
+  return JSON.parse(text, (key: string, value: JsonValue) =>
     redactAuthTokens && key === "token" && Value.Check(Type.String({ minLength: 1 }), value)
       ? redactedSecret
       : redact(key, value),
@@ -185,7 +185,7 @@ export const credentialSafeJson = (
 /** The `endpoint` response as `schema` declares it, or a refusal that names every problem. */
 export const parseResponse = <Schema extends TSchema>(
   schema: Schema,
-  data: Static<typeof JsonValueSchema>,
+  data: JsonValue,
   endpoint: string,
 ): Static<Schema> => {
   if (Value.Check(schema, data)) return data;
@@ -198,14 +198,14 @@ export const parseResponse = <Schema extends TSchema>(
 export const requestJson = async (
   connection: CommandConnection,
   path: string,
-  body?: Static<typeof JsonValueSchema>,
+  body?: JsonValue,
 ): Promise<CommandResponse> => {
   const headers = new Headers({ Accept: "application/json", "User-Agent": cliUserAgent });
   injectCallerTrace(headers);
   let traceId: string | null = null;
   let requestId: string | null = null;
   let result: CommandResponse | undefined;
-  const { error } = await betterFetch<Static<typeof JsonValueSchema>>(path, {
+  const { error } = await betterFetch<JsonValue>(path, {
     baseURL: connection.origin,
     method: body === undefined ? "GET" : "POST",
     body,
@@ -280,7 +280,7 @@ export const writeOutput = (text: string) =>
     process.stdout.write(Buffer.from(text), (error) => (error ? reject(error) : resolve())),
   );
 
-export const readCommandInput = async (source: string): Promise<Static<typeof JsonValueSchema>> => {
+export const readCommandInput = async (source: string): Promise<JsonValue> => {
   let text: string;
   if (source === "-") {
     if (process.stdin.isTTY)
@@ -297,7 +297,7 @@ export const readCommandInput = async (source: string): Promise<Static<typeof Js
       "Use --input @file or --input -. Keep credentials out of command arguments.",
     );
   }
-  let input: Static<typeof JsonValueSchema> | undefined;
+  let input: JsonValue | undefined;
   try {
     input = JSON.parse(text);
   } catch {
@@ -313,14 +313,14 @@ export const describeCommands = async (
 ): Promise<CommandDescription> => {
   const response = await requestJson(connection, "/api/openapi/json");
   const document = response.data;
-  if (!Value.Check(commandDocumentSchema, document)) {
-    throw new CommandError(
-      "INVALID_DISCOVERY",
-      `The API returned an invalid OpenAPI document: ${describeErrors(commandDocumentSchema, document)}.`,
-    );
-  }
+  const unreadable = (problem: string) =>
+    new CommandError("INVALID_DISCOVERY", "This devboxes CLI needs a newer devboxes API.", {
+      details: { problem },
+    });
+  if (!Value.Check(commandDocumentSchema, document))
+    throw unreadable(describeErrors(commandDocumentSchema, document));
   const catalog = catalogCommands(document);
-  if ("problem" in catalog) throw new CommandError("INVALID_DISCOVERY", catalog.problem);
+  if ("problem" in catalog) throw unreadable(catalog.problem);
   return {
     openapi: document.openapi,
     commands: catalog.commands,
@@ -345,7 +345,7 @@ export const describeCommand = (
 
 export const invokeCommand = async (
   connection: CommandConnection,
-  invocation: { command: string; input: Static<typeof JsonValueSchema> },
+  invocation: { command: string; input: JsonValue },
   readCommands = describeCommands,
 ): Promise<CommandResponse> => {
   const [operation] = describeCommand(await readCommands(connection), invocation.command).commands;
@@ -418,7 +418,7 @@ export const devboxesCommandTools = (
     Type.Object({
       command: Type.String({ minLength: 1 }),
       // Tool arguments arrive as JSON, so the advertised schema accepts every value.
-      input: Type.Unsafe<Static<typeof JsonValueSchema>>({}),
+      input: Type.Unsafe<JsonValue>({}),
     }),
     (invocation) => invokeCommand(connection, invocation, readCommands),
   ),

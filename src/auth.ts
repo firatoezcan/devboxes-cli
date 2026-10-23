@@ -4,7 +4,7 @@ import type { BetterFetchOption } from "@better-fetch/fetch";
 import { isCancel, password as passwordPrompt, select, text } from "@clack/prompts";
 import { writeConfig } from "@firops/connections/local/config";
 import { displayDeviceCode } from "@firops/platform/protocol/device-code";
-import { JsonValueSchema } from "@firops/platform/protocol/provider-auth";
+import { JsonValueSchema, type JsonValue } from "@firops/platform/protocol/json";
 import { describeErrors } from "@firops/platform/values/validation-errors";
 import { createAuthClient } from "better-auth/client";
 import { Option, type Command } from "commander";
@@ -85,7 +85,7 @@ const authenticationResponse = async (
   path: string,
   options: Pick<
     BetterFetchOption<
-      Record<string, Static<typeof JsonValueSchema> | undefined>,
+      Record<string, JsonValue | undefined>,
       Record<string, string | number | boolean>,
       Record<string, string>
     >,
@@ -99,7 +99,7 @@ const authenticationResponse = async (
     ? CookieJar.deserializeSync(context.config.cookieJar)
     : new CookieJar();
   const secrets = [context.config.sessionToken];
-  let result: { status: number; data: Static<typeof JsonValueSchema> } | undefined;
+  let result: { status: number; data: JsonValue } | undefined;
   const client = createAuthClient({
     baseURL: origin,
     disableDefaultFetchPlugins: true,

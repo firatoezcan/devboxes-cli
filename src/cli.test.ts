@@ -3,10 +3,9 @@ import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { JsonValueSchema } from "@firops/platform/protocol/provider-auth";
+import type { JsonValue } from "@firops/platform/protocol/json";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import type { Static } from "typebox";
 
 import { apiOrigin } from "./commands";
 
@@ -247,6 +246,7 @@ describe("devboxes invoke", () => {
                 operationId: "sessions.dispatch",
                 "x-devboxes": {
                   effect: "write",
+                  roles: ["owner", "admin", "member"],
                   authority: "Organization member",
                 },
                 responses: {},
@@ -255,7 +255,11 @@ describe("devboxes invoke", () => {
             "/api/commands/sessions/list": {
               post: {
                 operationId: "sessions.list",
-                "x-devboxes": { effect: "read", authority: "Organization member" },
+                "x-devboxes": {
+                  effect: "read",
+                  roles: ["owner", "admin", "member"],
+                  authority: "Organization member",
+                },
                 responses: {},
               },
             },
@@ -264,6 +268,7 @@ describe("devboxes invoke", () => {
                 operationId: "delegations.create",
                 "x-devboxes": {
                   effect: "write",
+                  roles: [],
                   authority: "Current account session",
                 },
                 responses: {},
@@ -272,14 +277,22 @@ describe("devboxes invoke", () => {
             "/api/commands/sessions/events": {
               post: {
                 operationId: "sessions.events",
-                "x-devboxes": { effect: "read", authority: "Organization member" },
+                "x-devboxes": {
+                  effect: "read",
+                  roles: ["owner", "admin", "member"],
+                  authority: "Organization member",
+                },
                 responses: {},
               },
             },
             "/api/commands/sessions/inspect": {
               post: {
                 operationId: "sessions.inspect",
-                "x-devboxes": { effect: "read", authority: "Organization member" },
+                "x-devboxes": {
+                  effect: "read",
+                  roles: ["owner", "admin", "member"],
+                  authority: "Organization member",
+                },
                 responses: {},
               },
             },
@@ -509,7 +522,7 @@ describe("devboxes commands", () => {
   it("lists an elevated write, and one that leaves `elevated` out, ignoring fields a newer API adds", async () => {
     const contracts: Contract[] = [
       { effect: "write", elevated: true, elevation: "money", roles: ["owner"], authority: "Owner" },
-      { effect: "write", authority: "Organization owner" },
+      { effect: "write", roles: ["owner"], authority: "Organization owner" },
     ];
     for (const contract of contracts) {
       const listed = await list(contract);
@@ -518,14 +531,16 @@ describe("devboxes commands", () => {
     }
   });
 
-  it("refuses a document whose write serves `elevated` as anything but true", async () => {
-    const listed = await list({
-      effect: "write",
-      elevated: false,
-      authority: "Organization owner",
-    });
-    expect(listed.stderr).toContain("/x-devboxes/elevated must be equal to constant");
-    expect(listed.exitCode).not.toBe(0);
+  it("refuses a document whose write serves `elevated` as anything but true, or no roles, as an older API's", async () => {
+    const contracts: Contract[] = [
+      { effect: "write", elevated: false, roles: ["owner"], authority: "Organization owner" },
+      { effect: "write", authority: "Organization owner" },
+    ];
+    for (const contract of contracts) {
+      const listed = await list(contract);
+      expect(listed.stderr).toContain("This devboxes CLI needs a newer devboxes API.");
+      expect(listed.exitCode).not.toBe(0);
+    }
   });
 });
 
@@ -539,10 +554,14 @@ describe("devboxes invoke in a terminal", () => {
     { id: "0198a0b0-0000-7000-8000-0000000000c2", name: "Website" },
   ];
   const uuid = { type: "string", pattern: "^[0-9a-f-]{36}$" };
-  const operation = (operationId: string, schema: Static<typeof JsonValueSchema>) => ({
+  const operation = (operationId: string, schema: JsonValue) => ({
     post: {
       operationId,
-      "x-devboxes": { effect: "write", authority: "Organization member" },
+      "x-devboxes": {
+        effect: "write",
+        roles: ["owner", "admin", "member"],
+        authority: "Organization member",
+      },
       requestBody: { content: { "application/json": { schema } } },
       responses: {},
     },
@@ -759,7 +778,11 @@ describe("devboxes connect", () => {
   const operation = (operationId: string) => ({
     post: {
       operationId,
-      "x-devboxes": { effect: "write", authority: "Organization owner or admin" },
+      "x-devboxes": {
+        effect: "write",
+        roles: ["owner", "admin"],
+        authority: "Organization owner or admin",
+      },
       responses: {},
     },
   });
@@ -1095,6 +1118,7 @@ describe("devboxes machine add", () => {
               {
                 operationId: "organizations.list",
                 effect: "read",
+                roles: [],
                 authority: "Current account session",
               },
               {
@@ -1452,7 +1476,11 @@ describe("devboxes mcp", () => {
     const operation = (operationId: string) => ({
       post: {
         operationId,
-        "x-devboxes": { effect: "read", authority: "Organization member" },
+        "x-devboxes": {
+          effect: "read",
+          roles: ["owner", "admin", "member"],
+          authority: "Organization member",
+        },
         responses: {},
       },
     });
