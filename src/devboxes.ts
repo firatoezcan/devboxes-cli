@@ -132,10 +132,10 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
     )
     .option(
       "--organization <id>",
-      "The Organization that gets the Provider Account. In a terminal, devboxes asks for it.",
+      "The Organization that gets the model account. In a terminal, devboxes asks for it.",
     )
-    .option("--label <label>", "The Provider Account's name. In a terminal, devboxes asks for it.")
-    .option("--account <id>", "Provider Account whose credential the connection replaces")
+    .option("--label <label>", "The model account's name. In a terminal, devboxes asks for it.")
+    .option("--account <id>", "The model account whose credential the connection replaces")
     .option("--api-key", "connect an API key instead of signing in");
   connect.action(async (providerId?: string) => {
     const options = connect.optsWithGlobals<{
@@ -157,7 +157,7 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
     if (!interactive && options.label === undefined)
       throw new CommandError(
         "LABEL_REQUIRED",
-        "Name the Provider Account with --label <label>, or run the command in a terminal to enter one.",
+        "Name the model account with --label <label>, or run the command in a terminal to enter one.",
       );
     const organizationId =
       options.organization ??
@@ -166,7 +166,7 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
         await promptField(
           { connection, description: await describeCommands(connection) },
           "organizationId",
-          { type: "string", description: "The Organization that gets the Provider Account." },
+          { type: "string", description: "The Organization that gets the model account." },
           {},
         ),
         "organizations.list",
@@ -228,7 +228,7 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
     const named =
       options.label ??
       (await text({
-        message: "Name of the Provider Account",
+        message: "Name of the model account",
         initialValue: provider.name,
         validate: (value) => (value?.trim() ? undefined : "Enter a name."),
         output: process.stderr,
@@ -326,7 +326,7 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
     await writeOutput(
       options.json
         ? `${JSON.stringify({ status: "completed", accountId })}\n`
-        : `Connected ${label} as Provider Account ${accountId}.\n`,
+        : `Connected ${label} as model account ${accountId}.\n`,
     );
   });
 

@@ -258,7 +258,7 @@ describe("devboxes entrypoint", () => {
       "ORGANIZATION_REQUIRED",
     ],
     [
-      "a Provider Account name missing outside a terminal",
+      "a model account name missing outside a terminal",
       ["--json", "connect", "openai", "--organization", "0198a0b0-0000-7000-8000-000000000001"],
       scoped,
       "LABEL_REQUIRED",
@@ -842,7 +842,7 @@ describe("devboxes connect", () => {
   const organizationId = "0198a0b0-0000-7000-8000-000000000001";
   const code = `pasted-code-${crypto.randomUUID()}#state`;
   const key = `sk-ant-api03-${crypto.randomUUID()}`;
-  const managersOnly = "Only an Organization owner or admin can connect a Provider Account.";
+  const managersOnly = "Only an Organization owner or admin can connect a model account.";
   let manages = true;
   let completeAnswers: object[] = [];
   const starts: unknown[] = [];
@@ -959,7 +959,7 @@ describe("devboxes connect", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toContain("Open https://sign-in.example/claude-subscription?state=state");
-    expect(result.stdout).toBe("Connected Claude as Provider Account account-1.\n");
+    expect(result.stdout).toBe("Connected Claude as model account account-1.\n");
     expect(`${result.stdout}${result.stderr}`).not.toContain(code);
     expect(completions).toEqual([{ organizationId, attemptId: "attempt-1", code }]);
   });
@@ -1020,7 +1020,7 @@ describe("devboxes connect", () => {
     expect(approved.exitCode).toBe(0);
     expect(approved.stderr).toContain("https://sign-in.example/openai?state=state");
     expect(approved.stderr).toContain("ABCD-1234");
-    expect(approved.stdout).toBe("Connected Claude as Provider Account account-1.\n");
+    expect(approved.stdout).toBe("Connected Claude as model account account-1.\n");
     expect(approvals).toBe(3);
     expect(refused.exitCode).toBe(1);
     expect(refused.stderr).toContain("CONNECTION_FAILED");
@@ -1055,7 +1055,7 @@ describe("devboxes connect", () => {
     expect(starts).toEqual([]);
     for (const result of [added, replaced, instead]) {
       expect(result.exitCode).toBe(0);
-      expect(result.stdout).toBe("Connected Claude as Provider Account account-2.\n");
+      expect(result.stdout).toBe("Connected Claude as model account account-2.\n");
       expect(`${result.stdout}${result.stderr}`).not.toContain(key);
     }
     expect(accountWrites).toEqual([
@@ -1133,7 +1133,7 @@ describe("devboxes connect", () => {
     ])
       expect(cli.screen()).toContain(option);
     expect(cli.screen()).not.toContain("Claude subscription API key");
-    expect(cli.screen()).toContain("Connected Claude as Provider Account account-2.");
+    expect(cli.screen()).toContain("Connected Claude as model account account-2.");
     expect(cli.screen()).not.toContain(key);
     expect(accountWrites).toEqual([
       {
@@ -1149,13 +1149,13 @@ describe("devboxes connect", () => {
     expect(await cli.opened()).toBe(false);
   });
 
-  it("asks for the Organization and the Provider Account's name when they are missing", async () => {
+  it("asks for the Organization and the model account's name when they are missing", async () => {
     reset();
     const cli = await inTerminal(["connect", "anthropic"], connection);
 
     expect(await cli.shows("Acme")).toBe(true);
     cli.type("\r");
-    expect(await cli.shows("Name of the Provider Account")).toBe(true);
+    expect(await cli.shows("Name of the model account")).toBe(true);
     cli.type(" key\r");
     expect(await cli.shows("Paste the Anthropic API key")).toBe(true);
     cli.type(`${key}\r`);
