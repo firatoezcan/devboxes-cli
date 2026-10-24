@@ -41,7 +41,7 @@
   },
   "devDependencies": {
     "@types/dockerode": "catalog:",
-    "@types/node": "^25.6.0",
+    "@types/node": "^26.6.5",
     "@types/tar-stream": "catalog:",
     "bun-types": "catalog:",
     "drizzle-orm": "1.0.0-rc.5-5935859",
