@@ -299,7 +299,7 @@ export const addAuthenticationCommands = (program: Command) => {
                     expiresIn: device.expires_in,
                   },
                 })
-              : `Open ${verification.href}. If that browser is signed in to devboxes, approve the sign-in there. Otherwise sign in with ${choice.label} first.\nCheck that the page shows code ${displayDeviceCode(device.user_code)}. Waiting for approval...`
+              : `Open ${verification.href}, check that it shows code ${displayDeviceCode(device.user_code)}, and approve the sign-in.`
           }\n`,
         );
         if (interactive) openInBrowser(verification);
@@ -571,7 +571,9 @@ export const addAuthenticationCommands = (program: Command) => {
 
   const nativeAuth = program
     .command("auth")
-    .description("discover or invoke the installed Better Auth account and security operations")
+    .description(
+      "discover or run account and security operations, such as two-factor sign-in and sessions",
+    )
     .argument("[path]", "Native authentication endpoint path; omit to list its generated schema")
     .option("--method <method>", "GET or POST when an endpoint supports both")
     .option("--input <source>", "Invoke with JSON from @file or - for stdin; omit to describe");

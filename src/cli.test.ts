@@ -1853,7 +1853,7 @@ describe("devboxes signup and login", () => {
       await api.stop(true);
     }
   });
-  it("says what the approval page does, and shows its code in the page's two halves", async () => {
+  it("asks to check the code, in the page's two halves, and approve the sign-in", async () => {
     const api = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
@@ -1886,14 +1886,9 @@ describe("devboxes signup and login", () => {
       ]);
 
       expect(result.exitCode).toBe(0);
-      for (const value of [
-        `${api.url.origin}/device?user_code=ABCDEFGH&provider=github`,
-        "approve the sign-in there",
-        "GitHub",
-        "ABCD-EFGH",
-      ]) {
-        expect(result.stderr).toContain(value);
-      }
+      expect(result.stderr).toContain(
+        `Open ${api.url.origin}/device?user_code=ABCDEFGH&provider=github, check that it shows code ABCD-EFGH, and approve the sign-in.`,
+      );
     } finally {
       await api.stop(true);
     }

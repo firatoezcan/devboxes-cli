@@ -39,7 +39,7 @@ export const createDevboxesCommand = () => {
         throw new CommandError("INVALID_USAGE", error.message.replace(/^error: /, ""));
       }
     })
-    .option("--config <path>", "Path to the devboxes configuration file")
+    .option("--config <path>", "Use another saved account file")
     .option(
       "--api <url>",
       defaultApiOrigin

@@ -125,7 +125,7 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
 
   const connect = program
     .command("connect")
-    .description("connect a Provider Account by signing in with the provider or with an API key")
+    .description("connect a model account by signing in with the provider or with an API key")
     .argument(
       "[providerId]",
       "The provider ID from providers.list. In a terminal, devboxes asks for it.",
@@ -332,7 +332,7 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
 
   const mcp = program
     .command("mcp")
-    .description("serve devboxes describe and invoke tools over stdio");
+    .description("serve devboxes tools to a coding agent over stdio");
   mcp.action(async () => {
     const options = mcp.optsWithGlobals<{ api?: string; config?: string }>();
     await runDevboxesMcpServer(() => loadCommandConnection({ ...options, json: true }));

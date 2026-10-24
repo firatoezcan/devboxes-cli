@@ -101,9 +101,9 @@ const runRunner = async (
 export const addRunnerCommands = (program: Command) => {
   const command = program
     .command("runner")
-    .description("Run registered native execution capacity")
+    .description("run this computer as a registered machine")
     .command("listen")
-    .description("Launch assigned Tasks and observe their Docker executors")
+    .description("launch assigned Tasks and observe their Docker executors")
     .option(
       "--token-file <path>",
       "Runner key file from devboxes machine add, owner-only (0600; on Windows, its access-control list decides); defaults to the one it saved",
@@ -133,9 +133,9 @@ export const addRunnerCommands = (program: Command) => {
 
   const add = program
     .command("machine")
-    .description("Add computers that run your Organization's tasks")
+    .description("add computers that run your Organization's tasks")
     .command("add")
-    .description("Add this computer as a machine that runs your Organization's tasks")
+    .description("add this computer as a machine that runs your Organization's tasks")
     .option(
       "--organization <id>",
       "The Organization whose tasks the machine runs. In a terminal, devboxes asks for it.",

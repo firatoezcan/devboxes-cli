@@ -415,8 +415,8 @@ const commandTool = <Input extends TObject, Result>(
 });
 
 /**
- * The devboxes command tools. `devboxes mcp` serves them over stdio, and the Chat native host
- * runs them in its own process. Each call reads the advertised commands with `readCommands`, which
+ * The devboxes command tools. `devboxes mcp` serves describe and invoke over stdio, and the Chat
+ * native host runs all four in its own process. Each call reads the advertised commands with `readCommands`, which
  * by default asks the API again.
  */
 export const devboxesCommandTools = (
