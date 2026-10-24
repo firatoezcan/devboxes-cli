@@ -4,7 +4,7 @@ export default defineConfig({
   run: {
     tasks: {
       tslint: {
-        command: "bun check --project tsconfig.json",
+        command: "tsc --noEmit --project tsconfig.json",
         cache: false,
       },
     },
