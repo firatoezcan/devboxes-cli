@@ -88,7 +88,7 @@ const localDocker = { DOCKER_HOST: undefined, DEVBOX_OPENCODE_DOCKER_SOCKET_PATH
 
 /**
  * Runs the CLI in a pseudo-terminal, with an `open` and an `xdg-open` on PATH that only record
- * their calls.
+ * their calls. TERM names a color terminal, so clack colors its prompts as it does under CI.
  */
 const inTerminal = async (args: string[], env: Record<string, string>) => {
   const bin = await mkdtemp(join(fixtureDirectory, "bin-"));
@@ -98,9 +98,10 @@ const inTerminal = async (args: string[], env: Record<string, string>) => {
     await chmod(join(bin, launcher), 0o755);
   }
   let screen = "";
+  let answered: number | null = null;
   const child = Bun.spawn([process.execPath, "src/cli.ts", ...args], {
     cwd: join(import.meta.dir, ".."),
-    env: { ...process.env, ...env, PATH: `${bin}:${process.env.PATH}` },
+    env: { ...process.env, ...env, PATH: `${bin}:${process.env.PATH}`, TERM: "xterm-256color" },
     terminal: {
       cols: 120,
       rows: 40,
@@ -109,12 +110,34 @@ const inTerminal = async (args: string[], env: Record<string, string>) => {
       },
     },
   });
+  /**
+   * Whether the prompt clack draws last (◆) shows `text` and came after the prompt the previous
+   * answer closed (◇), so keys typed now reach it and not the previous prompt, which can still be
+   * open. clack colors its symbols, so `text` is found in the prompt's frame, never with a symbol.
+   */
+  const prompting = (text: string) => {
+    const active = screen.lastIndexOf("◆");
+    return (
+      active > screen.lastIndexOf("◇") &&
+      (answered === null || screen.indexOf("◇", answered) !== -1) &&
+      screen.slice(active).includes(text)
+    );
+  };
   return {
     screen: () => screen,
     shows: async (text: string) => {
       for (let waited = 0; !screen.includes(text) && waited < 10_000; waited += 50)
         await Bun.sleep(50);
       return screen.includes(text);
+    },
+    /** Types `keys`, which end by submitting, into the next prompt that shows `text`. */
+    answer: async (text: string, keys: string) => {
+      for (let waited = 0; !prompting(text); waited += 25) {
+        if (waited >= 10_000) throw new Error(`No open prompt shows "${text}":\n${screen}`);
+        await Bun.sleep(25);
+      }
+      answered = screen.length;
+      child.terminal?.write(keys);
     },
     type: (text: string) => child.terminal?.write(text),
     exited: (milliseconds = 10_000) =>
@@ -734,18 +757,15 @@ describe("devboxes invoke in a terminal", () => {
     requests.length = 0;
     const cli = await inTerminal(["invoke", "sessions.dispatch"], connection);
 
-    expect(await cli.shows("Side project")).toBe(true);
-    cli.type("\r");
-    expect(await cli.shows("Website")).toBe(true);
-    cli.type("\x1b[B\r");
-    expect(await cli.shows("title")).toBe(true);
-    cli.type("Churn report\r");
-    expect(await cli.shows("instruction")).toBe(true);
-    cli.type("Write this week's churn report.\r\r");
-    expect(await cli.shows("Also set")).toBe(true);
-    cli.type(" \r");
-    expect(await cli.shows("blueprint: Name of the Blueprint that runs the work.")).toBe(true);
-    cli.type("Weekly churn report\r");
+    await cli.answer("Side project", "\r");
+    await cli.answer("Website", "\x1b[B\r");
+    await cli.answer("title", "Churn report\r");
+    await cli.answer("instruction", "Write this week's churn report.\r\r");
+    await cli.answer("Also set", " \r");
+    await cli.answer(
+      "blueprint: Name of the Blueprint that runs the work.",
+      "Weekly churn report\r",
+    );
     const exitCode = await cli.exited();
     cli.kill();
 
@@ -772,16 +792,11 @@ describe("devboxes invoke in a terminal", () => {
     projectsRefused = true;
     const cli = await inTerminal(["invoke", "sessions.dispatch"], connection);
 
-    expect(await cli.shows("Side project")).toBe(true);
-    cli.type("\r");
-    expect(await cli.shows("projectId")).toBe(true);
-    cli.type(`${projects[0]?.id}\r`);
-    expect(await cli.shows("title")).toBe(true);
-    cli.type("Churn report\r");
-    expect(await cli.shows("instruction")).toBe(true);
-    cli.type("Write this week's churn report.\r\r");
-    expect(await cli.shows("Also set")).toBe(true);
-    cli.type("\r");
+    await cli.answer("Side project", "\r");
+    await cli.answer("projectId", `${projects[0]?.id}\r`);
+    await cli.answer("title", "Churn report\r");
+    await cli.answer("instruction", "Write this week's churn report.\r\r");
+    await cli.answer("Also set", "\r");
     const exitCode = await cli.exited();
     cli.kill();
     projectsRefused = false;
@@ -803,22 +818,14 @@ describe("devboxes invoke in a terminal", () => {
     const key = `sk-test-${crypto.randomUUID()}`;
     const cli = await inTerminal(["invoke", "connections.add"], connection);
 
-    expect(await cli.shows("Side project"), cli.screen()).toBe(true);
-    cli.type("\x1b[B\r");
-    expect(await cli.shows("label")).toBe(true);
-    cli.type("Claude\r");
-    expect(await cli.shows("Set limit")).toBe(true);
-    cli.type("\r");
-    expect(await cli.shows("limit: The most tasks at once.")).toBe(true);
-    cli.type("5\r");
-    expect(await cli.shows("type oauth")).toBe(true);
-    cli.type("\r");
-    expect(await cli.shows("auth.key")).toBe(true);
-    cli.type(`${key}\r`);
-    expect(await cli.shows("scopes")).toBe(true);
-    cli.type("\x1b[B \r");
-    expect(await cli.shows("priority")).toBe(true);
-    cli.type("\x1b[B\r");
+    await cli.answer("Side project", "\x1b[B\r");
+    await cli.answer("label", "Claude\r");
+    await cli.answer("Set limit", "\r");
+    await cli.answer("limit: The most tasks at once.", "5\r");
+    await cli.answer("type oauth", "\r");
+    await cli.answer("auth.key", `${key}\r`);
+    await cli.answer("scopes", "\x1b[B \r");
+    await cli.answer("priority", "\x1b[B\r");
     const exitCode = await cli.exited();
     cli.kill();
 
@@ -1115,10 +1122,8 @@ describe("devboxes connect", () => {
     reset();
     const cli = await inTerminal(connectTo(), connection);
 
-    expect(await cli.shows("xAI API key")).toBe(true);
-    cli.type("\x1b[B\r");
-    expect(await cli.shows("Paste the OpenAI API key")).toBe(true);
-    cli.type(`${key}\r`);
+    await cli.answer("xAI API key", "\x1b[B\r");
+    await cli.answer("Paste the OpenAI API key", `${key}\r`);
     const exitCode = await cli.exited();
     cli.kill();
 
@@ -1153,12 +1158,9 @@ describe("devboxes connect", () => {
     reset();
     const cli = await inTerminal(["connect", "anthropic"], connection);
 
-    expect(await cli.shows("Acme")).toBe(true);
-    cli.type("\r");
-    expect(await cli.shows("Name of the model account")).toBe(true);
-    cli.type(" key\r");
-    expect(await cli.shows("Paste the Anthropic API key")).toBe(true);
-    cli.type(`${key}\r`);
+    await cli.answer("Acme", "\r");
+    await cli.answer("Name of the model account", " key\r");
+    await cli.answer("Paste the Anthropic API key", `${key}\r`);
     const exitCode = await cli.exited();
     cli.kill();
 
@@ -1181,8 +1183,7 @@ describe("devboxes connect", () => {
     manages = false;
     const cli = await inTerminal(connectTo(), connection);
 
-    expect(await cli.shows("xAI (browser sign-in)")).toBe(true);
-    cli.type("\r");
+    await cli.answer("xAI (browser sign-in)", "\r");
     const exitCode = await cli.exited();
     cli.kill();
 
@@ -1271,12 +1272,9 @@ describe("devboxes machine add", () => {
     const cli = await inTerminal(["machine", "add"], env);
 
     expect(await cli.shows("Which Organization should run tasks on this machine?")).toBe(true);
-    expect(await cli.shows("Side project")).toBe(true);
-    cli.type("\x1b[B\r");
-    expect(await cli.shows("Name this machine")).toBe(true);
-    cli.type("\r");
-    expect(await cli.shows("Start this machine now?")).toBe(true);
-    cli.type("\x1b[C\r");
+    await cli.answer("Side project", "\x1b[B\r");
+    await cli.answer("Name this machine", "\r");
+    await cli.answer("Start this machine now?", "\x1b[C\r");
     const exitCode = await cli.exited();
     cli.kill();
 
@@ -2145,12 +2143,9 @@ describe("devboxes after a refusal for an old sign-in", () => {
     );
 
     expect(await cli.shows("This change needs a recent sign-in.")).toBe(true);
-    expect(await cli.shows("Sign in with")).toBe(true);
-    cli.type("\x1b[B\x1b[B\r");
-    expect(await cli.shows("◆  Email"), cli.screen()).toBe(true);
-    cli.type("owner@example.com\r");
-    expect(await cli.shows("Code sent to owner@example.com"), cli.screen()).toBe(true);
-    cli.type("123456\r");
+    await cli.answer("Sign in with", "\x1b[B\x1b[B\r");
+    await cli.answer("Email", "owner@example.com\r");
+    await cli.answer("Code sent to owner@example.com", "123456\r");
     const exitCode = await cli.exited();
     cli.kill();
 
@@ -2172,12 +2167,9 @@ describe("devboxes after a refusal for an old sign-in", () => {
       {},
     );
 
-    expect(await cli.shows("Sign in with")).toBe(true);
-    cli.type("\x1b[B\x1b[B\r");
-    expect(await cli.shows("◆  Email"), cli.screen()).toBe(true);
-    cli.type("other@example.com\r");
-    expect(await cli.shows("Code sent to other@example.com"), cli.screen()).toBe(true);
-    cli.type("123456\r");
+    await cli.answer("Sign in with", "\x1b[B\x1b[B\r");
+    await cli.answer("Email", "other@example.com\r");
+    await cli.answer("Code sent to other@example.com", "123456\r");
     const exitCode = await cli.exited();
     cli.kill();
 
