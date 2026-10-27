@@ -1,0 +1,155 @@
+diff --git a/dist/api/routes/session.mjs b/dist/api/routes/session.mjs
+--- a/dist/api/routes/session.mjs
++++ b/dist/api/routes/session.mjs
+@@ -471,10 +471,17 @@ const revokeOtherSessions = createAuthEndpoint("/revoke-other-sessions", {
+ 		message: "Unauthorized",
+ 		code: "UNAUTHORIZED"
+ 	});
+-	const otherSessions = (await ctx.context.internalAdapter.listSessions(session.user.id)).filter((session) => {
+-		return session.expiresAt > /* @__PURE__ */ new Date();
+-	}).filter((session) => session.token !== ctx.context.session.session.token);
+-	await Promise.all(otherSessions.map((session) => ctx.context.internalAdapter.deleteSession(session.token)));
++	await ctx.context.adapter.deleteMany({
++		model: "session",
++		where: [{
++			field: "userId",
++			value: session.user.id
++		}, {
++			field: "token",
++			value: session.session.token,
++			operator: "ne"
++		}]
++	});
+ 	return ctx.json({ status: true });
+ });
+ //#endregion
+diff --git a/dist/plugins/two-factor/index.mjs b/dist/plugins/two-factor/index.mjs
+--- a/dist/plugins/two-factor/index.mjs
++++ b/dist/plugins/two-factor/index.mjs
+@@ -17,6 +17,7 @@ import { createAuthEndpoint, createAuthMiddleware } from "@better-auth/core/api"
+ import * as z from "zod";
+ import { createHMAC } from "@better-auth/utils/hmac";
+ import { createOTP } from "@better-auth/utils/otp";
++import { getCurrentAdapter, runWithTransaction } from "@better-auth/core/context";
+ //#region src/plugins/two-factor/index.ts
+ const twoFactor = (options) => {
+ 	const opts = { twoFactorTable: "twoFactor" };
+@@ -149,14 +150,19 @@ const twoFactor = (options) => {
+ 					backupCodes: backupCodes.encryptedBackupCodes,
+ 					verified: !!options?.skipVerificationOnEnable
+ 				};
+-				if (existingTwoFactor) await ctx.context.adapter.update({
+-					model: opts.twoFactorTable,
+-					update: totpData,
+-					where: [{
+-						field: "id",
+-						value: existingTwoFactor.id
+-					}]
+-				});
++				if (existingTwoFactor) {
++					if (!await ctx.context.adapter.update({
++						model: opts.twoFactorTable,
++						update: totpData,
++						where: [{
++							field: "id",
++							value: existingTwoFactor.id
++						}, {
++							field: "verified",
++							value: false
++						}]
++					})) throw APIError.from("BAD_REQUEST", TWO_FACTOR_ERROR_CODES.TOTP_ALREADY_ENABLED);
++				}
+ 				else await ctx.context.adapter.create({
+ 					model: opts.twoFactorTable,
+ 					data: {
+@@ -214,22 +220,25 @@ const twoFactor = (options) => {
+ 						userId: user.id
+ 					})) throw APIError.from("BAD_REQUEST", BASE_ERROR_CODES.INVALID_PASSWORD);
+ 				}
+-				const updatedUser = await ctx.context.internalAdapter.updateUser(user.id, { twoFactorEnabled: false });
+-				await ctx.context.adapter.delete({
+-					model: opts.twoFactorTable,
+-					where: [{
+-						field: "userId",
+-						value: updatedUser.id
+-					}]
+-				});
+-				/**
+-				* Update the session cookie with the new user data
+-				*/
+-				await setSessionCookie(ctx, {
+-					session: await ctx.context.internalAdapter.createSession(updatedUser.id, false, ctx.context.session.session),
+-					user: updatedUser
++				await runWithTransaction(ctx.context.adapter, async () => {
++					const adapter = await getCurrentAdapter(ctx.context.adapter);
++					await adapter.delete({
++						model: opts.twoFactorTable,
++						where: [{
++							field: "userId",
++							value: user.id
++						}]
++					});
++					const updatedUser = await ctx.context.internalAdapter.updateUser(user.id, { twoFactorEnabled: false });
++					/**
++					* Update the session cookie with the new user data
++					*/
++					await setSessionCookie(ctx, {
++						session: await ctx.context.internalAdapter.createSession(updatedUser.id, false, ctx.context.session.session),
++						user: updatedUser
++					});
++					await ctx.context.internalAdapter.deleteSession(ctx.context.session.session.token);
+ 				});
+-				await ctx.context.internalAdapter.deleteSession(ctx.context.session.session.token);
+ 				const disableTrustCookie = ctx.context.createAuthCookie(TRUST_DEVICE_COOKIE_NAME, { maxAge: trustDeviceMaxAge });
+ 				const disableTrustValue = await ctx.getSignedCookie(disableTrustCookie.name, ctx.context.secret);
+ 				if (disableTrustValue) {
+diff --git a/dist/plugins/two-factor/totp/index.mjs b/dist/plugins/two-factor/totp/index.mjs
+--- a/dist/plugins/two-factor/totp/index.mjs
++++ b/dist/plugins/two-factor/totp/index.mjs
+@@ -9,6 +9,7 @@ import { APIError, BASE_ERROR_CODES } from "@better-auth/core/error";
+ import { createAuthEndpoint } from "@better-auth/core/api";
+ import * as z from "zod";
+ import { createOTP } from "@better-auth/utils/otp";
++import { getCurrentAdapter, runWithTransaction } from "@better-auth/core/context";
+ //#region src/plugins/two-factor/totp/index.ts
+ const generateTOTPBodySchema = z.object({ secret: z.string().meta({ description: "The secret to generate the TOTP code" }) });
+ const verifyTOTPBodySchema = z.object({
+@@ -202,7 +203,20 @@ const totp2fa = (options) => {
+ 					return invalid("INVALID_CODE");
+ 				}
+ 				if (isSignIn) await resetTwoFactorFailures(ctx, twoFactorTable, twoFactor);
+-				if (twoFactor.verified !== true) {
++				if (twoFactor.verified !== true) await runWithTransaction(ctx.context.adapter, async () => {
++					const adapter = await getCurrentAdapter(ctx.context.adapter);
++					const verifiedTwoFactor = await adapter.update({
++						model: twoFactorTable,
++						update: { verified: true },
++						where: [{
++							field: "id",
++							value: twoFactor.id
++						}, {
++							field: "secret",
++							value: twoFactor.secret
++						}]
++					});
++					if (!verifiedTwoFactor) invalid("INVALID_CODE");
+ 					if (!user.twoFactorEnabled) {
+ 						const activeSession = session.session;
+ 						const updatedUser = await ctx.context.internalAdapter.updateUser(user.id, { twoFactorEnabled: true });
+@@ -212,15 +226,7 @@ const totp2fa = (options) => {
+ 						});
+ 						await ctx.context.internalAdapter.deleteSession(activeSession.token);
+ 					}
+-					await ctx.context.adapter.update({
+-						model: twoFactorTable,
+-						update: { verified: true },
+-						where: [{
+-							field: "id",
+-							value: twoFactor.id
+-						}]
+-					});
+-				}
++				});
+ 				return valid(ctx);
+ 			})
+ 		}
