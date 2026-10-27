@@ -48,7 +48,7 @@
     "tsrs": "catalog:"
   },
   "engines": {
-    "bun": ">=1.4.3"
+    "bun": ">=1.4.4"
   },
   "packageManager": "pnpm@12.15.0"
 }

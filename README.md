@@ -3,7 +3,7 @@
 The CLI discovers and invokes the application's API-owned commands. Its MCP
 server exposes the same discovery and invocation implementation to agents.
 
-The package launcher requires Bun 1.4.3 or later. Published native binaries
+The package launcher requires Bun 1.4.4 or later. Published native binaries
 include their runtime and do not require a separate JavaScript runtime.
 
 ## Run from source
