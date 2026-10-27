@@ -2147,7 +2147,7 @@ describe("devboxes after a refusal for an old sign-in", () => {
     expect(await cli.shows("This change needs a recent sign-in.")).toBe(true);
     expect(await cli.shows("Sign in with")).toBe(true);
     cli.type("\x1b[B\x1b[B\r");
-    expect(await cli.shows("◇"), cli.screen()).toBe(true);
+    expect(await cli.shows("◆  Email"), cli.screen()).toBe(true);
     cli.type("owner@example.com\r");
     expect(await cli.shows("Code sent to owner@example.com"), cli.screen()).toBe(true);
     cli.type("123456\r");
@@ -2174,7 +2174,7 @@ describe("devboxes after a refusal for an old sign-in", () => {
 
     expect(await cli.shows("Sign in with")).toBe(true);
     cli.type("\x1b[B\x1b[B\r");
-    expect(await cli.shows("◇"), cli.screen()).toBe(true);
+    expect(await cli.shows("◆  Email"), cli.screen()).toBe(true);
     cli.type("other@example.com\r");
     expect(await cli.shows("Code sent to other@example.com"), cli.screen()).toBe(true);
     cli.type("123456\r");
