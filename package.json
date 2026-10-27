@@ -44,7 +44,7 @@
     "@types/node": "^26.6.5",
     "@types/tar-stream": "catalog:",
     "bun-types": "catalog:",
-    "drizzle-orm": "1.0.0-rc.5-5935859",
+    "drizzle-orm": "1.0.0-rc.5",
     "tsrs": "catalog:"
   },
   "engines": {
