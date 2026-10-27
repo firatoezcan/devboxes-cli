@@ -1,5 +1,26 @@
 # devboxes
 
+## 0.8.0
+
+### Minor Changes
+
+- The CLI is built with Bun 1.4.4, the first Bun release that fixes CVE-2026-111497 (Node2Shell), an out-of-bounds write in its Brotli decoder that lets crafted Brotli data run code. Every earlier CLI release embeds an older Bun. Update every installed CLI and Runner to this release.
+- An elevated write, such as adding a Credential or changing an Organization's members, needs a sign-in from the last 10 minutes. In a terminal, the CLI then runs `devboxes login` and sends the refused request once more after you sign in to the same account. Signing in to another account fails with `ACCOUNT_CHANGED`. With `--json`, outside a terminal or with `DEVBOXES_TOKEN`, the CLI prints the API's `SESSION_NOT_FRESH` refusal. `devboxes mcp` uses a new sign-in without a restart.
+- When your account has two-factor authentication, `devboxes login` asks for an authenticator or backup code, or emails you a code. Outside a terminal, its message names the `devboxes auth` operations that send and verify the emailed code.
+- `devboxes login --github` and `--google` print one line: the page to open, the code it shows, and that you approve the sign-in there.
+- The CLI needs an API that states each command's roles. An older API's command list fails with `INVALID_DISCOVERY`: "This devboxes CLI needs a newer devboxes API."
+- `devboxes connect` says model account where it said Provider Account, and refuses a provider that takes neither a sign-in nor an API key with `PROVIDER_NOT_CONNECTABLE` before it asks for anything.
+- `devboxes connect` opens only an `http:` or `https:` sign-in URL in a browser. An answer with another URL fails with `INVALID_RESPONSE` before the CLI shows it.
+- `devboxes runner listen` requires the state directory and its `relay.json` to be yours, with no access for group or others, and fails with `INVALID_RUNNER_STATE_DIRECTORY` otherwise. The token file must be yours too. On Windows, the file's access-control list decides and the CLI skips these checks.
+- The Runner removes Task containers with their anonymous volumes. For a failed Task container it keeps, it prints the command that removes the container and its folder.
+- A Task whose image pull fails ends at its start with the pull's error and the image's name.
+- The CLI ignores the old `DEVBOX_*` connection variables instead of failing with `LEGACY_CONNECTION`.
+- `devboxes auth /admin/revoke-user-session` no longer looks up the session's token, because the API no longer serves that operation.
+
+### Patch Changes
+
+- 47f2fd4: `devboxes machine add` offers the Organizations where your role may add a machine, as the roles the API's `capacity.register` contract names: today owners and admins. When you hold no such role anywhere, it fails with `ORGANIZATION_NOT_FOUND`.
+
 ## 0.7.1
 
 ### Patch Changes
