@@ -91,7 +91,10 @@ boundaries, not compatibility guarantees for retired protocols.
   `egress`-audience token authenticates there, at
   `/api/internal/execution/tasks/egress/model`, which answers the model
   credential's current value, and at
-  `/api/internal/execution/tasks/egress/credential`, never its Run token.
+  `/api/internal/execution/tasks/egress/credential`, never its Run token. A
+  System Session's sidecar, whose environment sets `DEVBOX_SYSTEM_MODEL`,
+  reads and renews the system model's credential only at
+  `/api/internal/execution/tasks/egress/system-model`.
   `apps/firops-api/src/execution/egress-proxy.ts` is the sidecar,
   `apps/elysia-opencode/src/executor/executor-proxy.ts` routes the executor
   through it, and `apps/elysia-opencode/src/executor/execution.ts` reads its
