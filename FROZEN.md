@@ -34,8 +34,8 @@ boundaries, not compatibility guarantees for retired protocols.
   `/api/internal/execution/runners` claims, assignments, stop reports, and
   Runner heartbeat expiry.
 - `apps/firops-api/src/execution/callbacks.ts` owns Task callbacks. The hidden
-  `runtime-*` routes in `apps/firops-api/src/routes/commands/providers.ts` are
-  Task callbacks for the Run's Provider Account.
+  `runtime-*` routes in `apps/firops-api/src/routes/commands/model-accounts.ts` are
+  Task callbacks for the Run's model account.
   `execution/authority.ts` validates a managed Task's signed Run token, or a
   Runner Task's relayed Runner credential, against the Task, Run, Organization,
   and current actor authority, and a managed Task's token against the client IP
@@ -161,7 +161,7 @@ the proxy's, and redacts the session.
 On managed capacity, the executor holds only the fixed stand-ins of
 `credentialStandIns` in `packages/platform/src/protocol/egress.ts`: its
 `DEVBOX_BACKEND_TOKEN` is `__devboxes-run-token__`, and the payload and
-`providers/runtime-read` give each part of the model credential as
+`model-accounts/runtime-read` give each part of the model credential as
 `__devboxes-model-key__`, `__devboxes-model-access__` and
 `__devboxes-model-refresh__`, which no secret's stand-in can equal. The
 executor's proxy session sets the Run token as the Authorization header of
@@ -170,15 +170,15 @@ other header as sent. It swaps the access token or key in headers of requests to
 the model's hosts, and on a sign-in's token host, even one that also serves the
 model, only the refresh token, in a request's body. agent-vault doesn't store
 the model credential: it resolves it at each request from the sidecar's hook, a
-Unix socket only uid 1003 may connect to, and the hook reads the Provider
-Account's current credential from `egress/model`, so a renewal by any holder of
+Unix socket only uid 1003 may connect to, and the hook reads the model
+account's current credential from `egress/model`, so a renewal by any holder of
 the account applies to the next request and a restarted sidecar keeps nothing
 stale. A response from a sign-in's token host goes through the same hook, which
 stores the renewed tokens through the compare-and-swap at `egress/credential`,
 retried on a network failure or a 5xx, and answers stand-ins in their place, an
 ID token as `__devboxes-redacted-id-token__`. It reads a JSON or form-encoded
 answer, and fails one whose tokens it can't replace and one of any other content
-type. `providers/runtime-write` refuses a managed Task with
+type. `model-accounts/runtime-write` refuses a managed Task with
 `MANAGED_CREDENTIAL_WRITE`. When the API refuses the `egress` sidecar's
 configuration for the rest of the Task, or the devboxes API URL isn't HTTPS on
 port 443, the sidecar exits with code 78 and the reason as its termination

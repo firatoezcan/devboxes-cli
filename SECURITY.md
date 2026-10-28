@@ -16,7 +16,7 @@ same address.
 
 ## Runner trust boundary
 
-`devboxes runner listen` controls Docker on the Runner machine. Docker access can
+`devboxes runner listen` controls Docker on the Runner. Docker access can
 amount to control of the host, so run it only on a trusted machine.
 
 Tasks run organization-dispatched code in containers. An organization member
@@ -33,7 +33,7 @@ not establish that a container stopped.
 ## Credential handling
 
 - The account configuration is written atomically with owner-only mode `0600`.
-- `devboxes machine add` saves the Runner key from `capacity.register` in a
+- `devboxes runner add` saves the Runner key from `runners.add` in a
   regular, owner-only file (`0600`). Protect that file and the Runner state
   directory from other local users.
 - Each task's executor gets a token in its container environment as

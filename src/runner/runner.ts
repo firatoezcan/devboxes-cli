@@ -32,7 +32,7 @@ const organizationsSchema = Type.Object({
   ),
 });
 const registeredSchema = Type.Object({
-  machine: Type.Object({ id: Type.String(), name: Type.String() }),
+  runner: Type.Object({ id: Type.String(), name: Type.String() }),
   token: Type.String({ minLength: 1 }),
 });
 
@@ -99,14 +99,15 @@ const runRunner = async (
 };
 
 export const addRunnerCommands = (program: Command) => {
-  const command = program
+  const runner = program
     .command("runner")
-    .description("run this computer as a registered machine")
+    .description("run this computer as a Runner of your Organization");
+  const command = runner
     .command("listen")
     .description("launch assigned Tasks and observe their Docker executors")
     .option(
       "--token-file <path>",
-      "Runner key file from devboxes machine add, owner-only (0600; on Windows, its access-control list decides); defaults to the one it saved",
+      "Runner key file from devboxes runner add, owner-only (0600; on Windows, its access-control list decides); defaults to the one it saved",
     )
     .option(
       "--state-directory <path>",
@@ -125,22 +126,20 @@ export const addRunnerCommands = (program: Command) => {
     const tokenFile = options.tokenFile ?? savedTokenFile();
     if (options.tokenFile === undefined && !(await Bun.file(tokenFile).exists()))
       throw new CommandError(
-        "MACHINE_NOT_ADDED",
-        "This machine isn't added yet. Run devboxes machine add first.",
+        "RUNNER_NOT_ADDED",
+        "This computer isn't a Runner yet. Run devboxes runner add first.",
       );
     await runRunner(process.argv.slice(2), { ...options, tokenFile });
   });
 
-  const add = program
-    .command("machine")
-    .description("add computers that run your Organization's tasks")
+  const add = runner
     .command("add")
-    .description("add this computer as a machine that runs your Organization's tasks")
+    .description("add this computer as a Runner that runs your Organization's tasks")
     .option(
       "--organization <id>",
-      "The Organization whose tasks the machine runs. In a terminal, devboxes asks for it.",
+      "The Organization whose tasks the Runner runs. In a terminal, devboxes asks for it.",
     )
-    .option("--name <name>", "The machine's name. In a terminal, devboxes asks for it.");
+    .option("--name <name>", "The Runner's name. In a terminal, devboxes asks for it.");
   add.action(async () => {
     const options = add.optsWithGlobals<{
       api?: string;
@@ -166,17 +165,17 @@ export const addRunnerCommands = (program: Command) => {
     if (!interactive && options.name === undefined)
       throw new CommandError(
         "NAME_REQUIRED",
-        "Name the machine with --name <name>, or run the command in a terminal to enter one.",
+        "Name the Runner with --name <name>, or run the command in a terminal to enter one.",
       );
     const connection = await loadCommandConnection(options);
     if (await Bun.file(tokenFile).exists()) {
       if (await keyWorks(connection, tokenFile))
         throw new CommandError(
-          "MACHINE_ALREADY_ADDED",
-          `This computer is already a devboxes machine. Its key is in ${tokenFile}. Run devboxes runner listen to start it.`,
+          "RUNNER_ALREADY_ADDED",
+          `This computer is already a devboxes Runner. Its key is in ${tokenFile}. Run devboxes runner listen to start it.`,
         );
       process.stderr.write(
-        `The key saved in ${tokenFile} no longer works, so devboxes is adding this machine again.\n`,
+        `The key saved in ${tokenFile} no longer works, so devboxes is adding this Runner again.\n`,
       );
     }
     const description = await describeCommands(connection);
@@ -191,17 +190,17 @@ export const addRunnerCommands = (program: Command) => {
       ).data,
       "organizations.list",
     );
-    const { roles } = describeCommand(description, "capacity.register").commands[0]["x-devboxes"];
+    const { roles } = describeCommand(description, "runners.add").commands[0]["x-devboxes"];
     const managed = organizations.filter((entry) => roles.includes(entry.role));
     if (options.organization === undefined && managed.length === 0)
       throw new CommandError(
         "ORGANIZATION_NOT_FOUND",
-        `devboxes can't find an Organization where you can add a machine. Only an Organization's ${roles.join(" or ")} can add one.`,
+        `devboxes can't find an Organization where you can add a Runner. Only an Organization's ${roles.join(" or ")} can add one.`,
       );
     const chosen =
       options.organization ??
       (await select({
-        message: "Which Organization should run tasks on this machine?",
+        message: "Which Organization should run tasks on this Runner?",
         options: managed.map((entry) => ({ value: entry.id, label: entry.name })),
         output: process.stderr,
       }));
@@ -215,37 +214,36 @@ export const addRunnerCommands = (program: Command) => {
     const named =
       options.name ??
       (await text({
-        message: "Name this machine",
+        message: "Name this Runner",
         initialValue: hostname(),
         validate: (value) => (value?.trim() ? undefined : "Enter a name."),
         output: process.stderr,
       }));
     if (isCancel(named)) throw new CommandError("CANCELLED", "Command cancelled.");
-    const { machine, token } = parseResponse(
+    const { runner: added, token } = parseResponse(
       registeredSchema,
       (
         await invokeCommand(
           connection,
           {
-            command: "capacity.register",
+            command: "runners.add",
             input: { organizationId: organization.id, name: named.trim(), platform, cost: null },
           },
           async () => description,
         )
       ).data,
-      "capacity.register",
+      "runners.add",
     );
     await writeSecretFile({ path: tokenFile, contents: `${token}\n`, tmpPrefix: "token." });
     if (options.json) {
-      await writeOutput(`${JSON.stringify({ machine, tokenFile })}\n`);
+      await writeOutput(`${JSON.stringify({ runner: added, tokenFile })}\n`);
       return;
     }
     await writeOutput(
-      `Added ${machine.name} to ${organization.name}. The machine's key is saved in ${tokenFile}, and only your user account can read it.\n`,
+      `Added ${added.name} to ${organization.name}. The Runner's key is saved in ${tokenFile}, and only your user account can read it.\n`,
     );
     const start =
-      interactive &&
-      (await confirm({ message: "Start this machine now?", output: process.stderr }));
+      interactive && (await confirm({ message: "Start this Runner now?", output: process.stderr }));
     if (start !== true) {
       await writeOutput("Start it later with: devboxes runner listen\n");
       return;

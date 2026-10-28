@@ -128,14 +128,14 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
     .description("connect a model account by signing in with the provider or with an API key")
     .argument(
       "[providerId]",
-      "The provider ID from providers.list. In a terminal, devboxes asks for it.",
+      "The provider ID from model-accounts.providers. In a terminal, devboxes asks for it.",
     )
     .option(
       "--organization <id>",
       "The Organization that gets the model account. In a terminal, devboxes asks for it.",
     )
     .option("--label <label>", "The model account's name. In a terminal, devboxes asks for it.")
-    .option("--account <id>", "The model account whose credential the connection replaces")
+    .option("--account <id>", "The model account whose credential the sign-in or key replaces")
     .option("--api-key", "connect an API key instead of signing in");
   connect.action(async (providerId?: string) => {
     const options = connect.optsWithGlobals<{
@@ -173,9 +173,13 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
       );
     const providers = parseResponse(
       providersSchema,
-      (await invokeCommand(connection, { command: "providers.list", input: { organizationId } }))
-        .data,
-      "providers.list",
+      (
+        await invokeCommand(connection, {
+          command: "model-accounts.providers",
+          input: { organizationId },
+        })
+      ).data,
+      "model-accounts.providers",
     );
     const choose = async () => {
       if (providerId !== undefined) {
@@ -183,7 +187,7 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
         if (!provider)
           throw new CommandError(
             "PROVIDER_NOT_FOUND",
-            `providers.list has no provider ${providerId}.`,
+            `model-accounts.providers has no provider ${providerId}.`,
           );
         if (!provider.deviceFlow && !provider.apiKey)
           throw new CommandError(
@@ -219,7 +223,7 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
         ),
         output: process.stderr,
       });
-      if (isCancel(selected)) throw new CommandError("CANCELLED", "Connection cancelled.");
+      if (isCancel(selected)) throw new CommandError("CANCELLED", "Command cancelled.");
       return selected;
     };
     const { provider, signIn } = await choose();
@@ -233,7 +237,7 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
         validate: (value) => (value?.trim() ? undefined : "Enter a name."),
         output: process.stderr,
       }));
-    if (isCancel(named)) throw new CommandError("CANCELLED", "Connection cancelled.");
+    if (isCancel(named)) throw new CommandError("CANCELLED", "Command cancelled.");
     const label = named.trim();
     const pasted = async (message: string) => {
       if (!interactive && process.stdin.isTTY)
@@ -244,7 +248,7 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
       const value = interactive
         ? await password({ message, output: process.stderr })
         : (await Bun.stdin.text()).trim();
-      if (isCancel(value)) throw new CommandError("CANCELLED", "Connection cancelled.");
+      if (isCancel(value)) throw new CommandError("CANCELLED", "Command cancelled.");
       return value;
     };
     let accountId: string;
@@ -253,7 +257,7 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
         connectStartSchema,
         (
           await invokeCommand(connection, {
-            command: "providers.connect-start",
+            command: "model-accounts.connect-start",
             input: {
               organizationId,
               providerId: provider.id,
@@ -262,13 +266,13 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
             },
           })
         ).data,
-        "providers.connect-start",
+        "model-accounts.connect-start",
       );
       const verificationUrl = httpUrl(started.verificationUrl);
       if (!verificationUrl)
         throw new CommandError(
           "INVALID_RESPONSE",
-          "The providers.connect-start response is invalid: /verificationUrl must be an HTTP URL.",
+          "The model-accounts.connect-start response is invalid: /verificationUrl must be an HTTP URL.",
         );
       process.stderr.write(
         `Open ${verificationUrl.href} to sign in.${started.userCode === null ? "" : ` Confirm that the page shows code ${started.userCode}.`}\n`,
@@ -279,11 +283,11 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
           connectCompleteSchema,
           (
             await invokeCommand(connection, {
-              command: "providers.connect-complete",
+              command: "model-accounts.connect-complete",
               input: { organizationId, attemptId: started.attemptId, ...(code && { code }) },
             })
           ).data,
-          "providers.connect-complete",
+          "model-accounts.connect-complete",
         );
       let result: Awaited<ReturnType<typeof complete>>;
       if (started.userCode === null) {
@@ -298,7 +302,7 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
       }
       if (result.status !== "completed")
         throw new CommandError(
-          "CONNECTION_FAILED",
+          "MODEL_ACCOUNT_SIGN_IN_FAILED",
           "The provider refused the sign-in. Connect again.",
         );
       accountId = result.accountId;
@@ -311,16 +315,16 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
             connection,
             options.account
               ? {
-                  command: "connections.update",
+                  command: "model-accounts.update",
                   input: { organizationId, accountId: options.account, label, auth },
                 }
               : {
-                  command: "connections.add",
+                  command: "model-accounts.add",
                   input: { organizationId, providerId: provider.id, label, auth },
                 },
           )
         ).data,
-        options.account ? "connections.update" : "connections.add",
+        options.account ? "model-accounts.update" : "model-accounts.add",
       ).id;
     }
     await writeOutput(
