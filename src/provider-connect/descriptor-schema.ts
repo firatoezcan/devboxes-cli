@@ -4,6 +4,11 @@ const connectorBase = {
   providerId: Type.String({ minLength: 1 }),
   label: Type.String({ minLength: 1 }),
   description: Type.String(),
+  /**
+   * The hosts a Task signed in through this connector reaches besides its model's API: where it
+   * renews the sign-in, and where a sign-in sends its model requests.
+   */
+  taskHosts: Type.Array(Type.String({ minLength: 1 })),
 };
 
 export const OpencodeConnectorDescriptorSchema = Type.Union([

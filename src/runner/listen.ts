@@ -1,38 +1,23 @@
 import { randomBytes } from "node:crypto";
 import { createSocket } from "node:dgram";
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { mkdir, open, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { DockerOpencodeTaskRuntime } from "./docker-task-runtime";
-import { JsonValueSchema } from "../protocol/provider-auth";
-import { ClaudeCodeArtifactSchema } from "../protocol/task-runtime";
+import type { JsonValue } from "../protocol/json";
+import {
+  type RunnerAssignmentsSchema,
+  type RunnerClaimSchema,
+  runnerAnswers,
+} from "../protocol/runner-callbacks";
 import { proxy } from "hono/proxy";
 import { jwtVerify, SignJWT } from "jose";
-import Type, { type Static, type TSchema } from "typebox";
+import Type, { type Static } from "typebox";
 import Value from "typebox/value";
 
 import { CommandError, parseResponse, requestJson } from "../commands";
 
-const taskSchema = Type.Object({
-  id: Type.String(),
-  executorId: Type.Union([Type.String(), Type.Null()]),
-  containerId: Type.Union([Type.String(), Type.Null()]),
-  image: Type.String(),
-  platform: Type.Union([Type.Literal("linux/amd64"), Type.Literal("linux/arm64")]),
-  daemon: Type.Object({ sha256: Type.String(), version: Type.String(), url: Type.String() }),
-  claudeCode: Type.Union([ClaudeCodeArtifactSchema, Type.Null()]),
-  traceparent: Type.String({ minLength: 1 }),
-  status: Type.String(),
-});
-const assignmentSchema = Type.Object({
-  id: Type.String(),
-  executorId: Type.Union([Type.String(), Type.Null()]),
-  containerId: Type.Union([Type.String(), Type.Null()]),
-  status: Type.String(),
-});
-const assignmentsSchema = Type.Object({ tasks: Type.Array(assignmentSchema) });
-const claimSchema = Type.Object({ task: Type.Union([taskSchema, Type.Null()]) });
-const reconcileSchema = Type.Object({ status: Type.String() });
 /** The relay's signing key and port, kept so that running executors outlast a listener restart. */
 const relayStateSchema = Type.Object({
   key: Type.String({ minLength: 43 }),
@@ -50,18 +35,61 @@ export const listen = async (options: {
   stateDirectory: string;
   socketPath: string;
 }) => {
-  const tokenPath = resolve(options.tokenFile);
-  const metadata = await stat(tokenPath).catch(() => null);
-  if (!metadata?.isFile() || (metadata.mode & 0o077) !== 0)
-    throw new CommandError(
-      "INVALID_RUNNER_TOKEN_FILE",
-      "The Runner token must be stored in a regular file with mode 0600.",
+  /**
+   * Whether only this user can read or change a file. Windows synthesizes a stat's mode from file
+   * attributes and reports no owner, so there the file's access-control list decides.
+   */
+  const ownedPrivately = (metadata: { uid: number; mode: number }) =>
+    process.platform === "win32" ||
+    (metadata.uid === process.getuid?.() && (metadata.mode & 0o077) === 0);
+  /**
+   * The text of file `path`, or null when it does not exist. It is read through the handle whose
+   * owner and mode were checked, so what is checked is what is read, and opened without blocking,
+   * so a FIFO cannot hang it. `flags` adds open flags, such as `O_NOFOLLOW` to refuse a symbolic
+   * link. A file that is not private, or that this user cannot open, throws `refusal`.
+   */
+  const readPrivately = async (path: string, flags: number, refusal: CommandError) => {
+    const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | flags).catch(
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return null;
+        throw error.code === "ELOOP" || error.code === "EACCES" ? refusal : error;
+      },
     );
-  const token = (await readFile(tokenPath, "utf8")).trim();
+    if (!handle) return null;
+    try {
+      const metadata = await handle.stat();
+      if (!metadata.isFile() || !ownedPrivately(metadata)) throw refusal;
+      return await handle.readFile("utf8");
+    } finally {
+      await handle.close();
+    }
+  };
+  const tokenRefusal = new CommandError(
+    "INVALID_RUNNER_TOKEN_FILE",
+    "The Runner token must be stored in a regular file that you own, with mode 0600.",
+  );
+  const token = (await readPrivately(resolve(options.tokenFile), 0, tokenRefusal))?.trim();
+  if (token === undefined) throw tokenRefusal;
   if (!token)
     throw new CommandError("INVALID_RUNNER_TOKEN_FILE", "The Runner token file is empty.");
   const directory = resolve(options.stateDirectory);
   await mkdir(directory, { recursive: true, mode: 0o700 });
+  if (!ownedPrivately(await stat(directory)))
+    throw new CommandError(
+      "INVALID_RUNNER_STATE_DIRECTORY",
+      `The Runner state directory ${directory} holds the relay's signing key, so it must be yours with mode 0700.`,
+    );
+  const relayStatePath = join(directory, "relay.json");
+  const relayText = await readPrivately(
+    relayStatePath,
+    constants.O_NOFOLLOW,
+    new CommandError(
+      "INVALID_RUNNER_STATE_DIRECTORY",
+      `${relayStatePath} holds the relay's signing key, so it must be a regular file of yours with mode 0600.`,
+    ),
+  );
+  const relayState =
+    relayText === null ? null : Value.Parse(relayStateSchema, JSON.parse(relayText));
   const runtime = new DockerOpencodeTaskRuntime({
     socketPath: options.socketPath,
     stateDirectory: directory,
@@ -93,14 +121,6 @@ export const listen = async (options: {
       );
     hostname = gateway;
   }
-  const relayStatePath = join(directory, "relay.json");
-  const relayState = await readFile(relayStatePath, "utf8").then(
-    (text) => Value.Parse(relayStateSchema, JSON.parse(text)),
-    (error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return null;
-      throw error;
-    },
-  );
   const relayKey = relayState ? Buffer.from(relayState.key, "base64url") : randomBytes(32);
   const relay = Bun.serve({
     hostname,
@@ -147,35 +167,37 @@ export const listen = async (options: {
     await writeFile(
       relayStatePath,
       JSON.stringify({ key: relayKey.toString("base64url"), port: relay.port }),
-      { mode: 0o600 },
+      { mode: 0o600, flag: "wx" },
     );
   const apiBaseUrl = `http://host.docker.internal:${relay.port}/api`;
-  const api = async <Schema extends TSchema>(
-    operation: string,
-    schema: Schema,
-    body: Static<typeof JsonValueSchema>,
-  ): Promise<Static<Schema>> => {
+  const api = async <Operation extends keyof typeof runnerAnswers>(
+    operation: Operation,
+    body: JsonValue,
+  ): Promise<Static<(typeof runnerAnswers)[Operation]>> => {
     const { data } = await requestJson(
       { origin: options.apiOrigin, token },
       `/api/internal/execution/runners/${operation}`,
       body,
     );
-    return parseResponse(schema, data, operation);
+    return parseResponse(runnerAnswers[operation], data, operation);
   };
   let stopping = false;
   const interrupt = () => {
     stopping = true;
   };
-  const startCreated = async (task: Static<typeof assignmentSchema>, containerId: string) => {
+  const startCreated = async (
+    task: Static<typeof RunnerAssignmentsSchema>["tasks"][number],
+    containerId: string,
+  ) => {
     const executorId = task.executorId ?? `devboxes-task-${task.id}`;
     const container = runtime.docker.getContainer(containerId);
-    const result = await api("reconcile", reconcileSchema, {
+    const result = await api("reconcile", {
       taskId: task.id,
       executorId,
       containerId,
       observation: "created",
     });
-    if (result.status !== "running") await container.remove();
+    if (result.status !== "running") await container.remove({ v: true });
     else if (!stopping) {
       if (!relayReachable) {
         if (!(await runtime.reaches(task.id, (await container.inspect()).Image, apiBaseUrl)))
@@ -194,7 +216,7 @@ export const listen = async (options: {
   // one start runs beside the poll loop and its failure surfaces on the next cycle.
   const starting = new Map<string, Promise<void>>();
   let startFailure: CommandError | null = null;
-  const startClaimed = async (task: Static<typeof taskSchema>) => {
+  const startClaimed = async (task: NonNullable<Static<typeof RunnerClaimSchema>["task"]>) => {
     const existing = await runtime.inspect(task.executorId ?? `devboxes-task-${task.id}`);
     if (!existing) {
       const container = await runtime.create({
@@ -221,7 +243,7 @@ export const listen = async (options: {
     (!connected && (status === 404 || status === 422));
   const poll = async () => {
     try {
-      const assignments = await api("assignments", assignmentsSchema, {});
+      const assignments = await api("assignments", {});
       connected = true;
       for (const task of assignments.tasks) {
         if (stopping) break;
@@ -236,7 +258,7 @@ export const listen = async (options: {
             task.status === "cancel_requested"
           )
             await rm(join(directory, task.id), { recursive: true, force: true });
-          const result = await api("reconcile", reconcileSchema, {
+          const result = await api("reconcile", {
             taskId: task.id,
             executorId: task.executorId,
             containerId: task.containerId,
@@ -250,7 +272,7 @@ export const listen = async (options: {
           await startCreated(task, executor.Id);
           continue;
         }
-        const result = await api("reconcile", reconcileSchema, {
+        const result = await api("reconcile", {
           taskId: task.id,
           executorId,
           containerId: executor.Id,
@@ -268,9 +290,14 @@ export const listen = async (options: {
             result.status === "cancelled" ||
             result.status === "paused"
           ) {
-            await runtime.docker.getContainer(executor.Id).remove();
+            await runtime.docker.getContainer(executor.Id).remove({ v: true });
             await rm(join(directory, task.id), { recursive: true, force: true });
-          } else console.error(`Retained failed executor ${executorId} for inspection.`);
+          } else {
+            console.error(`Retained failed executor ${executorId} for inspection.`);
+            console.error(
+              `Remove it when you no longer need it: docker rm --volumes ${executorId} && rm -rf '${join(directory, task.id).replaceAll("'", "'\\''")}'`,
+            );
+          }
           console.info(`Task ${task.id} ended as ${result.status}.`);
         }
       }
@@ -281,7 +308,7 @@ export const listen = async (options: {
         throw failure;
       }
       if (starting.size === 0) {
-        const { task } = await api("claim", claimSchema, {});
+        const { task } = await api("claim", {});
         if (task && !stopping && task.containerId === null)
           starting.set(
             task.id,

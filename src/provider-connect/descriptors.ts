@@ -15,6 +15,8 @@ export const opencodeProviderConnectors: readonly OpencodeConnectorDescriptor[] 
     tokenUrl: `${openaiIssuer}/oauth/token`,
     redirectUri: `${openaiIssuer}/deviceauth/callback`,
     verificationUrl: `${openaiIssuer}/codex/device`,
+    // OpenCode sends a ChatGPT sign-in's model requests to chatgpt.com.
+    taskHosts: [new URL(openaiIssuer).hostname, "chatgpt.com"],
   },
   {
     providerId: "github-copilot",
@@ -25,6 +27,7 @@ export const opencodeProviderConnectors: readonly OpencodeConnectorDescriptor[] 
     scope: "read:user",
     webUrl: "https://github.com",
     apiUrl: "https://api.github.com",
+    taskHosts: ["api.github.com"],
   },
   {
     providerId: "xai",
@@ -38,6 +41,7 @@ export const opencodeProviderConnectors: readonly OpencodeConnectorDescriptor[] 
     deviceAuthorizationUrl: "https://auth.x.ai/oauth2/device/code",
     tokenUrl: "https://auth.x.ai/oauth2/token",
     verificationUrlHosts: ["x.ai"],
+    taskHosts: ["auth.x.ai"],
   },
   {
     providerId: "claude-subscription",
@@ -53,5 +57,18 @@ export const opencodeProviderConnectors: readonly OpencodeConnectorDescriptor[] 
     redirectUri: "https://platform.claude.com/oauth/code/callback",
     scope: "user:inference",
     tokenLifetimeSeconds: 31_536_000,
+    // The token lasts a year, so a Task never renews it.
+    taskHosts: [],
   },
 ];
+
+/**
+ * The hosts where a sign-in renews its tokens, its connector's token URL, for `providerId` or for
+ * every connector.
+ */
+export const providerTokenHosts = (providerId?: string) =>
+  opencodeProviderConnectors.flatMap((connector) =>
+    (providerId === undefined || connector.providerId === providerId) && "tokenUrl" in connector
+      ? [new URL(connector.tokenUrl).hostname]
+      : [],
+  );

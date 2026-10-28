@@ -1,6 +1,6 @@
 {
   "name": "devboxes",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "private": true,
   "description": "devboxes CLI: discover and invoke application commands, authenticate, run execution capacity, and serve stdio MCP.",
   "homepage": "https://github.com/firatoezcan/devboxes-cli#readme",
@@ -17,7 +17,6 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@opentelemetry/api": "1.9.1",
     "@opentelemetry/core": "2.7.0",
-    "axios": "1.19.0",
     "better-auth": "1.7.7",
     "commander": "^14.0.3",
     "dockerode": "5.0.1",
@@ -32,15 +31,14 @@
   },
   "devDependencies": {
     "@types/dockerode": "^4.0.1",
-    "@types/node": "^25.6.0",
+    "@types/node": "^26.6.5",
     "@types/tar-stream": "3.1.5",
-    "@typescript/native": "npm:typescript@7.0.2",
-    "bun-types": "1.4.3",
-    "drizzle-orm": "1.0.0-rc.5-5935859",
-    "typescript": "npm:@typescript/typescript6@6.0.2"
+    "bun-types": "1.4.4",
+    "drizzle-orm": "1.0.0-rc.5",
+    "tsrs": "0.18.0-ts7.1.0-dev.20260929"
   },
   "engines": {
-    "bun": ">=1.4.3"
+    "bun": ">=1.4.4"
   },
   "exports": {
     "./protocol/*": "./src/protocol/*.ts",
@@ -52,5 +50,9 @@
     "devboxes:local": "bun src/cli.ts",
     "test": "bun test --isolate --no-orphans --timeout 60000",
     "test:full": "bun test --isolate --no-orphans --timeout 60000"
+  },
+  "patchedDependencies": {
+    "better-auth@1.7.7": "patches/better-auth.patch",
+    "drizzle-kit@1.0.0-rc.5": "patches/drizzle-kit@1.0.0-rc.5.patch"
   }
 }

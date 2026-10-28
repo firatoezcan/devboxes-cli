@@ -1,0 +1,280 @@
+diff --git a/api-postgres.js b/api-postgres.js
+index 47e357c..32d9e67 100644
+--- a/api-postgres.js
++++ b/api-postgres.js
+@@ -80319,10 +80319,14 @@ var init_diff = __esmMin((() => {
+ 			if (fromDeletedTable && !toDeletedTable) return false;
+ 			return true;
+ 		}).map((it) => prepareStatement("drop_fk", { fk: it }));
+-		const jsonAlterCheckConstraints = alteredChecks.filter((it) => it.value && mode !== "push").map((it) => prepareStatement("alter_check", {
+-			diff: it,
+-			newColumns: checkColumns(it.$right?.value ?? "", ddl2, it.schema, it.table),
+-			oldColumns: checkColumns(it.$left?.value ?? "", ddl2, it.schema, it.table)
++		const changedChecks = alteredChecks.filter((it) => it.value && mode !== "push");
++		const jsonDropAlteredCheckConstraints = changedChecks.map((it) => prepareStatement("drop_check", {
++			check: it.$left,
++			columns: checkColumns(it.$left.value, ddl1, it.schema, it.table)
++		}));
++		const jsonAddAlteredCheckConstraints = changedChecks.map((it) => prepareStatement("add_check", {
++			check: it.$right,
++			columns: checkColumns(it.$right.value, ddl2, it.schema, it.table)
+ 		}));
+ 		const jsonCreatePoliciesStatements = policyCreates.map((it) => prepareStatement("create_policy", { policy: it }));
+ 		const jsonDropPoliciesStatements = policyDeletes.map((it) => prepareStatement("drop_policy", { policy: it }));
+@@ -80678,6 +80682,7 @@ var init_diff = __esmMin((() => {
+ 		jsonStatements.push(...jsonDropIndexes);
+ 		jsonStatements.push(...jsonDropPrimaryKeys);
+ 		jsonStatements.push(...jsonRenameReferences);
++		jsonStatements.push(...jsonDropAlteredCheckConstraints);
+ 		jsonStatements.push(...jsonAddColumnsStatemets);
+ 		jsonStatements.push(...jsonAddPrimaryKeys);
+ 		jsonStatements.push(...jsonRenamePrimaryKey);
+@@ -80694,7 +80699,7 @@ var init_diff = __esmMin((() => {
+ 		jsonStatements.push(...jsonCreateFKs);
+ 		jsonStatements.push(...jsonRecreateFKs.filter((it) => !fksOfRecreatedColumns.some((fk) => isSameFk(fk, it.fk))));
+ 		jsonStatements.push(...jsonCreatedCheckConstraints);
+-		jsonStatements.push(...jsonAlterCheckConstraints);
++		jsonStatements.push(...jsonAddAlteredCheckConstraints);
+ 		jsonStatements.push(...sortCreateViews(createViews, $metadata?.viewDependencies));
+ 		jsonStatements.push(...jsonRenamePoliciesStatements);
+ 		jsonStatements.push(...jsonCreatePoliciesStatements);
+diff --git a/api-postgres.mjs b/api-postgres.mjs
+index 0f2717a..dea35c2 100644
+--- a/api-postgres.mjs
++++ b/api-postgres.mjs
+@@ -80302,10 +80302,14 @@ var init_diff = __esmMin((() => {
+ 			if (fromDeletedTable && !toDeletedTable) return false;
+ 			return true;
+ 		}).map((it) => prepareStatement("drop_fk", { fk: it }));
+-		const jsonAlterCheckConstraints = alteredChecks.filter((it) => it.value && mode !== "push").map((it) => prepareStatement("alter_check", {
+-			diff: it,
+-			newColumns: checkColumns(it.$right?.value ?? "", ddl2, it.schema, it.table),
+-			oldColumns: checkColumns(it.$left?.value ?? "", ddl2, it.schema, it.table)
++		const changedChecks = alteredChecks.filter((it) => it.value && mode !== "push");
++		const jsonDropAlteredCheckConstraints = changedChecks.map((it) => prepareStatement("drop_check", {
++			check: it.$left,
++			columns: checkColumns(it.$left.value, ddl1, it.schema, it.table)
++		}));
++		const jsonAddAlteredCheckConstraints = changedChecks.map((it) => prepareStatement("add_check", {
++			check: it.$right,
++			columns: checkColumns(it.$right.value, ddl2, it.schema, it.table)
+ 		}));
+ 		const jsonCreatePoliciesStatements = policyCreates.map((it) => prepareStatement("create_policy", { policy: it }));
+ 		const jsonDropPoliciesStatements = policyDeletes.map((it) => prepareStatement("drop_policy", { policy: it }));
+@@ -80661,6 +80665,7 @@ var init_diff = __esmMin((() => {
+ 		jsonStatements.push(...jsonDropIndexes);
+ 		jsonStatements.push(...jsonDropPrimaryKeys);
+ 		jsonStatements.push(...jsonRenameReferences);
++		jsonStatements.push(...jsonDropAlteredCheckConstraints);
+ 		jsonStatements.push(...jsonAddColumnsStatemets);
+ 		jsonStatements.push(...jsonAddPrimaryKeys);
+ 		jsonStatements.push(...jsonRenamePrimaryKey);
+@@ -80677,7 +80682,7 @@ var init_diff = __esmMin((() => {
+ 		jsonStatements.push(...jsonCreateFKs);
+ 		jsonStatements.push(...jsonRecreateFKs.filter((it) => !fksOfRecreatedColumns.some((fk) => isSameFk(fk, it.fk))));
+ 		jsonStatements.push(...jsonCreatedCheckConstraints);
+-		jsonStatements.push(...jsonAlterCheckConstraints);
++		jsonStatements.push(...jsonAddAlteredCheckConstraints);
+ 		jsonStatements.push(...sortCreateViews(createViews, $metadata?.viewDependencies));
+ 		jsonStatements.push(...jsonRenamePoliciesStatements);
+ 		jsonStatements.push(...jsonCreatePoliciesStatements);
+diff --git a/bin.cjs b/bin.cjs
+index e3e4d61..bf3d8e9 100755
+--- a/bin.cjs
++++ b/bin.cjs
+@@ -91038,10 +91038,14 @@ var init_diff$3 = __esmMin((() => {
+ 			if (fromDeletedTable && !toDeletedTable) return false;
+ 			return true;
+ 		}).map((it) => prepareStatement$2("drop_fk", { fk: it }));
+-		const jsonAlterCheckConstraints = alteredChecks.filter((it) => it.value && mode !== "push").map((it) => prepareStatement$2("alter_check", {
+-			diff: it,
+-			newColumns: checkColumns(it.$right?.value ?? "", ddl2, it.schema, it.table),
+-			oldColumns: checkColumns(it.$left?.value ?? "", ddl2, it.schema, it.table)
++		const changedChecks = alteredChecks.filter((it) => it.value && mode !== "push");
++		const jsonDropAlteredCheckConstraints = changedChecks.map((it) => prepareStatement$2("drop_check", {
++			check: it.$left,
++			columns: checkColumns(it.$left.value, ddl1, it.schema, it.table)
++		}));
++		const jsonAddAlteredCheckConstraints = changedChecks.map((it) => prepareStatement$2("add_check", {
++			check: it.$right,
++			columns: checkColumns(it.$right.value, ddl2, it.schema, it.table)
+ 		}));
+ 		const jsonCreatePoliciesStatements = policyCreates.map((it) => prepareStatement$2("create_policy", { policy: it }));
+ 		const jsonDropPoliciesStatements = policyDeletes.map((it) => prepareStatement$2("drop_policy", { policy: it }));
+@@ -91397,6 +91401,7 @@ var init_diff$3 = __esmMin((() => {
+ 		jsonStatements.push(...jsonDropIndexes);
+ 		jsonStatements.push(...jsonDropPrimaryKeys);
+ 		jsonStatements.push(...jsonRenameReferences);
++		jsonStatements.push(...jsonDropAlteredCheckConstraints);
+ 		jsonStatements.push(...jsonAddColumnsStatemets);
+ 		jsonStatements.push(...jsonAddPrimaryKeys);
+ 		jsonStatements.push(...jsonRenamePrimaryKey);
+@@ -91413,7 +91418,7 @@ var init_diff$3 = __esmMin((() => {
+ 		jsonStatements.push(...jsonCreateFKs);
+ 		jsonStatements.push(...jsonRecreateFKs.filter((it) => !fksOfRecreatedColumns.some((fk) => isSameFk(fk, it.fk))));
+ 		jsonStatements.push(...jsonCreatedCheckConstraints);
+-		jsonStatements.push(...jsonAlterCheckConstraints);
++		jsonStatements.push(...jsonAddAlteredCheckConstraints);
+ 		jsonStatements.push(...sortCreateViews(createViews, $metadata?.viewDependencies));
+ 		jsonStatements.push(...jsonRenamePoliciesStatements);
+ 		jsonStatements.push(...jsonCreatePoliciesStatements);
+diff --git a/cli.js b/cli.js
+index 1c3fcf4..1ca2023 100644
+--- a/cli.js
++++ b/cli.js
+@@ -89913,10 +89913,14 @@ var init_diff$3 = __esmMin((() => {
+ 			if (fromDeletedTable && !toDeletedTable) return false;
+ 			return true;
+ 		}).map((it) => prepareStatement$2("drop_fk", { fk: it }));
+-		const jsonAlterCheckConstraints = alteredChecks.filter((it) => it.value && mode !== "push").map((it) => prepareStatement$2("alter_check", {
+-			diff: it,
+-			newColumns: checkColumns(it.$right?.value ?? "", ddl2, it.schema, it.table),
+-			oldColumns: checkColumns(it.$left?.value ?? "", ddl2, it.schema, it.table)
++		const changedChecks = alteredChecks.filter((it) => it.value && mode !== "push");
++		const jsonDropAlteredCheckConstraints = changedChecks.map((it) => prepareStatement$2("drop_check", {
++			check: it.$left,
++			columns: checkColumns(it.$left.value, ddl1, it.schema, it.table)
++		}));
++		const jsonAddAlteredCheckConstraints = changedChecks.map((it) => prepareStatement$2("add_check", {
++			check: it.$right,
++			columns: checkColumns(it.$right.value, ddl2, it.schema, it.table)
+ 		}));
+ 		const jsonCreatePoliciesStatements = policyCreates.map((it) => prepareStatement$2("create_policy", { policy: it }));
+ 		const jsonDropPoliciesStatements = policyDeletes.map((it) => prepareStatement$2("drop_policy", { policy: it }));
+@@ -90272,6 +90276,7 @@ var init_diff$3 = __esmMin((() => {
+ 		jsonStatements.push(...jsonDropIndexes);
+ 		jsonStatements.push(...jsonDropPrimaryKeys);
+ 		jsonStatements.push(...jsonRenameReferences);
++		jsonStatements.push(...jsonDropAlteredCheckConstraints);
+ 		jsonStatements.push(...jsonAddColumnsStatemets);
+ 		jsonStatements.push(...jsonAddPrimaryKeys);
+ 		jsonStatements.push(...jsonRenamePrimaryKey);
+@@ -90288,7 +90293,7 @@ var init_diff$3 = __esmMin((() => {
+ 		jsonStatements.push(...jsonCreateFKs);
+ 		jsonStatements.push(...jsonRecreateFKs.filter((it) => !fksOfRecreatedColumns.some((fk) => isSameFk(fk, it.fk))));
+ 		jsonStatements.push(...jsonCreatedCheckConstraints);
+-		jsonStatements.push(...jsonAlterCheckConstraints);
++		jsonStatements.push(...jsonAddAlteredCheckConstraints);
+ 		jsonStatements.push(...sortCreateViews(createViews, $metadata?.viewDependencies));
+ 		jsonStatements.push(...jsonRenamePoliciesStatements);
+ 		jsonStatements.push(...jsonCreatePoliciesStatements);
+diff --git a/cli.mjs b/cli.mjs
+index 3f8c55d..e3c86bb 100644
+--- a/cli.mjs
++++ b/cli.mjs
+@@ -89896,10 +89896,14 @@ var init_diff$3 = __esmMin((() => {
+ 			if (fromDeletedTable && !toDeletedTable) return false;
+ 			return true;
+ 		}).map((it) => prepareStatement$2("drop_fk", { fk: it }));
+-		const jsonAlterCheckConstraints = alteredChecks.filter((it) => it.value && mode !== "push").map((it) => prepareStatement$2("alter_check", {
+-			diff: it,
+-			newColumns: checkColumns(it.$right?.value ?? "", ddl2, it.schema, it.table),
+-			oldColumns: checkColumns(it.$left?.value ?? "", ddl2, it.schema, it.table)
++		const changedChecks = alteredChecks.filter((it) => it.value && mode !== "push");
++		const jsonDropAlteredCheckConstraints = changedChecks.map((it) => prepareStatement$2("drop_check", {
++			check: it.$left,
++			columns: checkColumns(it.$left.value, ddl1, it.schema, it.table)
++		}));
++		const jsonAddAlteredCheckConstraints = changedChecks.map((it) => prepareStatement$2("add_check", {
++			check: it.$right,
++			columns: checkColumns(it.$right.value, ddl2, it.schema, it.table)
+ 		}));
+ 		const jsonCreatePoliciesStatements = policyCreates.map((it) => prepareStatement$2("create_policy", { policy: it }));
+ 		const jsonDropPoliciesStatements = policyDeletes.map((it) => prepareStatement$2("drop_policy", { policy: it }));
+@@ -90255,6 +90259,7 @@ var init_diff$3 = __esmMin((() => {
+ 		jsonStatements.push(...jsonDropIndexes);
+ 		jsonStatements.push(...jsonDropPrimaryKeys);
+ 		jsonStatements.push(...jsonRenameReferences);
++		jsonStatements.push(...jsonDropAlteredCheckConstraints);
+ 		jsonStatements.push(...jsonAddColumnsStatemets);
+ 		jsonStatements.push(...jsonAddPrimaryKeys);
+ 		jsonStatements.push(...jsonRenamePrimaryKey);
+@@ -90271,7 +90276,7 @@ var init_diff$3 = __esmMin((() => {
+ 		jsonStatements.push(...jsonCreateFKs);
+ 		jsonStatements.push(...jsonRecreateFKs.filter((it) => !fksOfRecreatedColumns.some((fk) => isSameFk(fk, it.fk))));
+ 		jsonStatements.push(...jsonCreatedCheckConstraints);
+-		jsonStatements.push(...jsonAlterCheckConstraints);
++		jsonStatements.push(...jsonAddAlteredCheckConstraints);
+ 		jsonStatements.push(...sortCreateViews(createViews, $metadata?.viewDependencies));
+ 		jsonStatements.push(...jsonRenamePoliciesStatements);
+ 		jsonStatements.push(...jsonCreatePoliciesStatements);
+diff --git a/payload-postgres.js b/payload-postgres.js
+index 47e357c..32d9e67 100644
+--- a/payload-postgres.js
++++ b/payload-postgres.js
+@@ -80319,10 +80319,14 @@ var init_diff = __esmMin((() => {
+ 			if (fromDeletedTable && !toDeletedTable) return false;
+ 			return true;
+ 		}).map((it) => prepareStatement("drop_fk", { fk: it }));
+-		const jsonAlterCheckConstraints = alteredChecks.filter((it) => it.value && mode !== "push").map((it) => prepareStatement("alter_check", {
+-			diff: it,
+-			newColumns: checkColumns(it.$right?.value ?? "", ddl2, it.schema, it.table),
+-			oldColumns: checkColumns(it.$left?.value ?? "", ddl2, it.schema, it.table)
++		const changedChecks = alteredChecks.filter((it) => it.value && mode !== "push");
++		const jsonDropAlteredCheckConstraints = changedChecks.map((it) => prepareStatement("drop_check", {
++			check: it.$left,
++			columns: checkColumns(it.$left.value, ddl1, it.schema, it.table)
++		}));
++		const jsonAddAlteredCheckConstraints = changedChecks.map((it) => prepareStatement("add_check", {
++			check: it.$right,
++			columns: checkColumns(it.$right.value, ddl2, it.schema, it.table)
+ 		}));
+ 		const jsonCreatePoliciesStatements = policyCreates.map((it) => prepareStatement("create_policy", { policy: it }));
+ 		const jsonDropPoliciesStatements = policyDeletes.map((it) => prepareStatement("drop_policy", { policy: it }));
+@@ -80678,6 +80682,7 @@ var init_diff = __esmMin((() => {
+ 		jsonStatements.push(...jsonDropIndexes);
+ 		jsonStatements.push(...jsonDropPrimaryKeys);
+ 		jsonStatements.push(...jsonRenameReferences);
++		jsonStatements.push(...jsonDropAlteredCheckConstraints);
+ 		jsonStatements.push(...jsonAddColumnsStatemets);
+ 		jsonStatements.push(...jsonAddPrimaryKeys);
+ 		jsonStatements.push(...jsonRenamePrimaryKey);
+@@ -80694,7 +80699,7 @@ var init_diff = __esmMin((() => {
+ 		jsonStatements.push(...jsonCreateFKs);
+ 		jsonStatements.push(...jsonRecreateFKs.filter((it) => !fksOfRecreatedColumns.some((fk) => isSameFk(fk, it.fk))));
+ 		jsonStatements.push(...jsonCreatedCheckConstraints);
+-		jsonStatements.push(...jsonAlterCheckConstraints);
++		jsonStatements.push(...jsonAddAlteredCheckConstraints);
+ 		jsonStatements.push(...sortCreateViews(createViews, $metadata?.viewDependencies));
+ 		jsonStatements.push(...jsonRenamePoliciesStatements);
+ 		jsonStatements.push(...jsonCreatePoliciesStatements);
+diff --git a/payload-postgres.mjs b/payload-postgres.mjs
+index 0f2717a..dea35c2 100644
+--- a/payload-postgres.mjs
++++ b/payload-postgres.mjs
+@@ -80302,10 +80302,14 @@ var init_diff = __esmMin((() => {
+ 			if (fromDeletedTable && !toDeletedTable) return false;
+ 			return true;
+ 		}).map((it) => prepareStatement("drop_fk", { fk: it }));
+-		const jsonAlterCheckConstraints = alteredChecks.filter((it) => it.value && mode !== "push").map((it) => prepareStatement("alter_check", {
+-			diff: it,
+-			newColumns: checkColumns(it.$right?.value ?? "", ddl2, it.schema, it.table),
+-			oldColumns: checkColumns(it.$left?.value ?? "", ddl2, it.schema, it.table)
++		const changedChecks = alteredChecks.filter((it) => it.value && mode !== "push");
++		const jsonDropAlteredCheckConstraints = changedChecks.map((it) => prepareStatement("drop_check", {
++			check: it.$left,
++			columns: checkColumns(it.$left.value, ddl1, it.schema, it.table)
++		}));
++		const jsonAddAlteredCheckConstraints = changedChecks.map((it) => prepareStatement("add_check", {
++			check: it.$right,
++			columns: checkColumns(it.$right.value, ddl2, it.schema, it.table)
+ 		}));
+ 		const jsonCreatePoliciesStatements = policyCreates.map((it) => prepareStatement("create_policy", { policy: it }));
+ 		const jsonDropPoliciesStatements = policyDeletes.map((it) => prepareStatement("drop_policy", { policy: it }));
+@@ -80661,6 +80665,7 @@ var init_diff = __esmMin((() => {
+ 		jsonStatements.push(...jsonDropIndexes);
+ 		jsonStatements.push(...jsonDropPrimaryKeys);
+ 		jsonStatements.push(...jsonRenameReferences);
++		jsonStatements.push(...jsonDropAlteredCheckConstraints);
+ 		jsonStatements.push(...jsonAddColumnsStatemets);
+ 		jsonStatements.push(...jsonAddPrimaryKeys);
+ 		jsonStatements.push(...jsonRenamePrimaryKey);
+@@ -80677,7 +80682,7 @@ var init_diff = __esmMin((() => {
+ 		jsonStatements.push(...jsonCreateFKs);
+ 		jsonStatements.push(...jsonRecreateFKs.filter((it) => !fksOfRecreatedColumns.some((fk) => isSameFk(fk, it.fk))));
+ 		jsonStatements.push(...jsonCreatedCheckConstraints);
+-		jsonStatements.push(...jsonAlterCheckConstraints);
++		jsonStatements.push(...jsonAddAlteredCheckConstraints);
+ 		jsonStatements.push(...sortCreateViews(createViews, $metadata?.viewDependencies));
+ 		jsonStatements.push(...jsonRenamePoliciesStatements);
+ 		jsonStatements.push(...jsonCreatePoliciesStatements);

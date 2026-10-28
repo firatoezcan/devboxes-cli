@@ -4,7 +4,7 @@ import {
   catalogCommands,
   commandDocumentSchema,
 } from "./protocol/command-catalog";
-import { JsonValueSchema } from "./protocol/provider-auth";
+import { JsonValueSchema, type JsonValue } from "./protocol/json";
 import { redactedSecret, secretRedactingReviver } from "./security/secret-redaction";
 import { describeErrors } from "./values/validation-errors";
 import { defaultTextMapGetter, ROOT_CONTEXT, trace } from "@opentelemetry/api";
@@ -18,7 +18,16 @@ import { cliUserAgent } from "./api";
  * `organizationId` is the one Organization the token is bound to, such as a Chat turn's. Every
  * command that takes an `organizationId` receives it in place of the one its input names.
  */
-export type CommandConnection = { origin: string; token: string; organizationId?: string };
+export type CommandConnection = {
+  origin: string;
+  token: string;
+  organizationId?: string;
+  /**
+   * Signs the person at the terminal in again and answers the new session token, for an account
+   * session that may ask: `requestJson` then sends a request refused with SESSION_NOT_FRESH once more.
+   */
+  signInAgain?: () => Promise<string>;
+};
 
 const scalar = Type.Union([Type.String(), Type.Number(), Type.Boolean(), Type.Null()]);
 
@@ -73,9 +82,9 @@ export type CommandDescription = {
   components: NonNullable<Static<typeof commandDocumentSchema>["components"]>;
 };
 type RequestCorrelation = { traceId: string | null; requestId: string | null };
-export type CommandResponse = {
+type CommandResponse = {
   status: number;
-  data: Static<typeof JsonValueSchema>;
+  data: JsonValue;
 } & RequestCorrelation;
 
 export class CommandError extends Error {
@@ -84,7 +93,7 @@ export class CommandError extends Error {
     message: string,
     readonly options: {
       status?: number;
-      details?: Static<typeof JsonValueSchema>;
+      details?: JsonValue;
       correlation?: RequestCorrelation;
     } = {},
   ) {
@@ -172,10 +181,10 @@ export const credentialSafeJson = (
   text: string,
   secrets: readonly (string | undefined)[],
   redactAuthTokens = false,
-): Static<typeof JsonValueSchema> => {
+): JsonValue => {
   if (!text) return null;
   const redact = secretRedactingReviver(secrets.filter((secret) => secret !== undefined));
-  return JSON.parse(text, (key: string, value: Static<typeof JsonValueSchema>) =>
+  return JSON.parse(text, (key: string, value: JsonValue) =>
     redactAuthTokens && key === "token" && Value.Check(Type.String({ minLength: 1 }), value)
       ? redactedSecret
       : redact(key, value),
@@ -185,7 +194,7 @@ export const credentialSafeJson = (
 /** The `endpoint` response as `schema` declares it, or a refusal that names every problem. */
 export const parseResponse = <Schema extends TSchema>(
   schema: Schema,
-  data: Static<typeof JsonValueSchema>,
+  data: JsonValue,
   endpoint: string,
 ): Static<Schema> => {
   if (Value.Check(schema, data)) return data;
@@ -198,14 +207,14 @@ export const parseResponse = <Schema extends TSchema>(
 export const requestJson = async (
   connection: CommandConnection,
   path: string,
-  body?: Static<typeof JsonValueSchema>,
+  body?: JsonValue,
 ): Promise<CommandResponse> => {
   const headers = new Headers({ Accept: "application/json", "User-Agent": cliUserAgent });
   injectCallerTrace(headers);
   let traceId: string | null = null;
   let requestId: string | null = null;
   let result: CommandResponse | undefined;
-  const { error } = await betterFetch<Static<typeof JsonValueSchema>>(path, {
+  const { error } = await betterFetch<JsonValue>(path, {
     baseURL: connection.origin,
     method: body === undefined ? "GET" : "POST",
     body,
@@ -235,6 +244,12 @@ export const requestJson = async (
       correlation,
     });
   if (Value.Check(errorSchema, error)) {
+    if (error.error.code === "SESSION_NOT_FRESH" && connection.signInAgain)
+      return requestJson(
+        { ...connection, token: await connection.signInAgain(), signInAgain: undefined },
+        path,
+        body,
+      );
     throw new CommandError(error.error.code, error.error.message, {
       status: error.status,
       details: error.error.details,
@@ -252,15 +267,27 @@ export const requestJson = async (
 export const asksInTerminal = (json: boolean | undefined) =>
   !json && process.stdin.isTTY && process.stderr.isTTY;
 
-/** Opens `url` in the default browser, or asks the person to open it when that fails. */
-export const openInBrowser = (url: string) => {
+/**
+ * `value` as an HTTP or HTTPS URL, or null. The CLI opens no other URL in a browser, because the
+ * operating system hands any other scheme to whatever handler it has for it.
+ */
+export const httpUrl = (value: string) => {
+  const url = URL.parse(value);
+  return url && ["http:", "https:"].includes(url.protocol) ? url : null;
+};
+
+/**
+ * Opens `url`, an HTTP or HTTPS URL from `httpUrl`, in the default browser, or asks the person to
+ * open it when that fails.
+ */
+export const openInBrowser = (url: URL) => {
   try {
     Bun.spawn(
       process.platform === "darwin"
-        ? ["open", url]
+        ? ["open", url.href]
         : process.platform === "win32"
-          ? ["rundll32", "url.dll,FileProtocolHandler", url]
-          : ["xdg-open", url],
+          ? ["rundll32", "url.dll,FileProtocolHandler", url.href]
+          : ["xdg-open", url.href],
       { stdio: ["ignore", "ignore", "ignore"] },
     ).unref();
   } catch {
@@ -280,7 +307,7 @@ export const writeOutput = (text: string) =>
     process.stdout.write(Buffer.from(text), (error) => (error ? reject(error) : resolve())),
   );
 
-export const readCommandInput = async (source: string): Promise<Static<typeof JsonValueSchema>> => {
+export const readCommandInput = async (source: string): Promise<JsonValue> => {
   let text: string;
   if (source === "-") {
     if (process.stdin.isTTY)
@@ -297,7 +324,7 @@ export const readCommandInput = async (source: string): Promise<Static<typeof Js
       "Use --input @file or --input -. Keep credentials out of command arguments.",
     );
   }
-  let input: Static<typeof JsonValueSchema> | undefined;
+  let input: JsonValue | undefined;
   try {
     input = JSON.parse(text);
   } catch {
@@ -313,14 +340,14 @@ export const describeCommands = async (
 ): Promise<CommandDescription> => {
   const response = await requestJson(connection, "/api/openapi/json");
   const document = response.data;
-  if (!Value.Check(commandDocumentSchema, document)) {
-    throw new CommandError(
-      "INVALID_DISCOVERY",
-      `The API returned an invalid OpenAPI document: ${describeErrors(commandDocumentSchema, document)}.`,
-    );
-  }
+  const unreadable = (problem: string) =>
+    new CommandError("INVALID_DISCOVERY", "This devboxes CLI needs a newer devboxes API.", {
+      details: { problem },
+    });
+  if (!Value.Check(commandDocumentSchema, document))
+    throw unreadable(describeErrors(commandDocumentSchema, document));
   const catalog = catalogCommands(document);
-  if ("problem" in catalog) throw new CommandError("INVALID_DISCOVERY", catalog.problem);
+  if ("problem" in catalog) throw unreadable(catalog.problem);
   return {
     openapi: document.openapi,
     commands: catalog.commands,
@@ -345,7 +372,7 @@ export const describeCommand = (
 
 export const invokeCommand = async (
   connection: CommandConnection,
-  invocation: { command: string; input: Static<typeof JsonValueSchema> },
+  invocation: { command: string; input: JsonValue },
   readCommands = describeCommands,
 ): Promise<CommandResponse> => {
   const [operation] = describeCommand(await readCommands(connection), invocation.command).commands;
@@ -388,8 +415,8 @@ const commandTool = <Input extends TObject, Result>(
 });
 
 /**
- * The devboxes command tools. `devboxes mcp` serves them over stdio, and the Chat native host
- * runs them in its own process. Each call reads the advertised commands with `readCommands`, which
+ * The devboxes command tools. `devboxes mcp` serves describe and invoke over stdio, and the Chat
+ * native host runs all four in its own process. Each call reads the advertised commands with `readCommands`, which
  * by default asks the API again.
  */
 export const devboxesCommandTools = (
@@ -418,8 +445,31 @@ export const devboxesCommandTools = (
     Type.Object({
       command: Type.String({ minLength: 1 }),
       // Tool arguments arrive as JSON, so the advertised schema accepts every value.
-      input: Type.Unsafe<Static<typeof JsonValueSchema>>({}),
+      input: Type.Unsafe<JsonValue>({}),
     }),
     (invocation) => invokeCommand(connection, invocation, readCommands),
+  ),
+  zoom: commandTool(
+    "devboxes_zoom",
+    "Open a line of a Chat log into the two lines it was made from, or a message whole with n 1. Pass this conversation's conversationId for its log, or none for Organization memory.",
+    Type.Object({
+      conversationId: Type.Optional(Type.String({ minLength: 1 })),
+      id: Type.Integer({ minimum: 0 }),
+      n: Type.Integer({ minimum: 1 }),
+    }),
+    (input) => invokeCommand(connection, { command: "chat.zoom", input }, readCommands),
+  ),
+  erase: commandTool(
+    "devboxes_erase",
+    "Erase messages of this conversation's Chat log, by the ids devboxes_zoom shows with n 1, when a person in this conversation asks for it: their text and who wrote them go, with the Organization memory entries they saved. Their posts in the chat stay.",
+    Type.Object({
+      conversationId: Type.String({ minLength: 1 }),
+      ids: Type.Array(Type.Integer({ minimum: 0 }), {
+        minItems: 1,
+        maxItems: 100,
+        uniqueItems: true,
+      }),
+    }),
+    (input) => invokeCommand(connection, { command: "chat.erase-messages", input }, readCommands),
   ),
 });

@@ -1,6 +1,8 @@
 import Type from "typebox";
 import Value from "typebox/value";
 
+import { JsonValueSchema } from "./json";
+
 type OpencodeApiAuth = {
   type: "api";
   key: string;
@@ -59,23 +61,6 @@ const ApiProviderAuthSchema = Type.Object(
   { additionalProperties: true },
 );
 
-/**
- * Any JSON value. A credential field that validateOpencodeProviderAuth checks next takes it, so the
- * validator's provider-named error is the one that surfaces.
- */
-export const JsonValueSchema = Type.Cyclic(
-  {
-    JsonValue: Type.Union([
-      Type.String(),
-      Type.Number(),
-      Type.Boolean(),
-      Type.Null(),
-      Type.Array(Type.Ref("JsonValue")),
-      Type.Record(Type.String(), Type.Ref("JsonValue")),
-    ]),
-  },
-  "JsonValue",
-);
 const OauthProviderAuthMetadataSchema = Type.Record(Type.String(), JsonValueSchema);
 
 // Mirrors the generated SDK OAuth shape: what opencode reads from its auth
@@ -101,10 +86,15 @@ export const OpencodeProviderAuthSchema = Type.Union([
   ApiProviderAuthSchema,
   OauthProviderAuthSchema,
 ]);
-const WorkspaceImageQualificationProviderAuthLeaseSchema = Type.Object(
+/** What /internal/workspace-images/qualification-provider-auth answers the image builder. */
+export const WorkspaceImageQualificationProviderAuthLeaseSchema = Type.Object(
   {
     providerID: Type.String({ minLength: 1 }),
     modelID: Type.String({ minLength: 1 }),
+    /**
+     * Any JSON: validateOpencodeProviderAuth checks it next, so its provider-named error is the one
+     * that surfaces.
+     */
     auth: JsonValueSchema,
   },
   { additionalProperties: false },

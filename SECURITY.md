@@ -46,6 +46,14 @@ not establish that a container stopped.
 - The relay's signing key and port are in `relay.json` in the Runner state
   directory, with mode `0600`. Protect that directory like the Runner token
   file.
+- `devboxes runner listen` refuses a Runner token file or `relay.json` that is
+  not a regular file of the user's, or whose group or others have any
+  permission, and a state directory that is not the user's or whose group or
+  others have any permission. It checks and reads each file through the same
+  handle. The token file may be a symbolic link, for example into a secrets
+  mount, and its target is checked; `relay.json`, which only devboxes writes,
+  may not. On Windows, where a file's mode and owner say nothing about its
+  access, it leaves these checks to the files' access-control lists.
 - Native configuration and private daemon state use container memory-backed
   filesystems. Docker access still permits inspection of container files and
   credentials. These controls do not protect against the host operator.

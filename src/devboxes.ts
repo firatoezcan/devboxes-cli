@@ -9,12 +9,13 @@ import {
   describeCommand,
   describeCommands,
   invokeCommand,
+  httpUrl,
   openInBrowser,
   parseResponse,
   readCommandInput,
   writeOutput,
 } from "./commands";
-import { loadCommandConnection } from "./connection";
+import { loadCommandConnection, type LogIn } from "./connection";
 import { runDevboxesMcpServer } from "./mcp";
 import { promptCommandInput, promptField } from "./prompt-input";
 
@@ -40,13 +41,13 @@ const connectCompleteSchema = Type.Union([
   Type.Object({ status: Type.Literal("completed"), accountId: Type.String() }),
 ]);
 
-export const addAccountCommands = (program: Command) => {
+export const addAccountCommands = (program: Command, logIn: LogIn) => {
   const commands = program
     .command("commands")
     .description("list every advertised application command");
   commands.action(async () => {
     const options = commands.optsWithGlobals<{ api?: string; config?: string; json?: boolean }>();
-    const connection = await loadCommandConnection(options);
+    const connection = await loadCommandConnection(options, logIn);
     const description = await describeCommands(connection);
     if (options.json) {
       await writeOutput(`${JSON.stringify(description)}\n`);
@@ -69,7 +70,7 @@ export const addAccountCommands = (program: Command) => {
     .argument("<operationId>", "Discovered operation ID");
   describe.action(async (operationId: string) => {
     const options = describe.optsWithGlobals<{ api?: string; config?: string; json?: boolean }>();
-    const connection = await loadCommandConnection(options);
+    const connection = await loadCommandConnection(options, logIn);
     await writeOutput(
       `${JSON.stringify(
         describeCommand(await describeCommands(connection), operationId),
@@ -96,7 +97,7 @@ export const addAccountCommands = (program: Command) => {
       json?: boolean;
       input?: string;
     }>();
-    const connection = await loadCommandConnection(options);
+    const connection = await loadCommandConnection(options, logIn);
     let result: Awaited<ReturnType<typeof invokeCommand>>;
     if (options.input !== undefined) {
       result = await invokeCommand(connection, {
@@ -124,17 +125,17 @@ export const addAccountCommands = (program: Command) => {
 
   const connect = program
     .command("connect")
-    .description("connect a Provider Account by signing in with the provider or with an API key")
+    .description("connect a model account by signing in with the provider or with an API key")
     .argument(
       "[providerId]",
       "The provider ID from providers.list. In a terminal, devboxes asks for it.",
     )
     .option(
       "--organization <id>",
-      "The Organization that gets the Provider Account. In a terminal, devboxes asks for it.",
+      "The Organization that gets the model account. In a terminal, devboxes asks for it.",
     )
-    .option("--label <label>", "The Provider Account's name. In a terminal, devboxes asks for it.")
-    .option("--account <id>", "Provider Account whose credential the connection replaces")
+    .option("--label <label>", "The model account's name. In a terminal, devboxes asks for it.")
+    .option("--account <id>", "The model account whose credential the connection replaces")
     .option("--api-key", "connect an API key instead of signing in");
   connect.action(async (providerId?: string) => {
     const options = connect.optsWithGlobals<{
@@ -146,7 +147,7 @@ export const addAccountCommands = (program: Command) => {
       account?: string;
       apiKey?: boolean;
     }>();
-    const connection = await loadCommandConnection(options);
+    const connection = await loadCommandConnection(options, logIn);
     const interactive = asksInTerminal(options.json);
     if (!interactive && options.organization === undefined)
       throw new CommandError(
@@ -156,7 +157,7 @@ export const addAccountCommands = (program: Command) => {
     if (!interactive && options.label === undefined)
       throw new CommandError(
         "LABEL_REQUIRED",
-        "Name the Provider Account with --label <label>, or run the command in a terminal to enter one.",
+        "Name the model account with --label <label>, or run the command in a terminal to enter one.",
       );
     const organizationId =
       options.organization ??
@@ -165,7 +166,7 @@ export const addAccountCommands = (program: Command) => {
         await promptField(
           { connection, description: await describeCommands(connection) },
           "organizationId",
-          { type: "string", description: "The Organization that gets the Provider Account." },
+          { type: "string", description: "The Organization that gets the model account." },
           {},
         ),
         "organizations.list",
@@ -183,6 +184,11 @@ export const addAccountCommands = (program: Command) => {
           throw new CommandError(
             "PROVIDER_NOT_FOUND",
             `providers.list has no provider ${providerId}.`,
+          );
+        if (!provider.deviceFlow && !provider.apiKey)
+          throw new CommandError(
+            "PROVIDER_NOT_CONNECTABLE",
+            `${provider.name} takes neither a sign-in nor an API key.`,
           );
         if (options.apiKey && !provider.apiKey)
           throw new CommandError(
@@ -222,7 +228,7 @@ export const addAccountCommands = (program: Command) => {
     const named =
       options.label ??
       (await text({
-        message: "Name of the Provider Account",
+        message: "Name of the model account",
         initialValue: provider.name,
         validate: (value) => (value?.trim() ? undefined : "Enter a name."),
         output: process.stderr,
@@ -258,10 +264,16 @@ export const addAccountCommands = (program: Command) => {
         ).data,
         "providers.connect-start",
       );
+      const verificationUrl = httpUrl(started.verificationUrl);
+      if (!verificationUrl)
+        throw new CommandError(
+          "INVALID_RESPONSE",
+          "The providers.connect-start response is invalid: /verificationUrl must be an HTTP URL.",
+        );
       process.stderr.write(
-        `Open ${started.verificationUrl} to sign in.${started.userCode === null ? "" : ` Confirm that the page shows code ${started.userCode}.`}\n`,
+        `Open ${verificationUrl.href} to sign in.${started.userCode === null ? "" : ` Confirm that the page shows code ${started.userCode}.`}\n`,
       );
-      if (interactive) openInBrowser(started.verificationUrl);
+      if (interactive) openInBrowser(verificationUrl);
       const complete = async (code?: string) =>
         parseResponse(
           connectCompleteSchema,
@@ -314,17 +326,15 @@ export const addAccountCommands = (program: Command) => {
     await writeOutput(
       options.json
         ? `${JSON.stringify({ status: "completed", accountId })}\n`
-        : `Connected ${label} as Provider Account ${accountId}.\n`,
+        : `Connected ${label} as model account ${accountId}.\n`,
     );
   });
 
   const mcp = program
     .command("mcp")
-    .description("serve devboxes describe and invoke tools over stdio");
+    .description("serve devboxes tools to a coding agent over stdio");
   mcp.action(async () => {
-    const connection = await loadCommandConnection(
-      mcp.optsWithGlobals<{ api?: string; config?: string }>(),
-    );
-    await runDevboxesMcpServer(connection);
+    const options = mcp.optsWithGlobals<{ api?: string; config?: string }>();
+    await runDevboxesMcpServer(() => loadCommandConnection({ ...options, json: true }));
   });
 };

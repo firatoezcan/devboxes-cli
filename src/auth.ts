@@ -3,7 +3,8 @@ import { URLPattern } from "node:url";
 import type { BetterFetchOption } from "@better-fetch/fetch";
 import { isCancel, password as passwordPrompt, select, text } from "@clack/prompts";
 import { writeConfig } from "./connections/config";
-import { JsonValueSchema } from "./protocol/provider-auth";
+import { displayDeviceCode } from "./protocol/device-code";
+import { JsonValueSchema, type JsonValue } from "./protocol/json";
 import { describeErrors } from "./values/validation-errors";
 import { createAuthClient } from "better-auth/client";
 import { Option, type Command } from "commander";
@@ -19,6 +20,7 @@ import {
   credentialSafeJson,
   failureSchema,
   injectCallerTrace,
+  httpUrl,
   openInBrowser,
   parseResponse,
   readCommandInput,
@@ -40,19 +42,8 @@ const ownSessionSelectionSchema = Type.Object(
   { id: Type.String({ minLength: 1, description: "The session id that /list-sessions returns" }) },
   { additionalProperties: false },
 );
-const userSessionSelectionSchema = Type.Object(
-  {
-    userId: Type.String({ minLength: 1, description: "The user whose session is revoked" }),
-    id: Type.String({
-      minLength: 1,
-      description: "The session id that /admin/list-user-sessions returns",
-    }),
-  },
-  { additionalProperties: false },
-);
 const sessionSelectionSchemas = new Map<string, TObject>([
   ["/revoke-session", ownSessionSelectionSchema],
-  ["/admin/revoke-user-session", userSessionSelectionSchema],
 ]);
 const oauthFailureSchema = Type.Object({ error: Type.String(), error_description: Type.String() });
 const listedSessionSchema = Type.Object({ id: Type.String(), token: Type.String() });
@@ -95,7 +86,7 @@ const authenticationResponse = async (
   path: string,
   options: Pick<
     BetterFetchOption<
-      Record<string, Static<typeof JsonValueSchema> | undefined>,
+      Record<string, JsonValue | undefined>,
       Record<string, string | number | boolean>,
       Record<string, string>
     >,
@@ -109,7 +100,7 @@ const authenticationResponse = async (
     ? CookieJar.deserializeSync(context.config.cookieJar)
     : new CookieJar();
   const secrets = [context.config.sessionToken];
-  let result: { status: number; data: Static<typeof JsonValueSchema> } | undefined;
+  let result: { status: number; data: JsonValue } | undefined;
   const client = createAuthClient({
     baseURL: origin,
     disableDefaultFetchPlugins: true,
@@ -289,8 +280,8 @@ export const addAuthenticationCommands = (program: Command) => {
             `Device authorization did not return its codes and an HTTP verification URL: ${describeErrors(deviceCodeSchema, device)}.`,
           );
         }
-        const verification = URL.parse(device.verification_uri_complete);
-        if (!verification || !["http:", "https:"].includes(verification.protocol)) {
+        const verification = httpUrl(device.verification_uri_complete);
+        if (!verification) {
           throw new CommandError(
             "INVALID_AUTH_RESPONSE",
             "Device authorization did not return its codes and an HTTP verification URL: /verification_uri_complete must be an HTTP URL.",
@@ -308,10 +299,10 @@ export const addAuthenticationCommands = (program: Command) => {
                     expiresIn: device.expires_in,
                   },
                 })
-              : `Open ${verification.href} to continue with ${choice.label}.\nConfirm that the page shows code ${device.user_code}. Waiting for approval...`
+              : `Open ${verification.href}, check that it shows code ${displayDeviceCode(device.user_code)}, and approve the sign-in.`
           }\n`,
         );
-        if (interactive) openInBrowser(verification.href);
+        if (interactive) openInBrowser(verification);
         const expiresAt = Date.now() + device.expires_in * 1000;
         let interval = device.interval;
         let wait = interval;
@@ -466,17 +457,37 @@ export const addAuthenticationCommands = (program: Command) => {
                       twoFactorRequired: true,
                       twoFactorMethods: challenge.twoFactorMethods,
                     })
-                  : 'Two-factor verification is required. Pipe {"code":"<authenticator code>"} into devboxes auth /two-factor/verify-totp --input -, or {"code":"<backup code>"} into devboxes auth /two-factor/verify-backup-code --input -.'
+                  : 'Two-factor verification is required. Pipe {"code":"<authenticator code>"} into devboxes auth /two-factor/verify-totp --input -, or {"code":"<backup code>"} into devboxes auth /two-factor/verify-backup-code --input -. To get a code by email, pipe {} into devboxes auth /two-factor/send-otp --input -, then {"code":"<emailed code>"} into devboxes auth /two-factor/verify-otp --input -.'
               }\n`,
             );
             return;
           }
-          const code = (await promptText("Authenticator code or backup code")).replace(/\s/g, "");
-          response = await requestAuthentication(
-            context,
-            /^\d{6}$/.test(code) ? "/two-factor/verify-totp" : "/two-factor/verify-backup-code",
-            { method: "POST", body: { code } },
-          );
+          const emailed = await select({
+            message: "Second factor",
+            options: [
+              { value: false, label: "Authenticator app or backup code" },
+              { value: true, label: `Email a code to ${email}` },
+            ],
+            output: process.stderr,
+          });
+          if (isCancel(emailed)) throw new CommandError("CANCELLED", "Authentication cancelled.");
+          if (emailed) {
+            await requestAuthentication(context, "/two-factor/send-otp", {
+              method: "POST",
+              body: {},
+            });
+            response = await requestAuthentication(context, "/two-factor/verify-otp", {
+              method: "POST",
+              body: { code: await promptText(`Code sent to ${email}`) },
+            });
+          } else {
+            const code = (await promptText("Authenticator code or backup code")).replace(/\s/g, "");
+            response = await requestAuthentication(
+              context,
+              /^\d{6}$/.test(code) ? "/two-factor/verify-totp" : "/two-factor/verify-backup-code",
+              { method: "POST", body: { code } },
+            );
+          }
         }
         await report(parseResponse(authenticationSchema, response.data, "/sign-in/email").user);
         return;
@@ -560,7 +571,9 @@ export const addAuthenticationCommands = (program: Command) => {
 
   const nativeAuth = program
     .command("auth")
-    .description("discover or invoke the installed Better Auth account and security operations")
+    .description(
+      "discover or run account and security operations, such as two-factor sign-in and sessions",
+    )
     .argument("[path]", "Native authentication endpoint path; omit to list its generated schema")
     .option("--method <method>", "GET or POST when an endpoint supports both")
     .option("--input <source>", "Invoke with JSON from @file or - for stdin; omit to describe");
@@ -667,27 +680,6 @@ export const addAuthenticationCommands = (program: Command) => {
           "No active session of this account has that id.",
         );
       input = { token };
-    }
-    if (operation.path === "/admin/revoke-user-session") {
-      if (!Value.Check(userSessionSelectionSchema, submitted))
-        throw new CommandError(
-          "INVALID_INPUT",
-          "Select the session to revoke by its userId and the id that /admin/list-user-sessions returns.",
-        );
-      const listed = await requestAuthentication(
-        context,
-        "/admin/list-user-sessions",
-        { method: "POST", body: { userId: submitted.userId } },
-        false,
-      );
-      const sessionToken = parseResponse(
-        Type.Object({ sessions: Type.Array(listedSessionSchema) }),
-        listed.data,
-        "/admin/list-user-sessions",
-      ).sessions.find((listedSession) => listedSession.id === submitted.id)?.token;
-      if (!sessionToken)
-        throw new CommandError("SESSION_NOT_FOUND", "No session of this user has that id.");
-      input = { sessionToken };
     }
     if (
       !operation.path.startsWith("/") ||

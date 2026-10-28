@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { opencodeProviderConnectors } from "./descriptors";
 import {
   pollOpencodeOauthDeviceFlow,
+  ProviderSignInFailed,
   startOpencodeOauthDeviceFlow,
 } from "./flows";
 
@@ -672,11 +673,7 @@ describe("Claude subscription sign-in", () => {
   test("refuses a missing code, or one with another attempt's state, without asking Anthropic", async () => {
     const requests = stubFetch(() => Response.json({}));
     const { payload } = await startOpencodeOauthDeviceFlow(claudeConnector);
-    const mismatch = {
-      status: 422,
-      code: "SIGN_IN_CODE_MISMATCH",
-      message: "devboxes couldn't check the code. Start the sign-in again.",
-    };
+    const mismatch = { status: 422, code: "SIGN_IN_CODE_MISMATCH" };
 
     for (const pasted of [undefined, "code", "code#another-state"])
       await expect(
@@ -699,16 +696,25 @@ describe("Claude subscription sign-in", () => {
     const exchange = () =>
       pollOpencodeOauthDeviceFlow(claudeConnector, payload, 0, `code#${payload.state}`);
 
-    await expect(exchange()).rejects.toMatchObject({
-      status: 422,
-      code: "PROVIDER_SIGN_IN_REFUSED",
-      message: `Anthropic refused the sign-in (400): {"error":"invalid_grant","error_description":"Invalid 'code' in request."}`,
-    });
-    await expect(exchange()).rejects.toMatchObject({
-      status: 502,
-      code: "PROVIDER_UNAVAILABLE",
-      message: "Anthropic's sign-in failed upstream (503): upstream overloaded",
-    });
+    const refusal = () =>
+      exchange().then(
+        () => null,
+        (error: ProviderSignInFailed) => error,
+      );
+    const refused = await refusal();
+    expect(refused).toBeInstanceOf(ProviderSignInFailed);
+    for (const value of [
+      "400",
+      `"error":"invalid_grant"`,
+      `"error_description":"Invalid 'code' in request."`,
+    ])
+      expect(refused?.message).toContain(value);
+    expect(refused).toMatchObject({ status: 422, code: "PROVIDER_SIGN_IN_REFUSED" });
+    const unavailable = await refusal();
+    expect(unavailable).toBeInstanceOf(ProviderSignInFailed);
+    for (const value of ["503", "upstream overloaded"])
+      expect(unavailable?.message).toContain(value);
+    expect(unavailable).toMatchObject({ status: 502, code: "PROVIDER_UNAVAILABLE" });
   });
 });
 

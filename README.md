@@ -3,7 +3,7 @@
 The CLI discovers and invokes the application's API-owned commands. Its MCP
 server exposes the same discovery and invocation implementation to agents.
 
-The package launcher requires Bun 1.4.3 or later. Published native binaries
+The package launcher requires Bun 1.4.4 or later. Published native binaries
 include their runtime and do not require a separate JavaScript runtime.
 
 ## Run from source
@@ -49,12 +49,10 @@ semantics. Enrollment results contain authenticator secrets and backup codes;
 store them privately.
 
 The CLI redacts session tokens from its output. To revoke one session, submit
-`{"id":"<session id>"}` from `/list-sessions` to `/revoke-session`. An
-administrator revokes another user's session by submitting
-`{"userId":"<user id>","id":"<session id>"}` from `/admin/list-user-sessions` to
-`/admin/revoke-user-session`. The CLI resolves that session's token itself and
-fails with `SESSION_NOT_FOUND` when the listing has no session with that id.
-Describing either operation shows this id input.
+`{"id":"<session id>"}` from `/list-sessions` to `/revoke-session`. The CLI
+resolves that session's token itself and fails with `SESSION_NOT_FOUND` when the
+listing has no session with that id. Describing the operation shows this id
+input.
 
 ## Discover and invoke application commands
 

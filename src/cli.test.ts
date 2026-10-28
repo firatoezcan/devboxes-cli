@@ -1,12 +1,11 @@
 import { afterAll, describe, expect, it } from "bun:test";
-import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { JsonValueSchema } from "./protocol/provider-auth";
+import type { JsonValue } from "./protocol/json";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import type { Static } from "typebox";
 
 import { apiOrigin } from "./commands";
 
@@ -50,21 +49,59 @@ await chmod(sharedTokenFile, 0o644);
 await writeFile(emptyTokenFile, "\n");
 await chmod(emptyTokenFile, 0o600);
 await writeFile(malformedInput, "{ not json");
+const privateTokenFile = join(fixtureDirectory, "private-token");
+await writeFile(privateTokenFile, "firops_runner_fixture\n");
+await chmod(privateTokenFile, 0o600);
+const sharedStateDirectory = join(fixtureDirectory, "shared-state");
+await mkdir(sharedStateDirectory);
+await chmod(sharedStateDirectory, 0o777);
+const sharedRelayKeyDirectory = join(fixtureDirectory, "shared-relay-key");
+await mkdir(sharedRelayKeyDirectory, { mode: 0o700 });
+await writeFile(
+  join(sharedRelayKeyDirectory, "relay.json"),
+  JSON.stringify({ key: "k".repeat(43), port: 9 }),
+);
+await chmod(join(sharedRelayKeyDirectory, "relay.json"), 0o644);
+const linkedTokenFile = join(fixtureDirectory, "linked-token");
+await symlink(privateTokenFile, linkedTokenFile);
+const unreadableTokenFile = join(fixtureDirectory, "unreadable-token");
+await writeFile(unreadableTokenFile, "firops_runner_fixture\n");
+await chmod(unreadableTokenFile, 0o000);
+const fifoTokenFile = join(fixtureDirectory, "fifo-token");
+if (!Bun.spawnSync(["mkfifo", "-m", "600", fifoTokenFile]).success)
+  throw new Error("mkfifo did not create the FIFO token file.");
+const linkedRelayKeyDirectory = join(fixtureDirectory, "linked-relay-key");
+await mkdir(linkedRelayKeyDirectory, { mode: 0o700 });
+await writeFile(
+  join(fixtureDirectory, "private-relay.json"),
+  JSON.stringify({ key: "k".repeat(43), port: 9 }),
+);
+await chmod(join(fixtureDirectory, "private-relay.json"), 0o600);
+await symlink(
+  join(fixtureDirectory, "private-relay.json"),
+  join(linkedRelayKeyDirectory, "relay.json"),
+);
 const scoped = { DEVBOXES_API_URL: "https://api.example.com", DEVBOXES_TOKEN: "scoped" };
 const unusedOrigin = "http://127.0.0.1:9";
 const listen = ["--json", "--api", "https://api.example.com", "runner", "listen"];
 const localDocker = { DOCKER_HOST: undefined, DEVBOX_OPENCODE_DOCKER_SOCKET_PATH: undefined };
 
-/** Runs the CLI in a pseudo-terminal, with an `open` on PATH that only records its calls. */
+/**
+ * Runs the CLI in a pseudo-terminal, with an `open` and an `xdg-open` on PATH that only record
+ * their calls. TERM names a color terminal, so clack colors its prompts as it does under CI.
+ */
 const inTerminal = async (args: string[], env: Record<string, string>) => {
   const bin = await mkdtemp(join(fixtureDirectory, "bin-"));
   const opened = join(bin, "opened");
-  await writeFile(join(bin, "open"), `#!/bin/sh\necho "$@" >> ${opened}\n`);
-  await chmod(join(bin, "open"), 0o755);
+  for (const launcher of ["open", "xdg-open"]) {
+    await writeFile(join(bin, launcher), `#!/bin/sh\necho "$@" >> ${opened}\n`);
+    await chmod(join(bin, launcher), 0o755);
+  }
   let screen = "";
+  let answered: number | null = null;
   const child = Bun.spawn([process.execPath, "src/cli.ts", ...args], {
     cwd: join(import.meta.dir, ".."),
-    env: { ...process.env, ...env, PATH: `${bin}:${process.env.PATH}` },
+    env: { ...process.env, ...env, PATH: `${bin}:${process.env.PATH}`, TERM: "xterm-256color" },
     terminal: {
       cols: 120,
       rows: 40,
@@ -73,12 +110,34 @@ const inTerminal = async (args: string[], env: Record<string, string>) => {
       },
     },
   });
+  /**
+   * Whether the prompt clack draws last (◆) shows `text` and came after the prompt the previous
+   * answer closed (◇), so keys typed now reach it and not the previous prompt, which can still be
+   * open. clack colors its symbols, so `text` is found in the prompt's frame, never with a symbol.
+   */
+  const prompting = (text: string) => {
+    const active = screen.lastIndexOf("◆");
+    return (
+      active > screen.lastIndexOf("◇") &&
+      (answered === null || screen.indexOf("◇", answered) !== -1) &&
+      screen.slice(active).includes(text)
+    );
+  };
   return {
     screen: () => screen,
     shows: async (text: string) => {
       for (let waited = 0; !screen.includes(text) && waited < 10_000; waited += 50)
         await Bun.sleep(50);
       return screen.includes(text);
+    },
+    /** Types `keys`, which end by submitting, into the next prompt that shows `text`. */
+    answer: async (text: string, keys: string) => {
+      for (let waited = 0; !prompting(text); waited += 25) {
+        if (waited >= 10_000) throw new Error(`No open prompt shows "${text}":\n${screen}`);
+        await Bun.sleep(25);
+      }
+      answered = screen.length;
+      child.terminal?.write(keys);
     },
     type: (text: string) => child.terminal?.write(text),
     exited: (milliseconds = 10_000) =>
@@ -138,6 +197,42 @@ describe("devboxes entrypoint", () => {
       "INVALID_RUNNER_TOKEN_FILE",
     ],
     [
+      "a state directory other users can write",
+      [...listen, "--token-file", privateTokenFile, "--state-directory", sharedStateDirectory],
+      localDocker,
+      "INVALID_RUNNER_STATE_DIRECTORY",
+    ],
+    [
+      "a state directory other users can write, after a token file that links to a private file",
+      [...listen, "--token-file", linkedTokenFile, "--state-directory", sharedStateDirectory],
+      localDocker,
+      "INVALID_RUNNER_STATE_DIRECTORY",
+    ],
+    [
+      "a token file this user cannot read",
+      [...listen, "--token-file", unreadableTokenFile],
+      localDocker,
+      "INVALID_RUNNER_TOKEN_FILE",
+    ],
+    [
+      "a token file that is a FIFO",
+      [...listen, "--token-file", fifoTokenFile],
+      localDocker,
+      "INVALID_RUNNER_TOKEN_FILE",
+    ],
+    [
+      "a relay key that is a symbolic link",
+      [...listen, "--token-file", privateTokenFile, "--state-directory", linkedRelayKeyDirectory],
+      localDocker,
+      "INVALID_RUNNER_STATE_DIRECTORY",
+    ],
+    [
+      "a relay key other users can read",
+      [...listen, "--token-file", privateTokenFile, "--state-directory", sharedRelayKeyDirectory],
+      localDocker,
+      "INVALID_RUNNER_STATE_DIRECTORY",
+    ],
+    [
       "a machine that was never added",
       listen,
       { ...localDocker, XDG_CONFIG_HOME: join(fixtureDirectory, "never-added") },
@@ -186,7 +281,7 @@ describe("devboxes entrypoint", () => {
       "ORGANIZATION_REQUIRED",
     ],
     [
-      "a Provider Account name missing outside a terminal",
+      "a model account name missing outside a terminal",
       ["--json", "connect", "openai", "--organization", "0198a0b0-0000-7000-8000-000000000001"],
       scoped,
       "LABEL_REQUIRED",
@@ -245,35 +340,55 @@ describe("devboxes invoke", () => {
             "/api/commands/sessions/dispatch": {
               post: {
                 operationId: "sessions.dispatch",
-                "x-devboxes": { effect: "write", authority: "Organization member" },
+                "x-devboxes": {
+                  effect: "write",
+                  roles: ["owner", "admin", "member", "reviewer", "viewer"],
+                  authority: "Organization member",
+                },
                 responses: {},
               },
             },
             "/api/commands/sessions/list": {
               post: {
                 operationId: "sessions.list",
-                "x-devboxes": { effect: "read", authority: "Organization member" },
+                "x-devboxes": {
+                  effect: "read",
+                  roles: ["owner", "admin", "member", "reviewer", "viewer"],
+                  authority: "Organization member",
+                },
                 responses: {},
               },
             },
             "/api/commands/delegations/create": {
               post: {
                 operationId: "delegations.create",
-                "x-devboxes": { effect: "write", authority: "Current account session" },
+                "x-devboxes": {
+                  effect: "write",
+                  roles: ["owner", "admin", "member", "reviewer", "viewer"],
+                  authority: "Current account session",
+                },
                 responses: {},
               },
             },
             "/api/commands/sessions/events": {
               post: {
                 operationId: "sessions.events",
-                "x-devboxes": { effect: "read", authority: "Organization member" },
+                "x-devboxes": {
+                  effect: "read",
+                  roles: ["owner", "admin", "member", "reviewer", "viewer"],
+                  authority: "Organization member",
+                },
                 responses: {},
               },
             },
             "/api/commands/sessions/inspect": {
               post: {
                 operationId: "sessions.inspect",
-                "x-devboxes": { effect: "read", authority: "Organization member" },
+                "x-devboxes": {
+                  effect: "read",
+                  roles: ["owner", "admin", "member", "reviewer", "viewer"],
+                  authority: "Organization member",
+                },
                 responses: {},
               },
             },
@@ -472,6 +587,59 @@ describe("devboxes invoke", () => {
   });
 });
 
+describe("devboxes commands", () => {
+  type Contract = {
+    effect: "write";
+    elevated?: boolean;
+    elevation?: string;
+    roles?: string[];
+    authority: string;
+  };
+  const document = (contract: Contract) => ({
+    openapi: "3.0.3",
+    paths: {
+      "/api/commands/billing/portal": {
+        post: { operationId: "billing.portal", "x-devboxes": contract, responses: {} },
+      },
+    },
+  });
+  const list = async (contract: Contract) => {
+    using api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => Response.json(document(contract)),
+    });
+    return await runCli(["commands"], {
+      DEVBOXES_API_URL: api.url.origin,
+      DEVBOXES_TOKEN: "scoped",
+    });
+  };
+
+  it("lists an elevated write, and one that leaves `elevated` out, ignoring fields a newer API adds", async () => {
+    const contracts: Contract[] = [
+      { effect: "write", elevated: true, elevation: "money", roles: ["owner"], authority: "Owner" },
+      { effect: "write", roles: ["owner"], authority: "Organization owner" },
+    ];
+    for (const contract of contracts) {
+      const listed = await list(contract);
+      expect(listed.stdout).toBe("billing.portal\twrite\n");
+      expect(listed.exitCode).toBe(0);
+    }
+  });
+
+  it("refuses a document whose write serves `elevated` as anything but true, or no roles, as an older API's", async () => {
+    const contracts: Contract[] = [
+      { effect: "write", elevated: false, roles: ["owner"], authority: "Organization owner" },
+      { effect: "write", authority: "Organization owner" },
+    ];
+    for (const contract of contracts) {
+      const listed = await list(contract);
+      expect(listed.stderr).toContain("This devboxes CLI needs a newer devboxes API.");
+      expect(listed.exitCode).not.toBe(0);
+    }
+  });
+});
+
 describe("devboxes invoke in a terminal", () => {
   const organizations = [
     { id: "0198a0b0-0000-7000-8000-00000000000a", name: "Acme" },
@@ -482,10 +650,14 @@ describe("devboxes invoke in a terminal", () => {
     { id: "0198a0b0-0000-7000-8000-0000000000c2", name: "Website" },
   ];
   const uuid = { type: "string", pattern: "^[0-9a-f-]{36}$" };
-  const operation = (operationId: string, schema: Static<typeof JsonValueSchema>) => ({
+  const operation = (operationId: string, schema: JsonValue) => ({
     post: {
       operationId,
-      "x-devboxes": { effect: "write", authority: "Organization member" },
+      "x-devboxes": {
+        effect: "write",
+        roles: ["owner", "admin", "member", "reviewer", "viewer"],
+        authority: "Organization member",
+      },
       requestBody: { content: { "application/json": { schema } } },
       responses: {},
     },
@@ -585,18 +757,15 @@ describe("devboxes invoke in a terminal", () => {
     requests.length = 0;
     const cli = await inTerminal(["invoke", "sessions.dispatch"], connection);
 
-    expect(await cli.shows("Side project")).toBe(true);
-    cli.type("\r");
-    expect(await cli.shows("Website")).toBe(true);
-    cli.type("\x1b[B\r");
-    expect(await cli.shows("title")).toBe(true);
-    cli.type("Churn report\r");
-    expect(await cli.shows("instruction")).toBe(true);
-    cli.type("Write this week's churn report.\r\r");
-    expect(await cli.shows("Also set")).toBe(true);
-    cli.type(" \r");
-    expect(await cli.shows("blueprint: Name of the Blueprint that runs the work.")).toBe(true);
-    cli.type("Weekly churn report\r");
+    await cli.answer("Side project", "\r");
+    await cli.answer("Website", "\x1b[B\r");
+    await cli.answer("title", "Churn report\r");
+    await cli.answer("instruction", "Write this week's churn report.\r\r");
+    await cli.answer("Also set", " \r");
+    await cli.answer(
+      "blueprint: Name of the Blueprint that runs the work.",
+      "Weekly churn report\r",
+    );
     const exitCode = await cli.exited();
     cli.kill();
 
@@ -623,16 +792,11 @@ describe("devboxes invoke in a terminal", () => {
     projectsRefused = true;
     const cli = await inTerminal(["invoke", "sessions.dispatch"], connection);
 
-    expect(await cli.shows("Side project")).toBe(true);
-    cli.type("\r");
-    expect(await cli.shows("projectId")).toBe(true);
-    cli.type(`${projects[0]?.id}\r`);
-    expect(await cli.shows("title")).toBe(true);
-    cli.type("Churn report\r");
-    expect(await cli.shows("instruction")).toBe(true);
-    cli.type("Write this week's churn report.\r\r");
-    expect(await cli.shows("Also set")).toBe(true);
-    cli.type("\r");
+    await cli.answer("Side project", "\r");
+    await cli.answer("projectId", `${projects[0]?.id}\r`);
+    await cli.answer("title", "Churn report\r");
+    await cli.answer("instruction", "Write this week's churn report.\r\r");
+    await cli.answer("Also set", "\r");
     const exitCode = await cli.exited();
     cli.kill();
     projectsRefused = false;
@@ -654,22 +818,14 @@ describe("devboxes invoke in a terminal", () => {
     const key = `sk-test-${crypto.randomUUID()}`;
     const cli = await inTerminal(["invoke", "connections.add"], connection);
 
-    expect(await cli.shows("Side project"), cli.screen()).toBe(true);
-    cli.type("\x1b[B\r");
-    expect(await cli.shows("label")).toBe(true);
-    cli.type("Claude\r");
-    expect(await cli.shows("Set limit")).toBe(true);
-    cli.type("\r");
-    expect(await cli.shows("limit: The most tasks at once.")).toBe(true);
-    cli.type("5\r");
-    expect(await cli.shows("type oauth")).toBe(true);
-    cli.type("\r");
-    expect(await cli.shows("auth.key")).toBe(true);
-    cli.type(`${key}\r`);
-    expect(await cli.shows("scopes")).toBe(true);
-    cli.type("\x1b[B \r");
-    expect(await cli.shows("priority")).toBe(true);
-    cli.type("\x1b[B\r");
+    await cli.answer("Side project", "\x1b[B\r");
+    await cli.answer("label", "Claude\r");
+    await cli.answer("Set limit", "\r");
+    await cli.answer("limit: The most tasks at once.", "5\r");
+    await cli.answer("type oauth", "\r");
+    await cli.answer("auth.key", `${key}\r`);
+    await cli.answer("scopes", "\x1b[B \r");
+    await cli.answer("priority", "\x1b[B\r");
     const exitCode = await cli.exited();
     cli.kill();
 
@@ -693,8 +849,8 @@ describe("devboxes connect", () => {
   const organizationId = "0198a0b0-0000-7000-8000-000000000001";
   const code = `pasted-code-${crypto.randomUUID()}#state`;
   const key = `sk-ant-api03-${crypto.randomUUID()}`;
-  const ownerOnly = "Only an Organization owner can connect a Provider Account.";
-  let owner = true;
+  const managersOnly = "Only an Organization owner or admin can connect a model account.";
+  let manages = true;
   let completeAnswers: object[] = [];
   const starts: unknown[] = [];
   const completions: unknown[] = [];
@@ -702,7 +858,11 @@ describe("devboxes connect", () => {
   const operation = (operationId: string) => ({
     post: {
       operationId,
-      "x-devboxes": { effect: "write", authority: "Organization owner" },
+      "x-devboxes": {
+        effect: "write",
+        roles: ["owner", "admin"],
+        authority: "Organization owner or admin",
+      },
       responses: {},
     },
   });
@@ -731,7 +891,7 @@ describe("devboxes connect", () => {
       if (pathname === "/api/commands/organizations/list")
         return Response.json({ organizations: [{ id: organizationId, name: "Acme" }] });
       if (pathname === "/api/commands/providers/list") {
-        const unavailable = owner ? null : ownerOnly;
+        const unavailable = manages ? null : managersOnly;
         return Response.json([
           { id: "openai", name: "OpenAI", deviceFlow: true, apiKey: true, unavailable },
           {
@@ -742,7 +902,9 @@ describe("devboxes connect", () => {
             unavailable,
           },
           { id: "anthropic", name: "Anthropic", deviceFlow: false, apiKey: true, unavailable },
-          { id: "xai", name: "xAI", deviceFlow: true, apiKey: true, unavailable: ownerOnly },
+          { id: "xai", name: "xAI", deviceFlow: true, apiKey: true, unavailable: managersOnly },
+          { id: "local", name: "Local", deviceFlow: false, apiKey: false, unavailable },
+          { id: "handler", name: "Handler", deviceFlow: true, apiKey: false, unavailable },
         ]);
       }
       if (pathname === "/api/commands/providers/connect-start") {
@@ -750,8 +912,11 @@ describe("devboxes connect", () => {
         starts.push(body);
         return Response.json({
           attemptId: "attempt-1",
-          userCode: body.providerId === "openai" ? "ABCD-1234" : null,
-          verificationUrl: `https://sign-in.example/${body.providerId}?state=state`,
+          userCode: ["openai", "handler"].includes(body.providerId) ? "ABCD-1234" : null,
+          verificationUrl:
+            body.providerId === "handler"
+              ? "file:///Applications/Calculator.app"
+              : `https://sign-in.example/${body.providerId}?state=state`,
           intervalSeconds: 0,
           expiresAt: null,
         });
@@ -784,7 +949,7 @@ describe("devboxes connect", () => {
   ];
   const connection = { DEVBOXES_API_URL: api.url.origin, DEVBOXES_TOKEN: "connect-token" };
   const reset = () => {
-    owner = true;
+    manages = true;
     completeAnswers = [];
     starts.length = 0;
     completions.length = 0;
@@ -801,14 +966,14 @@ describe("devboxes connect", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toContain("Open https://sign-in.example/claude-subscription?state=state");
-    expect(result.stdout).toBe("Connected Claude as Provider Account account-1.\n");
+    expect(result.stdout).toBe("Connected Claude as model account account-1.\n");
     expect(`${result.stdout}${result.stderr}`).not.toContain(code);
     expect(completions).toEqual([{ organizationId, attemptId: "attempt-1", code }]);
   });
 
   it("refuses a provider the person can't connect, with the reason, before it starts a sign-in or reads a key", async () => {
     reset();
-    owner = false;
+    manages = false;
     const signIn = await runCli(
       connectTo("claude-subscription"),
       connection,
@@ -819,11 +984,33 @@ describe("devboxes connect", () => {
 
     for (const result of [signIn, apiKey]) {
       expect(result.exitCode).toBe(1);
-      expect(result.stderr).toStartWith(`PROVIDER_UNAVAILABLE: ${ownerOnly}`);
+      expect(result.stderr).toStartWith(`PROVIDER_UNAVAILABLE: ${managersOnly}`);
       expect(result.stderr).not.toContain("Open ");
     }
     expect(starts).toEqual([]);
     expect(accountWrites).toEqual([]);
+  });
+
+  it("refuses a provider that takes neither a sign-in nor an API key, before it reads a key", async () => {
+    reset();
+    const result = await runCli(connectTo("local"), connection, undefined, `${key}\n`);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toStartWith("PROVIDER_NOT_CONNECTABLE");
+    expect(accountWrites).toEqual([]);
+  });
+
+  it("refuses a sign-in URL that is not HTTP, before it shows or opens it", async () => {
+    reset();
+    const cli = await inTerminal(connectTo("handler"), connection);
+    const exitCode = await cli.exited();
+    cli.kill();
+
+    expect(exitCode).toBe(1);
+    expect(cli.screen()).toContain("INVALID_RESPONSE");
+    expect(cli.screen()).not.toContain("file:");
+    expect(await cli.opened()).toBe(false);
+    expect(completions).toEqual([]);
   });
 
   it("polls a device sign-in until the provider approves it, and fails when the provider refuses", async () => {
@@ -838,13 +1025,12 @@ describe("devboxes connect", () => {
     const refused = await runCli(connectTo("openai"), connection);
 
     expect(approved.exitCode).toBe(0);
-    expect(approved.stderr).toContain(
-      "Open https://sign-in.example/openai?state=state to sign in. Confirm that the page shows code ABCD-1234.",
-    );
-    expect(approved.stdout).toBe("Connected Claude as Provider Account account-1.\n");
+    expect(approved.stderr).toContain("https://sign-in.example/openai?state=state");
+    expect(approved.stderr).toContain("ABCD-1234");
+    expect(approved.stdout).toBe("Connected Claude as model account account-1.\n");
     expect(approvals).toBe(3);
     expect(refused.exitCode).toBe(1);
-    expect(refused.stderr).toContain("CONNECTION_FAILED: The provider refused the sign-in.");
+    expect(refused.stderr).toContain("CONNECTION_FAILED");
     expect(completions).toHaveLength(5);
   });
 
@@ -871,13 +1057,12 @@ describe("devboxes connect", () => {
     );
 
     expect(signInOnly.exitCode).toBe(1);
-    expect(signInOnly.stderr).toStartWith(
-      "API_KEY_UNSUPPORTED: Claude subscription takes no API key: run devboxes connect claude-subscription to sign in.",
-    );
+    expect(signInOnly.stderr).toStartWith("API_KEY_UNSUPPORTED");
+    expect(signInOnly.stderr).toContain("devboxes connect claude-subscription");
     expect(starts).toEqual([]);
     for (const result of [added, replaced, instead]) {
       expect(result.exitCode).toBe(0);
-      expect(result.stdout).toBe("Connected Claude as Provider Account account-2.\n");
+      expect(result.stdout).toBe("Connected Claude as model account account-2.\n");
       expect(`${result.stdout}${result.stderr}`).not.toContain(key);
     }
     expect(accountWrites).toEqual([
@@ -937,10 +1122,8 @@ describe("devboxes connect", () => {
     reset();
     const cli = await inTerminal(connectTo(), connection);
 
-    expect(await cli.shows("xAI API key")).toBe(true);
-    cli.type("\x1b[B\r");
-    expect(await cli.shows("Paste the OpenAI API key")).toBe(true);
-    cli.type(`${key}\r`);
+    await cli.answer("xAI API key", "\x1b[B\r");
+    await cli.answer("Paste the OpenAI API key", `${key}\r`);
     const exitCode = await cli.exited();
     cli.kill();
 
@@ -951,11 +1134,11 @@ describe("devboxes connect", () => {
       "Claude subscription (browser sign-in)",
       "Anthropic API key",
       "xAI (browser sign-in)",
-      ownerOnly,
+      managersOnly,
     ])
       expect(cli.screen()).toContain(option);
     expect(cli.screen()).not.toContain("Claude subscription API key");
-    expect(cli.screen()).toContain("Connected Claude as Provider Account account-2.");
+    expect(cli.screen()).toContain("Connected Claude as model account account-2.");
     expect(cli.screen()).not.toContain(key);
     expect(accountWrites).toEqual([
       {
@@ -971,16 +1154,13 @@ describe("devboxes connect", () => {
     expect(await cli.opened()).toBe(false);
   });
 
-  it("asks for the Organization and the Provider Account's name when they are missing", async () => {
+  it("asks for the Organization and the model account's name when they are missing", async () => {
     reset();
     const cli = await inTerminal(["connect", "anthropic"], connection);
 
-    expect(await cli.shows("Acme")).toBe(true);
-    cli.type("\r");
-    expect(await cli.shows("Name of the Provider Account")).toBe(true);
-    cli.type(" key\r");
-    expect(await cli.shows("Paste the Anthropic API key")).toBe(true);
-    cli.type(`${key}\r`);
+    await cli.answer("Acme", "\r");
+    await cli.answer("Name of the model account", " key\r");
+    await cli.answer("Paste the Anthropic API key", `${key}\r`);
     const exitCode = await cli.exited();
     cli.kill();
 
@@ -1000,16 +1180,15 @@ describe("devboxes connect", () => {
 
   it("won't connect a greyed-out option that Enter chose", async () => {
     reset();
-    owner = false;
+    manages = false;
     const cli = await inTerminal(connectTo(), connection);
 
-    expect(await cli.shows("xAI (browser sign-in)")).toBe(true);
-    cli.type("\r");
+    await cli.answer("xAI (browser sign-in)", "\r");
     const exitCode = await cli.exited();
     cli.kill();
 
     expect(exitCode).toBe(1);
-    expect(cli.screen()).toContain(`PROVIDER_UNAVAILABLE: ${ownerOnly}`);
+    expect(cli.screen()).toContain(`PROVIDER_UNAVAILABLE: ${managersOnly}`);
     expect(cli.screen()).not.toContain("Open ");
     expect(starts).toEqual([]);
     expect(await cli.opened()).toBe(false);
@@ -1020,10 +1199,11 @@ describe("devboxes machine add", () => {
   const organizations = [
     { id: "0198a0b0-0000-7000-8000-00000000000a", name: "Acme", role: "owner" },
     { id: "0198a0b0-0000-7000-8000-00000000000c", name: "Client workspace", role: "member" },
-    { id: "0198a0b0-0000-7000-8000-00000000000b", name: "Side project", role: "owner" },
+    { id: "0198a0b0-0000-7000-8000-00000000000b", name: "Side project", role: "admin" },
   ];
   const registrations: unknown[] = [];
   const refusedKeys = new Set<string>();
+  let registerRoles = ["owner", "admin"];
   const api = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -1034,11 +1214,21 @@ describe("devboxes machine add", () => {
           openapi: "3.0.3",
           paths: Object.fromEntries(
             [
-              ["organizations.list", "read", "Current account session"],
-              ["capacity.register", "write", "Organization owner"],
-            ].map(([operationId = "", effect, authority]) => [
+              {
+                operationId: "organizations.list",
+                effect: "read",
+                roles: [],
+                authority: "Current account session",
+              },
+              {
+                operationId: "capacity.register",
+                effect: "write",
+                authority: "Organization owner or admin",
+                roles: registerRoles,
+              },
+            ].map(({ operationId, ...contract }) => [
               `/api/commands/${operationId.replace(".", "/")}`,
-              { post: { operationId, "x-devboxes": { effect, authority }, responses: {} } },
+              { post: { operationId, "x-devboxes": contract, responses: {} } },
             ]),
           ),
         });
@@ -1076,18 +1266,15 @@ describe("devboxes machine add", () => {
     };
   };
 
-  it("offers the Organizations the person owns, names the machine after the computer, saves its key for this user only, and leaves starting for later", async () => {
+  it("offers the Organizations whose role capacity.register's contract names, names the machine after the computer, saves its key for this user only, and leaves starting for later", async () => {
     registrations.length = 0;
     const { tokenFile, env } = await machineEnvironment();
     const cli = await inTerminal(["machine", "add"], env);
 
     expect(await cli.shows("Which Organization should run tasks on this machine?")).toBe(true);
-    expect(await cli.shows("Side project")).toBe(true);
-    cli.type("\x1b[B\r");
-    expect(await cli.shows("Name this machine")).toBe(true);
-    cli.type("\r");
-    expect(await cli.shows("Start this machine now?")).toBe(true);
-    cli.type("\x1b[C\r");
+    await cli.answer("Side project", "\x1b[B\r");
+    await cli.answer("Name this machine", "\r");
+    await cli.answer("Start this machine now?", "\x1b[C\r");
     const exitCode = await cli.exited();
     cli.kill();
 
@@ -1101,6 +1288,19 @@ describe("devboxes machine add", () => {
     expect(cli.screen()).toContain(tokenFile);
     expect(cli.screen()).toContain("Start it later with: devboxes runner listen");
     expect(cli.screen()).not.toContain(token);
+  });
+
+  it("offers no Organization whose role capacity.register's served roles leave out", async () => {
+    registerRoles = ["owner"];
+    try {
+      const { env } = await machineEnvironment();
+      const cli = await inTerminal(["machine", "add"], env);
+      expect(await cli.shows("Acme")).toBe(true);
+      expect(cli.screen()).not.toContain("Side project");
+      cli.kill();
+    } finally {
+      registerRoles = ["owner", "admin"];
+    }
   });
 
   it("adds a machine from flags outside a terminal and refuses to add the same computer twice", async () => {
@@ -1372,7 +1572,11 @@ describe("devboxes mcp", () => {
     const operation = (operationId: string) => ({
       post: {
         operationId,
-        "x-devboxes": { effect: "read", authority: "Organization member" },
+        "x-devboxes": {
+          effect: "read",
+          roles: ["owner", "admin", "member", "reviewer", "viewer"],
+          authority: "Organization member",
+        },
         responses: {},
       },
     });
@@ -1647,6 +1851,46 @@ describe("devboxes signup and login", () => {
       await api.stop(true);
     }
   });
+  it("asks to check the code, in the page's two halves, and approve the sign-in", async () => {
+    const api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request) => {
+        const { pathname } = new URL(request.url);
+        if (pathname === "/api/auth/device/code")
+          return Response.json({
+            device_code: "device-code",
+            user_code: "ABCDEFGH",
+            verification_uri_complete: new URL("/device?user_code=ABCDEFGH", request.url).href,
+            expires_in: 60,
+            interval: 0,
+          });
+        if (pathname === "/api/auth/device/token")
+          return Response.json({ access_token: "device-session", token_type: "Bearer" });
+        return Response.json({
+          session: {},
+          user: { id: "user", email: "device@example.com", name: "Device", emailVerified: true },
+        });
+      },
+    });
+    try {
+      const result = await runCli([
+        "--config",
+        join(fixtureDirectory, "device-text.json"),
+        "--api",
+        api.url.origin,
+        "login",
+        "--github",
+      ]);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toContain(
+        `Open ${api.url.origin}/device?user_code=ABCDEFGH&provider=github, check that it shows code ABCD-EFGH, and approve the sign-in.`,
+      );
+    } finally {
+      await api.stop(true);
+    }
+  });
   it.each([
     ["login", ""],
     ["signup", "&sign_up=true"],
@@ -1804,6 +2048,194 @@ describe("devboxes signup and login", () => {
     },
     20_000,
   );
+});
+
+describe("devboxes after a refusal for an old sign-in", () => {
+  const requests: string[] = [];
+  const api = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: async (request) => {
+      const { pathname } = new URL(request.url);
+      if (pathname === "/api/openapi/json")
+        return Response.json({
+          openapi: "3.0.3",
+          paths: {
+            "/api/commands/organizations/update": {
+              post: {
+                operationId: "organizations.update",
+                "x-devboxes": {
+                  effect: "write",
+                  elevated: true,
+                  roles: ["owner", "admin"],
+                  authority: "Organization owner or admin",
+                },
+                requestBody: {
+                  content: {
+                    "application/json": {
+                      schema: {
+                        type: "object",
+                        properties: {
+                          organizationId: { type: "string" },
+                          name: { type: "string" },
+                        },
+                        required: ["organizationId", "name"],
+                      },
+                    },
+                  },
+                },
+                responses: {},
+              },
+            },
+          },
+        });
+      const authorization = request.headers.get("authorization");
+      requests.push(`${pathname} ${authorization}`);
+      if (pathname === "/api/auth/email-otp/send-verification-otp")
+        return Response.json({ success: true });
+      if (pathname === "/api/commands/account/inspect") {
+        const id = authorization === "Bearer other-session" ? "other" : "owner";
+        return Response.json({ account: { id, name: id, email: `${id}@example.com` } });
+      }
+      if (pathname === "/api/auth/sign-in/email-otp") {
+        const { email } = (await request.json()) as { email: string };
+        const id = email === "other@example.com" ? "other" : "owner";
+        const token = id === "other" ? "other-session" : "fresh-session";
+        return Response.json(
+          { token, user: { id, email, name: id, emailVerified: true } },
+          { headers: { "set-auth-token": token } },
+        );
+      }
+      return authorization === "Bearer fresh-session"
+        ? Response.json({ id: "organization" })
+        : Response.json(
+            {
+              error: {
+                code: "SESSION_NOT_FRESH",
+                message:
+                  "This change needs a sign-in from the last 10 minutes. Sign in again, then repeat it.",
+              },
+            },
+            { status: 403 },
+          );
+    },
+  });
+  afterAll(() => api.stop(true));
+  const rename = join(fixtureDirectory, "rename.json");
+  /** A saved account config whose session devboxes signed in more than 10 minutes ago. */
+  const staleAccount = async (name: string) => {
+    const config = join(fixtureDirectory, name);
+    await writeFile(
+      config,
+      JSON.stringify({ apiBaseUrl: `${api.url.origin}/api`, sessionToken: "stale-session" }),
+    );
+    await chmod(config, 0o600);
+    await writeFile(rename, JSON.stringify({ organizationId: "organization", name: "Renamed" }));
+    return config;
+  };
+
+  it("signs the person in again in a terminal and sends the change once more", async () => {
+    requests.length = 0;
+    const config = await staleAccount("stale-terminal.json");
+    const cli = await inTerminal(
+      ["--config", config, "invoke", "organizations.update", "--input", `@${rename}`],
+      {},
+    );
+
+    expect(await cli.shows("This change needs a recent sign-in.")).toBe(true);
+    await cli.answer("Sign in with", "\x1b[B\x1b[B\r");
+    await cli.answer("Email", "owner@example.com\r");
+    await cli.answer("Code sent to owner@example.com", "123456\r");
+    const exitCode = await cli.exited();
+    cli.kill();
+
+    expect(exitCode).toBe(0);
+    expect(cli.screen()).toContain('"id": "organization"');
+    expect(requests.filter((sent) => sent.startsWith("/api/commands/"))).toEqual([
+      "/api/commands/organizations/update Bearer stale-session",
+      "/api/commands/account/inspect Bearer stale-session",
+      "/api/commands/account/inspect Bearer fresh-session",
+      "/api/commands/organizations/update Bearer fresh-session",
+    ]);
+  });
+
+  it("doesn't send the change again when the person signs in as another account", async () => {
+    requests.length = 0;
+    const config = await staleAccount("stale-switch.json");
+    const cli = await inTerminal(
+      ["--config", config, "invoke", "organizations.update", "--input", `@${rename}`],
+      {},
+    );
+
+    await cli.answer("Sign in with", "\x1b[B\x1b[B\r");
+    await cli.answer("Email", "other@example.com\r");
+    await cli.answer("Code sent to other@example.com", "123456\r");
+    const exitCode = await cli.exited();
+    cli.kill();
+
+    expect(exitCode).toBe(1);
+    expect(cli.screen()).toContain("ACCOUNT_CHANGED");
+    expect(requests.filter((sent) => sent.includes("organizations/update"))).toEqual([
+      "/api/commands/organizations/update Bearer stale-session",
+    ]);
+  });
+
+  it("answers the refusal as it came without a terminal", async () => {
+    requests.length = 0;
+    const config = await staleAccount("stale-json.json");
+    const result = await runCli([
+      "--json",
+      "--config",
+      config,
+      "invoke",
+      "organizations.update",
+      "--input",
+      `@${rename}`,
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.stderr)).toMatchObject({ error: { code: "SESSION_NOT_FRESH" } });
+    expect(requests).toEqual(["/api/commands/organizations/update Bearer stale-session"]);
+  });
+
+  it("serves an MCP call with the session a later devboxes login saved", async () => {
+    requests.length = 0;
+    const config = await staleAccount("stale-mcp.json");
+    const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
+    await client.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: ["src/cli.ts", "--config", config, "mcp"],
+        cwd: join(import.meta.dir, ".."),
+        env: { PATH: process.env.PATH ?? "" },
+      }),
+    );
+    const update = () =>
+      client.callTool({
+        name: "devboxes_invoke",
+        arguments: {
+          command: "organizations.update",
+          input: { organizationId: "organization", name: "Renamed" },
+        },
+      });
+    try {
+      const refused = await update();
+      await writeFile(
+        config,
+        JSON.stringify({ apiBaseUrl: `${api.url.origin}/api`, sessionToken: "fresh-session" }),
+      );
+      const renamed = await update();
+
+      expect(refused.structuredContent).toMatchObject({ error: { code: "SESSION_NOT_FRESH" } });
+      expect(renamed.isError).toBeUndefined();
+      expect(requests).toEqual([
+        "/api/commands/organizations/update Bearer stale-session",
+        "/api/commands/organizations/update Bearer fresh-session",
+      ]);
+    } finally {
+      await client.close();
+    }
+  });
 });
 
 describe("CLI API origin", () => {

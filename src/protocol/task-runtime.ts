@@ -6,6 +6,30 @@ export const containerAgentUid = 1001;
 export const containerSharedGid = 1000;
 /** The uid and gid of a Claude subscription Run's Claude Code, which the agent can't read or signal. */
 export const containerClaudeCodeUid = 1002;
+/** The uid and gid of a managed Task's egress proxy, apart from the agent's and Claude Code's. */
+export const containerEgressUid = 1003;
+/** Where the egress proxy writes its CA certificate and URL, which the executor mounts read-only. */
+export const egressPublicDir = "/run/devboxes/egress";
+/** The egress proxy's own state, the agent-vault database with its CA key, which only it mounts. */
+export const egressPrivateDir = "/var/lib/devboxes-egress";
+/** A managed Task's database Pod's PgBouncer configurations, auth files and certificate. */
+export const databasePrivateDir = "/var/lib/devboxes-database";
+/** The PgBouncer configuration of the database a Task's database Pod serves on `port`. */
+export const databaseConfiguration = (port: number) =>
+  `${databasePrivateDir}/${port}/pgbouncer.ini`;
+/**
+ * The memory, in MiB, that a managed Task's request leaves on its node for its database Pod, and
+ * what the Pod's PgBouncers request: the first with the sandbox's own memory, each next one its
+ * database's, as measured under gVisor.
+ */
+export const databasePodMemoryMi = { room: 512, first: 128, next: 96 };
+/** The most databases a Run receives: as many as their PgBouncers fit the room for. */
+export const databasesPerRunMax =
+  1 + Math.floor((databasePodMemoryMi.room - databasePodMemoryMi.first) / databasePodMemoryMi.next);
+/** Where a Workspace Image keeps its trusted CA certificates, unless SSL_CERT_FILE names a file. */
+export const containerCaBundle = "/etc/ssl/certs/ca-certificates.crt";
+/** The same trusted CA certificates as a Java trust store, which a Workspace Image builds from them. */
+export const containerJavaTrustStore = "/etc/ssl/certs/java/cacerts";
 export const containerDaemonPrivateDir = "/run/devboxes/daemon";
 export const containerDaemonExecutableDir = "/run/devboxes/exec";
 export const containerWorkspace = "/workspace";

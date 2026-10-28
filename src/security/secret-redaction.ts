@@ -1,7 +1,7 @@
-import Type, { type Static } from "typebox";
+import Type from "typebox";
 import Value from "typebox/value";
 
-import { JsonValueSchema } from "../protocol/provider-auth";
+import type { JsonValue } from "../protocol/json";
 
 export const redactedSecret = "[redacted]";
 
@@ -78,7 +78,7 @@ export const secretRedactingReviver = (
   tokenPatterns: readonly { pattern: RegExp }[] = [],
 ) => {
   const pattern = secretsPattern(secretValues);
-  return (_key: string, value: Static<typeof JsonValueSchema>) =>
+  return (_key: string, value: JsonValue) =>
     Value.Check(Type.String(), value)
       ? redactPatternMatches(value.replace(pattern, redactedSecret), tokenPatterns)
       : value;

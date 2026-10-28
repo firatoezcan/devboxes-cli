@@ -1,5 +1,11 @@
 # @devboxes/cli-darwin-x64
 
+## 0.8.0
+
+### Minor Changes
+
+- The binary is built with Bun 1.4.4, which fixes CVE-2026-111497 (Node2Shell). See the devboxes changelog for the CLI's changes.
+
 ## 0.7.1
 
 ## 0.7.0

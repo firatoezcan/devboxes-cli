@@ -2,14 +2,12 @@ import { createHash } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { mkdtemp, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
 import {
   type ClaudeCodeArtifact,
   containerClaudeCodeUid,
 } from "../protocol/task-runtime";
-import axios from "axios";
 import { pack } from "tar-stream";
 
 /** An artifact's URL: HTTPS, or loopback HTTP outside production, without embedded credentials. */
@@ -39,15 +37,20 @@ export const stageExecutorArtifact = async (
   const directory = await mkdtemp(join(dirname(destination), ".executor-"));
   try {
     const staged = join(directory, "executor");
-    const response = await axios.get<Readable>(url.href, {
-      responseType: "stream",
-      maxRedirects: 0,
-    });
+    const response = await fetch(url, { redirect: "error" });
+    const body = response.body;
+    if (!response.ok || !body)
+      throw new Error(`The private executor artifact answered ${response.status}.`);
     const hash = createHash("sha256");
-    response.data.on("data", (chunk: Uint8Array) => {
-      hash.update(chunk);
-    });
-    await pipeline(response.data, createWriteStream(staged, { flags: "wx", mode: 0o555 }));
+    await pipeline(
+      async function* () {
+        for await (const chunk of body) {
+          hash.update(chunk);
+          yield chunk;
+        }
+      },
+      createWriteStream(staged, { flags: "wx", mode: 0o555 }),
+    );
     if (hash.digest("hex") !== artifact.sha256)
       throw new Error("The private executor artifact does not match its immutable digest.");
     await rename(staged, destination);

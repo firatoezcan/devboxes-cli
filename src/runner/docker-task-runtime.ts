@@ -43,6 +43,25 @@ const withoutImageContent = {
   DriverConfig: { Name: "local", Options: {} },
 };
 
+/**
+ * Waits for the build, pull or push `stream` of `operation` to end, and rejects with
+ * `<operation> failed: <error>` when it reports an error. Docker reports a failed step or pull
+ * inside the stream's output, not as a stream error, in words that differ between its engines.
+ */
+export const followDockerProgress = (
+  docker: Docker,
+  stream: NodeJS.ReadableStream,
+  operation: string,
+) =>
+  new Promise<void>((resolve, reject) =>
+    docker.modem.followProgress(stream, (error, output: { error?: string }[]) => {
+      const reported = output.find((event) => event.error)?.error;
+      if (error || reported)
+        reject(new Error(`${operation} failed: ${error?.message ?? reported}`, { cause: error }));
+      else resolve();
+    }),
+  );
+
 export class DockerOpencodeTaskRuntime {
   readonly docker: Docker;
   /** The Claude Code volumes this Runner is checking or filling, by name. */
@@ -96,7 +115,7 @@ export class DockerOpencodeTaskRuntime {
     try {
       return await use(filler);
     } finally {
-      await filler.remove({ force: true });
+      await filler.remove({ force: true, v: true });
     }
   }
 
@@ -206,7 +225,7 @@ export class DockerOpencodeTaskRuntime {
       const { StatusCode } = await probe.wait();
       return StatusCode === 0;
     } finally {
-      await probe.remove({ force: true });
+      await probe.remove({ force: true, v: true });
     }
   }
 
@@ -218,9 +237,10 @@ export class DockerOpencodeTaskRuntime {
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const binary = join(directory, "devboxes-executor");
     await stageExecutorArtifact(task.daemon, binary);
-    const stream = await this.docker.pull(task.image, { platform: task.platform });
-    await new Promise<void>((resolve, reject) =>
-      this.docker.modem.followProgress(stream, (error) => (error ? reject(error) : resolve())),
+    await followDockerProgress(
+      this.docker,
+      await this.docker.pull(task.image, { platform: task.platform }),
+      `Pulling ${task.image}`,
     );
     const claudeCode =
       task.claudeCode && (await this.claudeCodeVolume(task.claudeCode, task.image, task.platform));

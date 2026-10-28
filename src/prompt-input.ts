@@ -1,7 +1,7 @@
 import { confirm, isCancel, multiline, multiselect, password, select, text } from "@clack/prompts";
-import { JsonValueSchema } from "./protocol/provider-auth";
+import { JsonValueSchema, type JsonValue } from "./protocol/json";
 import { describeErrors } from "./values/validation-errors";
-import Type, { type Static } from "typebox";
+import Type from "typebox";
 import Value from "typebox/value";
 
 import {
@@ -14,8 +14,6 @@ import {
   invokeCommand,
 } from "./commands";
 
-type Json = Static<typeof JsonValueSchema>;
-
 const listedSchema = Type.Array(
   Type.Object({
     id: Type.String(),
@@ -26,7 +24,7 @@ const listedSchema = Type.Array(
   }),
 );
 
-export type PromptContext = { connection: CommandConnection; description: CommandDescription };
+type PromptContext = { connection: CommandConnection; description: CommandDescription };
 
 const answered = async <Answer>(prompt: Promise<Answer>) => {
   const answer = await prompt;
@@ -42,7 +40,7 @@ const question = (path: string, field: Field) => {
 const types = (field: Field) =>
   field.type === undefined ? [] : Array.isArray(field.type) ? field.type : [field.type];
 
-const problem = (field: Field, value: Json) =>
+const problem = (field: Field, value: JsonValue) =>
   Value.Check(field, value) ? undefined : describeErrors(field, value);
 
 /**
@@ -51,7 +49,7 @@ const problem = (field: Field, value: Json) =>
  * so far can call, or when the list refuses, so the person types the ID instead. A list answers an
  * array or an object that holds the array under `<thing>s`.
  */
-const listed = async (context: PromptContext, name: string, scope: Record<string, Json>) => {
+const listed = async (context: PromptContext, name: string, scope: Record<string, JsonValue>) => {
   if (!name.endsWith("Id")) return undefined;
   const plural = `${name.slice(0, -2)}s`;
   const list = context.description.commands.find(
@@ -60,7 +58,7 @@ const listed = async (context: PromptContext, name: string, scope: Record<string
   if (!list) return undefined;
   const required = commandInputSchema(list)?.required ?? [];
   if (!required.every((key) => key in scope)) return undefined;
-  let data: Json;
+  let data: JsonValue;
   try {
     ({ data } = await invokeCommand(
       context.connection,
@@ -88,8 +86,8 @@ export const promptField = async (
   context: PromptContext,
   path: string,
   field: Field,
-  scope: Record<string, Json>,
-): Promise<Json> => {
+  scope: Record<string, JsonValue>,
+): Promise<JsonValue> => {
   const message = question(path, field);
   const name = path.split(".").at(-1) ?? path;
   if (field.const !== undefined) return field.const;
@@ -138,7 +136,7 @@ export const promptField = async (
     return promptObject(context, path, field, {}, scope);
   }
   if (kind === "object") {
-    const entries: Record<string, Json> = {};
+    const entries: Record<string, JsonValue> = {};
     const [entry] = Object.values(field.patternProperties ?? {});
     while (entry) {
       const key = (
@@ -155,7 +153,7 @@ export const promptField = async (
     return entries;
   }
   if (kind === "array") {
-    const items: Json[] = [];
+    const items: JsonValue[] = [];
     const { items: item } = field;
     if (item?.enum) {
       return answered(
@@ -219,8 +217,8 @@ const promptObject = async (
   context: PromptContext,
   path: string,
   field: Field,
-  value: Record<string, Json>,
-  scope: Record<string, Json>,
+  value: Record<string, JsonValue>,
+  scope: Record<string, JsonValue>,
 ) => {
   const properties = Object.entries(field.properties ?? {}).filter(([name]) => !(name in value));
   const required = new Set(field.required);
@@ -258,7 +256,7 @@ export const promptCommandInput = async (context: PromptContext, operationId: st
   if (schema === undefined) return {};
   if (types(schema)[0] !== "object" || !schema.properties)
     return promptField(context, operationId, schema, {});
-  const value: Record<string, Json> = {};
+  const value: Record<string, JsonValue> = {};
   if (context.connection.organizationId) value.organizationId = context.connection.organizationId;
   return promptObject(context, "", schema, value, value);
 };

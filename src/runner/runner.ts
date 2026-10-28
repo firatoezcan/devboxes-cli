@@ -13,6 +13,7 @@ import {
   asksInTerminal,
   type CommandConnection,
   CommandError,
+  describeCommand,
   describeCommands,
   invokeCommand,
   parseResponse,
@@ -100,14 +101,18 @@ const runRunner = async (
 export const addRunnerCommands = (program: Command) => {
   const command = program
     .command("runner")
-    .description("Run registered native execution capacity")
+    .description("run this computer as a registered machine")
     .command("listen")
-    .description("Launch assigned Tasks and observe their Docker executors")
+    .description("launch assigned Tasks and observe their Docker executors")
     .option(
       "--token-file <path>",
-      "Runner key file from devboxes machine add; defaults to the one it saved",
+      "Runner key file from devboxes machine add, owner-only (0600; on Windows, its access-control list decides); defaults to the one it saved",
     )
-    .option("--state-directory <path>", "Downloaded daemon binary cache", runnerDirectory())
+    .option(
+      "--state-directory <path>",
+      "Runner state with the relay's signing key, owner-only (0700; on Windows, its access-control list decides)",
+      runnerDirectory(),
+    )
     .option("--docker-socket <path>", "Docker socket path");
   command.action(async () => {
     const options = command.optsWithGlobals<{
@@ -128,9 +133,9 @@ export const addRunnerCommands = (program: Command) => {
 
   const add = program
     .command("machine")
-    .description("Add computers that run your Organization's tasks")
+    .description("add computers that run your Organization's tasks")
     .command("add")
-    .description("Add this computer as a machine that runs your Organization's tasks")
+    .description("add this computer as a machine that runs your Organization's tasks")
     .option(
       "--organization <id>",
       "The Organization whose tasks the machine runs. In a terminal, devboxes asks for it.",
@@ -186,17 +191,18 @@ export const addRunnerCommands = (program: Command) => {
       ).data,
       "organizations.list",
     );
-    const owned = organizations.filter((entry) => entry.role === "owner");
-    if (options.organization === undefined && owned.length === 0)
+    const { roles } = describeCommand(description, "capacity.register").commands[0]["x-devboxes"];
+    const managed = organizations.filter((entry) => roles.includes(entry.role));
+    if (options.organization === undefined && managed.length === 0)
       throw new CommandError(
         "ORGANIZATION_NOT_FOUND",
-        "devboxes can't find an Organization you own. Only an Organization's owner can add a machine.",
+        `devboxes can't find an Organization where you can add a machine. Only an Organization's ${roles.join(" or ")} can add one.`,
       );
     const chosen =
       options.organization ??
       (await select({
         message: "Which Organization should run tasks on this machine?",
-        options: owned.map((entry) => ({ value: entry.id, label: entry.name })),
+        options: managed.map((entry) => ({ value: entry.id, label: entry.name })),
         output: process.stderr,
       }));
     if (isCancel(chosen)) throw new CommandError("CANCELLED", "Command cancelled.");
