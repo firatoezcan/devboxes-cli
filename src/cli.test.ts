@@ -6,6 +6,8 @@ import { join } from "node:path";
 import type { JsonValue } from "@firops/platform/protocol/json";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import Type from "typebox";
+import Value from "typebox/value";
 
 import { apiOrigin } from "./commands";
 
@@ -664,6 +666,7 @@ describe("devboxes invoke in a terminal", () => {
   });
   const requests: { path: string; body: unknown }[] = [];
   let projectsRefused = false;
+  let issueRequired = false;
   const api = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -747,6 +750,36 @@ describe("devboxes invoke in a terminal", () => {
               { status: 403 },
             )
           : Response.json(projects);
+      if (
+        issueRequired &&
+        pathname === "/api/commands/sessions/dispatch" &&
+        !Value.Check(
+          Type.Object({ issue: Type.String(), inputs: Type.Object({ dryRun: Type.Boolean() }) }),
+          body,
+        )
+      )
+        return Response.json(
+          {
+            error: {
+              code: "BLUEPRINT_INPUT_MISSING",
+              message:
+                "Inputs without a usable value: issue (issue, missing), dryRun (dispatch, missing).",
+              details: {
+                inputs: [
+                  {
+                    name: "issue",
+                    source: "issue",
+                    type: "string",
+                    description: "The issue to work on, such as ENG-224 or 123.",
+                    problem: "missing",
+                  },
+                  { name: "dryRun", source: "dispatch", type: "boolean", problem: "missing" },
+                ],
+              },
+            },
+          },
+          { status: 409 },
+        );
       return Response.json({ sessionId: "session-1" });
     },
   });
@@ -783,6 +816,39 @@ describe("devboxes invoke in a terminal", () => {
           instruction: "Write this week's churn report.",
           blueprint: "Weekly churn report",
         },
+      },
+    ]);
+  });
+
+  it("asks in one pass for the issue and every Blueprint input that the dispatch answers is missing, and sends the dispatch again with them", async () => {
+    requests.length = 0;
+    issueRequired = true;
+    const cli = await inTerminal(["invoke", "sessions.dispatch"], connection);
+
+    await cli.answer("Side project", "\r");
+    await cli.answer("Website", "\r");
+    await cli.answer("title", "Reproduce the crash\r");
+    await cli.answer("instruction", "Reproduce the crash on an empty timezone.\r\r");
+    await cli.answer("Also set", "\r");
+    await cli.answer("issue: The issue to work on, such as ENG-224 or 123.", "58\r");
+    await cli.answer("inputs.dryRun", "\r");
+    const exitCode = await cli.exited();
+    cli.kill();
+    issueRequired = false;
+
+    expect(exitCode).toBe(0);
+    expect(cli.screen()).toContain('"sessionId": "session-1"');
+    const dispatched = {
+      organizationId: organizations[0]?.id,
+      projectId: projects[0]?.id,
+      title: "Reproduce the crash",
+      instruction: "Reproduce the crash on an empty timezone.",
+    };
+    expect(requests.filter(({ path }) => path === "/api/commands/sessions/dispatch")).toEqual([
+      { path: "/api/commands/sessions/dispatch", body: dispatched },
+      {
+        path: "/api/commands/sessions/dispatch",
+        body: { ...dispatched, inputs: { dryRun: true }, issue: "58" },
       },
     ]);
   });

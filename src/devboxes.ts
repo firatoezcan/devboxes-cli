@@ -1,4 +1,5 @@
 import { isCancel, password, select, text } from "@clack/prompts";
+import type { JsonValue } from "@firops/platform/protocol/json";
 import type { Command } from "commander";
 import Type from "typebox";
 import Value from "typebox/value";
@@ -83,7 +84,7 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
   const invoke = program
     .command("invoke")
     .description(
-      "invoke a discovered command. In a terminal, it asks for the input when --input is missing.",
+      "invoke a discovered command. In a terminal without --input, it asks for the input field by field, and then for the Blueprint inputs and the issue that the task needs.",
     )
     .argument("<operationId>", "Discovered operation ID")
     .option(
@@ -106,9 +107,23 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
       });
     } else if (asksInTerminal(options.json)) {
       const description = await describeCommands(connection);
-      const input = await promptCommandInput({ connection, description }, operationId);
+      const context = { connection, description };
+      const input = await promptCommandInput(context, operationId);
       result = await invokeCommand(
-        connection,
+        {
+          ...connection,
+          askInputs: async (unresolved) => {
+            const values: Record<string, JsonValue> = {};
+            for (const { name, source, type, description: about } of unresolved)
+              values[name] = await promptField(
+                context,
+                source === "issue" ? "issue" : `inputs.${name}`,
+                { type, description: about },
+                {},
+              );
+            return values;
+          },
+        },
         { command: operationId, input },
         async () => description,
       );
