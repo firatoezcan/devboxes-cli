@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 
 import { dockerSocketPath } from "@firops/devbox/runner/docker-socket";
 import { DockerOpencodeTaskRuntime } from "@firops/devbox/runner/docker-task-runtime";
+import { stalledExecutorDownload } from "@firops/devbox/runner/executor-artifact";
 import type { JsonValue } from "@firops/platform/protocol/json";
 import {
   type RunnerAssignmentsSchema,
@@ -216,7 +217,12 @@ export const listen = async (options: {
   // Image pulls and executor downloads can outlast the API's heartbeat window, so
   // one start runs beside the poll loop and its failure surfaces on the next cycle.
   const starting = new Map<string, Promise<void>>();
-  let startFailure: CommandError | null = null;
+  let startFailure: {
+    taskId: string;
+    executorId: string;
+    reason: string;
+    error: CommandError;
+  } | null = null;
   const startClaimed = async (task: NonNullable<Static<typeof RunnerClaimSchema>["task"]>) => {
     const existing = await runtime.inspect(task.executorId ?? `devboxes-task-${task.id}`);
     if (!existing) {
@@ -304,9 +310,17 @@ export const listen = async (options: {
       }
       if (stopping) return null;
       if (startFailure !== null) {
-        const failure = startFailure;
+        const { taskId, executorId, reason, error } = startFailure;
+        if (!(await runtime.inspect(executorId)))
+          await api("reconcile", { taskId, observation: "start-failed", reason }).catch(
+            (refusal) => {
+              if (refusal instanceof CommandError && (refusal.options.status ?? 500) < 500)
+                return console.error(`The start failure of Task ${taskId} was refused: ${refusal}`);
+              throw refusal;
+            },
+          );
         startFailure = null;
-        throw failure;
+        throw error;
       }
       if (starting.size === 0) {
         const { task } = await api("claim", {});
@@ -319,7 +333,17 @@ export const listen = async (options: {
                   failures = 0;
                 },
                 (error) => {
-                  startFailure = CommandError.from(error);
+                  startFailure = {
+                    taskId: task.id,
+                    executorId: task.executorId ?? `devboxes-task-${task.id}`,
+                    reason:
+                      error instanceof Error
+                        ? error.name === "TimeoutError"
+                          ? stalledExecutorDownload(task.daemon.url, error.message)
+                          : error.message || error.name
+                        : CommandError.from(error).message,
+                    error: CommandError.from(error),
+                  };
                 },
               )
               .finally(() => {

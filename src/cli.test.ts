@@ -1435,6 +1435,8 @@ describe("devboxes runner listen", () => {
         return Response.json({ OperatingSystem: engine.name, SecurityOptions: [] });
       if (pathname.endsWith("/networks/bridge"))
         return Response.json({ IPAM: { Config: [{ Gateway: engine.gateway }] } });
+      if (/\/containers\/[^/]+\/json$/.test(pathname))
+        return Response.json({ message: "No such container" }, { status: 404 });
       return Response.json({ message: `Unexpected ${pathname}` }, { status: 500 });
     },
   });
@@ -1548,6 +1550,71 @@ describe("devboxes runner listen", () => {
       }
     },
     30_000,
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "reports a start that failed before its container existed again after a server error, and drops the report the API refuses",
+    async () => {
+      const taskId = crypto.randomUUID();
+      const reports: unknown[] = [];
+      let claims = 0;
+      using api = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: async (request) => {
+          const path = new URL(request.url).pathname.split("/").at(-1);
+          if (path === "assignments") return Response.json({ tasks: [] });
+          if (path === "claim") {
+            claims += 1;
+            if (claims > 1) return Response.json({ task: null });
+            return Response.json({
+              task: {
+                id: taskId,
+                executorId: null,
+                containerId: null,
+                status: "queued",
+                image: `registry.devboxes.test/workspace@sha256:${"a".repeat(64)}`,
+                platform: "linux/amd64",
+                daemon: {
+                  sha256: "0".repeat(64),
+                  version: "test",
+                  url: `${new URL(request.url).origin}/executor`,
+                },
+                claudeCode: null,
+                traceparent: `00-${"1".repeat(32)}-${"2".repeat(16)}-01`,
+              },
+            });
+          }
+          if (path === "reconcile") {
+            reports.push(await request.json());
+            return reports.length === 1
+              ? Response.json(
+                  { error: { code: "SERVICE_UNAVAILABLE", message: "The API is restarting." } },
+                  { status: 503 },
+                )
+              : Response.json(
+                  { error: { code: "TASK_NOT_FOUND", message: "The Task does not exist." } },
+                  { status: 404 },
+                );
+          }
+          return new Response(null, { status: 404 });
+        },
+      });
+      await using runner = await spawnListener(api.url.origin);
+
+      await until(() => claims >= 2 || runner.listener.exitCode !== null);
+
+      const report = {
+        taskId,
+        observation: "start-failed",
+        reason: "The private executor artifact answered 404.",
+      };
+      expect(reports).toEqual([report, report]);
+      expect(
+        runner.output.stderr.split(`The start failure of Task ${taskId} was refused`),
+      ).toHaveLength(2);
+    },
+    60_000,
   );
 
   it.skipIf(process.platform === "win32").each([

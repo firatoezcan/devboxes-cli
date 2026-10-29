@@ -32,7 +32,11 @@ boundaries, not compatibility guarantees for retired protocols.
   `response`, which the API validates, and what `devboxes runner` parses.
 - `apps/firops-api/src/execution/runners.ts` owns
   `/api/internal/execution/runners` claims, assignments, stop reports, and
-  Runner heartbeat expiry.
+  Runner heartbeat expiry. A start that fails before the Task's container
+  exists, the Runner reports to `/reconcile` as `start-failed` with its reason.
+  The API then holds the Task from `/claim` for 1, 4 and then 15 minutes, as
+  `nextRetry` schedules a managed retry, and after the third retry ends the Run
+  with that reason.
 - `apps/firops-api/src/execution/callbacks.ts` owns Task callbacks. The hidden
   `runtime-*` routes in `apps/firops-api/src/routes/commands/model-accounts.ts` are
   Task callbacks for the Run's model account.
