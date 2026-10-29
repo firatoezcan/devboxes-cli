@@ -22,28 +22,17 @@ const nativeTermination =
         result: { code: null, signal: "SIGHUP" },
       };
 
-const createInstalledLauncher = async (
+const nativePackage = nativePackageByTarget[`${process.platform}-${process.arch}`];
+if (!nativePackage)
+  throw new Error(`The launcher test host is unsupported: ${process.platform}-${process.arch}.`);
+
+/** Installs the native package of this host into `nodeModules`, as a program that runs `nativeProgram`. */
+const installNativePackage = async (
+  nodeModules: string,
   nativeProgram: string,
-  nativeVersion = "1.2.3",
-  installNative = true,
+  nativeVersion: string,
 ) => {
-  const packageRoot = await mkdtemp(join(tmpdir(), "devboxes-launcher-"));
-  fixtureDirectories.push(packageRoot);
-
-  const launcher = join(packageRoot, "bin", "devboxes.cjs");
-  await mkdir(dirname(launcher), { recursive: true });
-  await copyFile(join(import.meta.dir, "devboxes.cjs"), launcher);
-  await writeFile(
-    join(packageRoot, "package.json"),
-    `${JSON.stringify({ name: "devboxes", version: "1.2.3" })}\n`,
-  );
-
-  const target = `${process.platform}-${process.arch}`;
-  const nativePackage = nativePackageByTarget[target];
-  if (!nativePackage) throw new Error(`The launcher test host is unsupported: ${target}.`);
-  if (!installNative) return launcher;
-
-  const nativeRoot = join(packageRoot, "node_modules", nativePackage);
+  const nativeRoot = join(nodeModules, nativePackage);
   const nativeBinary = join(nativeRoot, "bin", "devboxes.exe");
   await mkdir(dirname(nativeBinary), { recursive: true });
   await writeFile(
@@ -69,10 +58,32 @@ const createInstalledLauncher = async (
     );
     if ((await compiler.exited) !== 0) throw new Error("Failed to compile the native fixture.");
   } else {
-    await writeFile(nativeBinary, `#!${process.execPath}\n${nativeProgram}\n`);
+    // Like the release binary, which is compiled without .env autoloading.
+    await writeFile(
+      nativeBinary,
+      `#!/usr/bin/env -S ${process.execPath} --no-env-file\n${nativeProgram}\n`,
+    );
     await chmod(nativeBinary, 0o755);
   }
+};
 
+const createInstalledLauncher = async (
+  nativeProgram: string,
+  nativeVersion = "1.2.3",
+  installNative = true,
+) => {
+  const packageRoot = await mkdtemp(join(tmpdir(), "devboxes-launcher-"));
+  fixtureDirectories.push(packageRoot);
+
+  const launcher = join(packageRoot, "bin", "devboxes.cjs");
+  await mkdir(dirname(launcher), { recursive: true });
+  await copyFile(join(import.meta.dir, "devboxes.cjs"), launcher);
+  await writeFile(
+    join(packageRoot, "package.json"),
+    `${JSON.stringify({ name: "devboxes", version: "1.2.3", bin: { devboxes: "bin/devboxes.cjs" } })}\n`,
+  );
+  if (installNative)
+    await installNativePackage(join(packageRoot, "node_modules"), nativeProgram, nativeVersion);
   return launcher;
 };
 
@@ -250,6 +261,57 @@ setTimeout(() => process.exit(97), 500);
     expect(output).toContain("forwarded");
   });
 
+  it("keeps the .env of the directory it runs in out of the native command", async () => {
+    const program = 'process.stdout.write(`api:${process.env.DEVBOXES_API_URL ?? "unset"}`);';
+    const launcher = await createInstalledLauncher(program, "1.2.3", false);
+    const repository = await mkdtemp(join(tmpdir(), "devboxes-repository-"));
+    fixtureDirectories.push(repository);
+    const install = spawn(
+      "npm",
+      [
+        "install",
+        "--offline",
+        "--install-links",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+        "--prefix",
+        repository,
+        dirname(dirname(launcher)),
+      ],
+      { shell: true, stdio: "inherit" },
+    );
+    await expect(waitForExit(install)).resolves.toEqual({ code: 0, signal: null });
+    await installNativePackage(join(repository, "node_modules"), program, "1.2.3");
+    await writeFile(join(repository, ".env"), "DEVBOXES_API_URL=https://attacker.example\n");
+
+    // npm's command for the bin: on POSIX a link to the launcher, whose shebang runs, and on
+    // Windows the devboxes.cmd that npm writes from that shebang.
+    const command = `devboxes${process.platform === "win32" ? ".cmd" : ""}`;
+    const child = spawn(join(repository, "node_modules", ".bin", command), [], {
+      cwd: repository,
+      shell: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+
+    expect({ ...(await waitForExit(child)), stdout, stderr }).toEqual({
+      code: 0,
+      signal: null,
+      stdout: "api:unset",
+      stderr: "",
+    });
+  });
+
   it("preserves native termination", async () => {
     const launcher = await createInstalledLauncher(nativeTermination.program);
     const child = spawn(process.execPath, ["--no-install", launcher], { stdio: "ignore" });
@@ -304,7 +366,7 @@ setTimeout(() => process.exit(97), 500);
 
     await expect(waitForExit(child)).resolves.toEqual({ code: 1, signal: null });
     expect(stdout).toBe("");
-    expect(stderr).toContain(nativePackageByTarget[`${process.platform}-${process.arch}`]);
+    expect(stderr).toContain(nativePackage);
     expect(stderr).toContain("optional dependencies enabled");
     expect(stderr).toContain("Reinstall devboxes");
   });
