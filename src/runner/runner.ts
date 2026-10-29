@@ -134,10 +134,10 @@ export const addRunnerCommands = (program: Command) => {
 
   const add = runner
     .command("add")
-    .description("add this computer as a Runner that runs your Organization's tasks")
+    .description("add this computer as a Runner that runs your Organization's work")
     .option(
       "--organization <id>",
-      "The Organization whose tasks the Runner runs. In a terminal, devboxes asks for it.",
+      "The Organization whose work the Runner runs. In a terminal, devboxes asks for it.",
     )
     .option("--name <name>", "The Runner's name. In a terminal, devboxes asks for it.");
   add.action(async () => {
@@ -154,7 +154,7 @@ export const addRunnerCommands = (program: Command) => {
     if (!platform)
       throw new CommandError(
         "PLATFORM_UNSUPPORTED",
-        "devboxes runs tasks on 64-bit x86 and Arm machines.",
+        "devboxes runs work on 64-bit x86 and Arm machines.",
       );
     const interactive = asksInTerminal(options.json);
     if (!interactive && options.organization === undefined)
@@ -200,7 +200,7 @@ export const addRunnerCommands = (program: Command) => {
     const chosen =
       options.organization ??
       (await select({
-        message: "Which Organization should run tasks on this Runner?",
+        message: "Which Organization should run work on this Runner?",
         options: managed.map((entry) => ({ value: entry.id, label: entry.name })),
         output: process.stderr,
       }));

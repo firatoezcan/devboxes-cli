@@ -709,7 +709,7 @@ describe("devboxes invoke in a terminal", () => {
                 limit: {
                   type: ["integer", "null"],
                   minimum: 1,
-                  description: "The most tasks at once.",
+                  description: "The most Runs at once.",
                 },
                 auth: {
                   anyOf: [
@@ -887,7 +887,7 @@ describe("devboxes invoke in a terminal", () => {
     await cli.answer("Side project", "\x1b[B\r");
     await cli.answer("label", "Claude\r");
     await cli.answer("Set limit", "\r");
-    await cli.answer("limit: The most tasks at once.", "5\r");
+    await cli.answer("limit: The most Runs at once.", "5\r");
     await cli.answer("type oauth", "\r");
     await cli.answer("auth.key", `${key}\r`);
     await cli.answer("scopes", "\x1b[B \r");
@@ -1337,7 +1337,7 @@ describe("devboxes runner add", () => {
     const { tokenFile, env } = await runnerEnvironment();
     const cli = await inTerminal(["runner", "add"], env);
 
-    expect(await cli.shows("Which Organization should run tasks on this Runner?")).toBe(true);
+    expect(await cli.shows("Which Organization should run work on this Runner?")).toBe(true);
     await cli.answer("Side project", "\x1b[B\r");
     await cli.answer("Name this Runner", "\r");
     await cli.answer("Start this Runner now?", "\x1b[C\r");

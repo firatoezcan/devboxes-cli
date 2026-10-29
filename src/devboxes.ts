@@ -84,7 +84,7 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
   const invoke = program
     .command("invoke")
     .description(
-      "invoke a discovered command. In a terminal without --input, it asks for the input field by field, and then for the Blueprint inputs and the issue that the task needs.",
+      "invoke a discovered command. In a terminal without --input, it asks for the input field by field, and then for the Blueprint inputs and the issue that the Session needs.",
     )
     .argument("<operationId>", "Discovered operation ID")
     .option(
