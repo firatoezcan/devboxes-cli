@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/pro
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { JsonValue } from "@firops/platform/protocol/json";
+import type { JsonValue } from "./protocol/json";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import Type from "typebox";

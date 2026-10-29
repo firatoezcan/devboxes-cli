@@ -4,13 +4,13 @@ import { constants } from "node:fs";
 import { mkdir, open, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-import { DockerOpencodeTaskRuntime } from "@firops/devbox/runner/docker-task-runtime";
-import type { JsonValue } from "@firops/platform/protocol/json";
+import { DockerOpencodeTaskRuntime } from "./docker-task-runtime";
+import type { JsonValue } from "../protocol/json";
 import {
   type RunnerAssignmentsSchema,
   type RunnerClaimSchema,
   runnerAnswers,
-} from "@firops/platform/protocol/runner-callbacks";
+} from "../protocol/runner-callbacks";
 import { proxy } from "hono/proxy";
 import { jwtVerify, SignJWT } from "jose";
 import Type, { type Static } from "typebox";

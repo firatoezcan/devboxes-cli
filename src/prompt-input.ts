@@ -1,6 +1,6 @@
 import { confirm, isCancel, multiline, multiselect, password, select, text } from "@clack/prompts";
-import { JsonValueSchema, type JsonValue } from "@firops/platform/protocol/json";
-import { describeErrors } from "@firops/platform/values/validation-errors";
+import { JsonValueSchema, type JsonValue } from "./protocol/json";
+import { describeErrors } from "./values/validation-errors";
 import Type from "typebox";
 import Value from "typebox/value";
 
