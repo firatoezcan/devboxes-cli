@@ -83,8 +83,7 @@ with `invitations.respond`. Owners inspect and cancel invitations with
 `invitations.list` and `invitations.cancel`.
 
 Invitation creation does not send a notification email. Admission requires the
-inviter to remain an active owner and cannot replace an active or suspended
-membership.
+inviter to remain an active owner and cannot replace an active membership.
 
 ## Use the same commands through MCP
 
