@@ -131,8 +131,8 @@ export const listen = async (options: {
       const { pathname, search } = new URL(request.url);
       if (
         !pathname.startsWith("/api/internal/execution/tasks/") &&
-        pathname !== "/api/commands/providers/runtime-read" &&
-        pathname !== "/api/commands/providers/runtime-write"
+        pathname !== "/api/commands/model-accounts/runtime-read" &&
+        pathname !== "/api/commands/model-accounts/runtime-write"
       )
         return Response.json(
           { error: { code: "NOT_RELAYED", message: "The Runner relays only Task callbacks." } },
@@ -197,7 +197,8 @@ export const listen = async (options: {
       containerId,
       observation: "created",
     });
-    if (result.status !== "running") await container.remove({ v: true });
+    if (result.status !== "queued" && result.status !== "running")
+      await container.remove({ v: true });
     else if (!stopping) {
       if (!relayReachable) {
         if (!(await runtime.reaches(task.id, (await container.inspect()).Image, apiBaseUrl)))

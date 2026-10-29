@@ -27,6 +27,16 @@ export type CommandConnection = {
    * session that may ask: `requestJson` then sends a request refused with SESSION_NOT_FRESH once more.
    */
   signInAgain?: () => Promise<string>;
+  /**
+   * Asks the person at the terminal, in one pass, for the Blueprint inputs that a request lacks a
+   * usable value for, and answers the values by name: `requestJson` then sends a request refused
+   * with BLUEPRINT_INPUT_MISSING or BLUEPRINT_INPUT_TYPE once more, when each listed input comes
+   * from the dispatch, whose value goes in `inputs`, or is the issue the work is linked to, whose
+   * value goes in `issue`.
+   */
+  askInputs?: (
+    unresolved: Static<typeof askableInputsSchema>["inputs"],
+  ) => Promise<Record<string, JsonValue>>;
 };
 
 const scalar = Type.Union([Type.String(), Type.Number(), Type.Boolean(), Type.Null()]);
@@ -74,6 +84,19 @@ export const failureSchema = Type.Object({
   details: Type.Optional(JsonValueSchema),
 });
 const errorSchema = Type.Object({ error: failureSchema });
+const askableInputsSchema = Type.Object({
+  inputs: Type.Array(
+    Type.Object({
+      name: Type.String(),
+      source: Type.Union([Type.Literal("dispatch"), Type.Literal("issue")]),
+      type: Type.Union([Type.Literal("string"), Type.Literal("number"), Type.Literal("boolean")]),
+      description: Type.Optional(Type.String()),
+    }),
+  ),
+});
+const inputsBodySchema = Type.Object({
+  inputs: Type.Optional(Type.Record(Type.String(), JsonValueSchema)),
+});
 const systemErrorSchema = Type.Object({ code: Type.String() });
 
 export type CommandDescription = {
@@ -250,6 +273,27 @@ export const requestJson = async (
         path,
         body,
       );
+    if (
+      (error.error.code === "BLUEPRINT_INPUT_MISSING" ||
+        error.error.code === "BLUEPRINT_INPUT_TYPE") &&
+      connection.askInputs &&
+      Value.Check(askableInputsSchema, error.error.details) &&
+      Value.Check(inputsBodySchema, body)
+    ) {
+      const unresolved = error.error.details.inputs;
+      const answers = await connection.askInputs(unresolved);
+      const inputs = { ...body.inputs };
+      let issue: JsonValue | undefined;
+      for (const { name, source } of unresolved) {
+        if (source === "issue") issue = answers[name] ?? null;
+        else inputs[name] = answers[name] ?? null;
+      }
+      return requestJson({ ...connection, askInputs: undefined }, path, {
+        ...body,
+        inputs,
+        ...(issue !== undefined && { issue }),
+      });
+    }
     throw new CommandError(error.error.code, error.error.message, {
       status: error.status,
       details: error.error.details,

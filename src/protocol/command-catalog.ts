@@ -66,10 +66,11 @@ const elevationSchema = Type.Union([
 ]);
 
 /**
- * A command's `x-devboxes`: whether it only reads or also writes; for a write, the class that makes
+ * A command's `x-devboxes`: whether it only reads or also writes, which is the level a grant of its
+ * resource needs (`grants`); for a write, the class that makes
  * it `elevated`, which laws/LAWS.bend states for each class; the Organization roles that may call
  * it, none for a command that takes no Organization; `lifecycle: "any"` when it also runs on an
- * Organization that is suspended, archived or being deleted; `delegable: false` when only a
+ * Organization that is archived or being deleted; `delegable: false` when only a
  * person's session may call it, never a member delegation; who may call it, in words; and, once it
  * is usable from Chat, `shipped`: the day and a one-line note on what it lets devboxes do. A Chat
  * turn calls a command under the Organization's Chat policy, and the roles bind the people the turn
@@ -174,26 +175,68 @@ export const catalogCommands = (
   return { commands };
 };
 
-/**
- * What a delegation token can hold of one resource: its read operations, all of them, and the
- * elevated ones among them.
- */
-export type DelegationResource = { read: string[]; readAndWrite: string[]; elevated: string[] };
+/** The resource of an operation: the part of its operationId before the dot. */
+export const resourceOf = (operationId: string) => operationId.split(".", 1)[0] ?? operationId;
+
+/** The level a grant gives one resource. */
+export type GrantLevel = "read" | "write";
 
 /**
- * The resources a member delegation can reach. A resource is the part of an operationId before the
- * dot. Write includes read, so `readAndWrite` holds every operation of the resource. Commands with
+ * The grant of a delegation token or a Chat policy: a level for each resource, as Stripe
+ * restricted keys store it (DEC-delegation-grants-resource-level). A grant names no operation, so
+ * an operation added to a granted resource reaches it, and renaming an operation inside its
+ * resource changes no grant.
+ */
+export type ResourceGrants = Record<string, GrantLevel>;
+
+/**
+ * Whether `resources` grant the operation `operationId`, whose contract names `effect`: `write` on
+ * its resource grants every operation of it, and `read` those whose `effect` is `read`.
+ */
+export const grants = (
+  resources: ResourceGrants,
+  operationId: string,
+  effect: CommandContract["effect"],
+) => {
+  const level = resources[resourceOf(operationId)];
+  return level === "write" || (level === "read" && effect === "read");
+};
+
+/**
+ * The resources of `resources` whose level grants none of `contracts`, the operations a holder can
+ * call: a resource the holder has no operation of, and `read` on one where it has only writes.
+ */
+export const ungrantedResources = (
+  resources: ResourceGrants,
+  contracts: Iterable<readonly [operationId: string, contract: CommandContract]>,
+) => {
+  const granted = new Set(
+    [...contracts].flatMap(([operationId, { effect }]) =>
+      grants(resources, operationId, effect) ? [resourceOf(operationId)] : [],
+    ),
+  );
+  return Object.keys(resources).filter((resource) => !granted.has(resource));
+};
+
+/**
+ * What a delegation token can hold of one resource: the operations that each level grants, and the
+ * elevated ones among them.
+ */
+export type DelegationResource = Record<GrantLevel, string[]> & { elevated: string[] };
+
+/**
+ * The resources a member delegation can reach, with the operations each level grants. Commands with
  * `delegable: false` refuse every delegation and are left out, and so is a resource left with none.
  */
 export const delegationResources = (commands: readonly CatalogCommand[]) => {
   const resources = new Map<string, DelegationResource>();
   for (const { operationId, "x-devboxes": detail } of commands) {
     if (detail.delegable === false) continue;
-    const [resource = operationId] = operationId.split(".");
-    const entry = resources.get(resource) ?? { read: [], readAndWrite: [], elevated: [] };
-    if (detail.effect === "read") entry.read.push(operationId);
+    const resource = resourceOf(operationId);
+    const entry = resources.get(resource) ?? { read: [], write: [], elevated: [] };
+    for (const level of ["read", "write"] as const)
+      if (grants({ [resource]: level }, operationId, detail.effect)) entry[level].push(operationId);
     if (detail.effect === "write" && detail.elevated) entry.elevated.push(operationId);
-    entry.readAndWrite.push(operationId);
     resources.set(resource, entry);
   }
   return resources;

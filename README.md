@@ -83,8 +83,7 @@ with `invitations.respond`. Owners inspect and cancel invitations with
 `invitations.list` and `invitations.cancel`.
 
 Invitation creation does not send a notification email. Admission requires the
-inviter to remain an active owner and cannot replace an active or suspended
-membership.
+inviter to remain an active owner and cannot replace an active membership.
 
 ## Use the same commands through MCP
 
@@ -106,8 +105,8 @@ its work ends.
 
 ## Run execution capacity
 
-`devboxes machine add` registers this computer as a Runner through
-`capacity.register` and saves the Runner key, readable only by the current user,
+`devboxes runner add` registers this computer as a Runner through
+`runners.add` and saves the Runner key, readable only by the current user,
 in `devboxes/runner/token` under the user's configuration directory.
 `devboxes runner listen` reads that file unless `--token-file` names another, and
 `--state-directory` doesn't move it. Use `devboxes runner listen --help` for the

@@ -120,8 +120,8 @@ const listFormat = new Intl.ListFormat("en-GB", { type: "conjunction" });
 /** What unprotected secrets risk, which their entries carry and the web states and asks to accept. */
 export const unprotectedSecretWarning = (keys: readonly [string, ...string[]]) =>
   keys.length === 1
-    ? `devboxes can't protect ${keys[0]}. Tasks get its real value, so the agent can read it and send it anywhere, and that risk is yours.`
-    : `devboxes can't protect ${listFormat.format(keys)}. Tasks get their real values, so the agent can read them and send them anywhere, and that risk is yours.`;
+    ? `devboxes can't protect ${keys[0]}. Runs get its real value, so the agent can read it and send it anywhere, and that risk is yours.`
+    : `devboxes can't protect ${listFormat.format(keys)}. Runs get their real values, so the agent can read them and send them anywhere, and that risk is yours.`;
 
 /** A name tasks read an entry from: a letter or underscore, then letters, digits and underscores. */
 export const environmentKeyPattern = "^[A-Za-z_][A-Za-z0-9_]*$";
@@ -439,7 +439,7 @@ export const environmentEntryError = ({
   if (kind === "var")
     return invalid(
       hosts || swapIn || unprotected || database || readOnlyLogin
-        ? "A variable reaches tasks as it is, so it takes no hosts, swapIn, unprotected, database or read-only login."
+        ? "A variable reaches Runs as it is, so it takes no hosts, swapIn, unprotected, database or read-only login."
         : variableValueError(value),
     );
   const valueError = secretValueError(value);
@@ -616,4 +616,4 @@ const changePhrase = ({ key, change, database }: SecretBindingChange) => {
 export const secretBindingChangeMessage = (
   changes: readonly [SecretBindingChange, ...SecretBindingChange[]],
 ) =>
-  `Since this work started, ${listFormat.format(changes.map(changePhrase))}, so devboxes won't give the task its environment. Start the work again.`;
+  `Since this work started, ${listFormat.format(changes.map(changePhrase))}, so devboxes won't give the Run its environment. Start the work again.`;

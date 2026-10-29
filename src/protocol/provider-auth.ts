@@ -29,7 +29,7 @@ export type OpencodeOauthAuth = {
 
 export type OpencodeProviderAuth = OpencodeApiAuth | OpencodeOauthAuth;
 export type OpencodeRuntimeProviderAuth =
-  | { type: "api"; key: string; settings?: Record<string, string> }
+  | OpencodeApiAuth
   | {
       type: "oauth";
       access: string;
@@ -37,11 +37,6 @@ export type OpencodeRuntimeProviderAuth =
       metadata?: Record<string, OpencodeProviderAuthMetadataValue>;
       refresh: string;
     };
-export type WorkspaceImageQualificationProviderAuthLease = {
-  providerID: string;
-  modelID: string;
-  auth: OpencodeProviderAuth;
-};
 
 export type OpencodeProviderAuthSourceValue =
   | string
@@ -86,8 +81,11 @@ export const OpencodeProviderAuthSchema = Type.Union([
   ApiProviderAuthSchema,
   OauthProviderAuthSchema,
 ]);
-/** What /internal/workspace-images/qualification-provider-auth answers the image builder. */
-export const WorkspaceImageQualificationProviderAuthLeaseSchema = Type.Object(
+/**
+ * What the image builder gives the Workspace Image verifier from its own qualification secret, in
+ * DEVBOX_WORKSPACE_IMAGE_QUALIFICATION_PROVIDER_AUTH.
+ */
+const WorkspaceImageQualificationProviderSchema = Type.Object(
   {
     providerID: Type.String({ minLength: 1 }),
     modelID: Type.String({ minLength: 1 }),
@@ -112,8 +110,19 @@ export const normalizeOpencodeProviderId = (providerId: string) => {
   return normalizedProviderId;
 };
 
-/** The provider whose Provider Accounts hold a Claude sign-in's inference token as their key. */
+/** The provider whose model accounts hold a Claude sign-in's inference token as their key. */
 export const claudeSubscriptionProviderID = "claude-subscription";
+
+/**
+ * OpenCode's failure types for a refusal at the model account's usage limit, credit, or budget,
+ * including OpenCode's own gateway's free-usage and workspace budget limits.
+ */
+export const usageLimitFailureTypes: ReadonlySet<string> = new Set([
+  "provider.quota",
+  "provider.free-limit",
+  "provider.budget-limit",
+  "provider.model-budget-limit",
+]);
 
 /** Whether a member can connect the provider with an API key: a Claude subscription only signs in. */
 export const takesApiKey = (providerId: string) => providerId !== claudeSubscriptionProviderID;
@@ -129,7 +138,7 @@ export const validateOpencodeProviderAuth = (
     );
   }
   if (providerId === claudeSubscriptionProviderID && auth.type !== "api")
-    throw new Error(`A ${providerId} Provider Account does not take ${auth.type} credentials.`);
+    throw new Error(`A ${providerId} model account does not take ${auth.type} credentials.`);
   if (auth.type === "api") {
     const validatedAuth: OpencodeApiAuth = { type: "api", key: auth.key.trim() };
     if (auth.metadata !== undefined) validatedAuth.metadata = auth.metadata;
@@ -147,19 +156,19 @@ export const validateOpencodeProviderAuth = (
   return validatedAuth;
 };
 
-export const validateWorkspaceImageQualificationProviderAuthLease = (
+export const validateWorkspaceImageQualificationProvider = (
   source: OpencodeProviderAuthSourceValue,
-): WorkspaceImageQualificationProviderAuthLease => {
-  const lease = Value.Parse(WorkspaceImageQualificationProviderAuthLeaseSchema, source);
-  const providerID = normalizeOpencodeProviderId(lease.providerID);
-  if (providerID !== lease.providerID) {
+) => {
+  const provider = Value.Parse(WorkspaceImageQualificationProviderSchema, source);
+  const providerID = normalizeOpencodeProviderId(provider.providerID);
+  if (providerID !== provider.providerID) {
     throw new Error("Workspace Image qualification provider id is not normalized.");
   }
-  const modelID = lease.modelID.trim();
-  if (!modelID || modelID !== lease.modelID) {
+  const modelID = provider.modelID.trim();
+  if (!modelID || modelID !== provider.modelID) {
     throw new Error("Workspace Image qualification model id is invalid.");
   }
-  const auth = validateOpencodeProviderAuth(providerID, lease.auth);
+  const auth = validateOpencodeProviderAuth(providerID, provider.auth);
   return {
     providerID,
     modelID,
@@ -170,11 +179,7 @@ export const validateWorkspaceImageQualificationProviderAuthLease = (
 export const hydrateOpencodeProviderAuth = (
   auth: OpencodeProviderAuth,
 ): OpencodeRuntimeProviderAuth => {
-  if (auth.type === "api") {
-    return auth.metadata
-      ? { type: "api", key: auth.key, settings: auth.metadata }
-      : { type: "api", key: auth.key };
-  }
+  if (auth.type === "api") return auth;
   const metadata = { ...auth.metadata };
   if (auth.accountId) metadata.accountID = auth.accountId;
   if (auth.enterpriseUrl) metadata.enterpriseUrl = auth.enterpriseUrl;

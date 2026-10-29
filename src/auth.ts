@@ -123,7 +123,13 @@ const authenticationResponse = async (
       onResponse: async ({ response, request }) => {
         const setCookies = response.headers.getSetCookie();
         for (const header of setCookies) cookies.setCookieSync(header, String(request.url));
-        secrets.push(...cookies.getCookiesSync(String(request.url)).map((cookie) => cookie.value));
+        // Only an HttpOnly cookie carries a credential. A page reads the others, such as the last
+        // sign-in method, so they are no secret.
+        secrets.push(
+          ...cookies
+            .getCookiesSync(String(request.url))
+            .flatMap((cookie) => (cookie.httpOnly ? [cookie.value] : [])),
+        );
         if (!response.ok) {
           for (const value of Object.values(options.body ?? options.query ?? {})) {
             if (Value.Check(Type.String(), value)) secrets.push(value);

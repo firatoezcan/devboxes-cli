@@ -7,7 +7,8 @@ import { ClaudeCodeArtifactSchema } from "./task-runtime";
 /*
  * What each route under /internal/execution/runners answers the Runner that `devboxes runner`
  * runs. Each schema is its route's `response`, which the API validates, and what the CLI parses,
- * so neither side changes an answer alone.
+ * so neither side changes an answer alone. A `status` is the status of the Task's Run, which stays
+ * queued after the claim until the agent starts.
  */
 
 const AssignedTaskSchema = Type.Object({
@@ -42,7 +43,7 @@ export const RunnerClaimSchema = Type.Object({
 /** `/assignments`: the Tasks this Runner holds an executor for, or must stop one of. */
 export const RunnerAssignmentsSchema = Type.Object({ tasks: Type.Array(AssignedTaskSchema) });
 
-/** `/reconcile`: the Task's status once the Runner's observation is recorded. */
+/** `/reconcile`: the Run's status once the Runner's observation is recorded. */
 export const RunnerReconcileSchema = Type.Object({ status: Type.Enum(runStatuses) });
 
 /** Each route's answer by its name under /internal/execution/runners. */
