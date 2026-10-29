@@ -1,5 +1,26 @@
 # devboxes
 
+## 0.9.0
+
+### Minor Changes
+
+- Update every CLI and Runner to this release. It resets Runner registrations and ends the Runs in progress. A Runner of an earlier release stops at its next poll with `RUNNER_TOKEN_REQUIRED` and claims no more work. To run work on a Runner computer again, update the CLI, remove the Task containers that the old Runner leaves behind, run `devboxes runner add`, and start `devboxes runner listen`. `devboxes runner add` replaces the key it saved before.
+
+  The leftover containers keep running and can still hold the model account's key and the Organization's secrets. `docker ps --all --filter label=devboxes.task` lists them. Remove each one with `docker rm --force --volumes <container>`, and delete the folder of the same Task ID, the container's name without `devboxes-task-`, in the Runner's state directory, which `devboxes runner listen --help` shows.
+
+- The API renamed the resources of 17 operations. `devboxes invoke`, `devboxes mcp` and scripts that call an old name fail, and so do `devboxes connect` and `devboxes machine add` of 0.8.0:
+  - `capacity.register` is now `runners.add`. `capacity.list`, `capacity.configure` and `capacity.remove` are now `runners.list`, `runners.configure` and `runners.remove`.
+  - `providers.list` is now `model-accounts.providers`. `providers.models`, `providers.select`, `providers.connect-start` and `providers.connect-complete` are now `model-accounts.models`, `model-accounts.select`, `model-accounts.connect-start` and `model-accounts.connect-complete`.
+  - `connections.add`, `connections.list`, `connections.inspect`, `connections.usage`, `connections.update` and `connections.delete` are now `model-accounts.add`, `model-accounts.list`, `model-accounts.inspect`, `model-accounts.usage`, `model-accounts.update` and `model-accounts.delete`.
+  - `images.configure` and `images.inspect` are now `workspace-images.configure` and `workspace-images.inspect`.
+- `delegations.create` takes `resources`, a `read` or `write` level for each resource, in place of `operations`. A resource is the part of an operation ID before its dot. `read` grants the resource's reads, and `write` grants every operation of it, including operations that devboxes adds later. A resource whose level grants no operation fails with `RESOURCE_UNAVAILABLE`. `delegations.list` answers `resources` too. `chat.policy` and `chat.configure-policy` state a Chat policy's grant as `resources` in the same way, and `chat.configure-policy` refuses with `RESOURCE_UNAVAILABLE` where it refused with `CHAT_OPERATION_UNAVAILABLE`.
+- `devboxes runner add` replaces `devboxes machine add`, and both Runner commands now sit under `devboxes runner`. The CLI calls the renamed operations `runners.add` and `model-accounts.*`, and its errors say `RUNNER_NOT_ADDED`, `RUNNER_ALREADY_ADDED` and, for a failed model account sign-in, `MODEL_ACCOUNT_SIGN_IN_FAILED` instead of `CONNECTION_FAILED`. `--json` prints the added Runner under `runner`.
+- In a terminal without `--input`, `devboxes invoke` asks in one pass for every Blueprint input that the API reports as missing or of the wrong type, and for the issue the work is linked to when the API asks for one, then sends the request again. With `--input`, it prints the API's `BLUEPRINT_INPUT_MISSING` or `BLUEPRINT_INPUT_TYPE` refusal. Without `--input`, with `--json` or outside a terminal, it still fails with `INPUT_REQUIRED` before it calls the API.
+
+### Patch Changes
+
+- `devboxes login`, `devboxes signup` and `devboxes auth` hide only HttpOnly cookie values in the answers they print. A cookie that a web page may read, such as the one that records the last sign-in method, no longer turns matching text such as `email` into `[redacted]`.
+
 ## 0.8.0
 
 ### Minor Changes

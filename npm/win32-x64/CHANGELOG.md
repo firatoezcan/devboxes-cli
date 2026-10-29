@@ -1,5 +1,11 @@
 # @devboxes/cli-win32-x64
 
+## 0.9.0
+
+### Minor Changes
+
+- The binary runs the devboxes CLI 0.9.0. See the devboxes changelog for its changes.
+
 ## 0.8.0
 
 ### Minor Changes
