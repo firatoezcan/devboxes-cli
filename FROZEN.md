@@ -62,7 +62,12 @@ boundaries, not compatibility guarantees for retired protocols.
 - `packages/devbox/src/runner/executor-artifact.ts` downloads the executor over
   HTTPS and verifies its SHA-256 digest before the Runner mounts it, and
   verifies Claude Code's npm tarball and the binary in it against the SHA-512
-  values that `apps/firops-api/src/execution/claude-code-artifact.ts` pins.
+  values that `apps/firops-api/src/execution/claude-code-artifact.ts` pins. An
+  executor download that receives no data for 30 seconds fails with Bun's
+  TimeoutError. A managed Task's `executor-bootstrap` init container then exits with
+  `executorDownloadStalledExitCode` and names the host and the bound in its
+  termination message, which the Run's error quotes. Any other failure exits 1
+  without a termination message.
 - `apps/elysia-opencode/src/executor/claude-code-launcher.ts` owns the
   launcher that runs a Claude subscription Run's Claude Code as its own uid.
 - `apps/firops-api/src/execution/managed.ts` owns managed launch of the Task
