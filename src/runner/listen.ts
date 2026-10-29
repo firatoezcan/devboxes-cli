@@ -4,6 +4,7 @@ import { constants } from "node:fs";
 import { mkdir, open, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
+import { dockerSocketPath } from "@firops/devbox/runner/docker-socket";
 import { DockerOpencodeTaskRuntime } from "@firops/devbox/runner/docker-task-runtime";
 import type { JsonValue } from "@firops/platform/protocol/json";
 import {
@@ -33,7 +34,6 @@ export const listen = async (options: {
   apiOrigin: string;
   tokenFile: string;
   stateDirectory: string;
-  socketPath: string;
 }) => {
   /**
    * Whether only this user can read or change a file. Windows synthesizes a stat's mode from file
@@ -91,7 +91,7 @@ export const listen = async (options: {
   const relayState =
     relayText === null ? null : Value.Parse(relayStateSchema, JSON.parse(relayText));
   const runtime = new DockerOpencodeTaskRuntime({
-    socketPath: options.socketPath,
+    socketPath: dockerSocketPath(),
     stateDirectory: directory,
   });
   const engine = await runtime.docker.info();

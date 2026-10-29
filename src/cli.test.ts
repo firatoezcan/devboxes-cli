@@ -86,7 +86,6 @@ await symlink(
 const scoped = { DEVBOXES_API_URL: "https://api.example.com", DEVBOXES_TOKEN: "scoped" };
 const unusedOrigin = "http://127.0.0.1:9";
 const listen = ["--json", "--api", "https://api.example.com", "runner", "listen"];
-const localDocker = { DOCKER_HOST: undefined, DEVBOX_OPENCODE_DOCKER_SOCKET_PATH: undefined };
 
 /**
  * Runs the CLI in a pseudo-terminal, with an `open` and an `xdg-open` on PATH that only record
@@ -183,61 +182,61 @@ describe("devboxes entrypoint", () => {
     [
       "a shared token file",
       [...listen, "--token-file", sharedTokenFile],
-      localDocker,
+      {},
       "INVALID_RUNNER_TOKEN_FILE",
     ],
     [
       "an empty token file",
       [...listen, "--token-file", emptyTokenFile],
-      localDocker,
+      {},
       "INVALID_RUNNER_TOKEN_FILE",
     ],
     [
       "a missing token file",
       [...listen, "--token-file", join(fixtureDirectory, "absent")],
-      localDocker,
+      {},
       "INVALID_RUNNER_TOKEN_FILE",
     ],
     [
       "a state directory other users can write",
       [...listen, "--token-file", privateTokenFile, "--state-directory", sharedStateDirectory],
-      localDocker,
+      {},
       "INVALID_RUNNER_STATE_DIRECTORY",
     ],
     [
       "a state directory other users can write, after a token file that links to a private file",
       [...listen, "--token-file", linkedTokenFile, "--state-directory", sharedStateDirectory],
-      localDocker,
+      {},
       "INVALID_RUNNER_STATE_DIRECTORY",
     ],
     [
       "a token file this user cannot read",
       [...listen, "--token-file", unreadableTokenFile],
-      localDocker,
+      {},
       "INVALID_RUNNER_TOKEN_FILE",
     ],
     [
       "a token file that is a FIFO",
       [...listen, "--token-file", fifoTokenFile],
-      localDocker,
+      {},
       "INVALID_RUNNER_TOKEN_FILE",
     ],
     [
       "a relay key that is a symbolic link",
       [...listen, "--token-file", privateTokenFile, "--state-directory", linkedRelayKeyDirectory],
-      localDocker,
+      {},
       "INVALID_RUNNER_STATE_DIRECTORY",
     ],
     [
       "a relay key other users can read",
       [...listen, "--token-file", privateTokenFile, "--state-directory", sharedRelayKeyDirectory],
-      localDocker,
+      {},
       "INVALID_RUNNER_STATE_DIRECTORY",
     ],
     [
       "a Runner that was never added",
       listen,
-      { ...localDocker, XDG_CONFIG_HOME: join(fixtureDirectory, "never-added") },
+      { XDG_CONFIG_HOME: join(fixtureDirectory, "never-added") },
       "RUNNER_NOT_ADDED",
     ],
     [
@@ -1427,6 +1426,7 @@ describe("devboxes runner add", () => {
 describe("devboxes runner listen", () => {
   const runnerTokenFile = join(fixtureDirectory, "runner-token");
   const engine = { name: "Test Engine", gateway: "127.0.0.1" };
+  const fixtureDocker = { DOCKER_HOST: `unix://${join(fixtureDirectory, "docker.sock")}` };
   const docker = Bun.serve({
     unix: join(fixtureDirectory, "docker.sock"),
     fetch: (request) => {
@@ -1446,8 +1446,6 @@ describe("devboxes runner listen", () => {
     "listen",
     "--token-file",
     runnerTokenFile,
-    "--docker-socket",
-    join(fixtureDirectory, "docker.sock"),
     "--state-directory",
     await mkdtemp(join(fixtureDirectory, "state-")),
   ];
@@ -1458,7 +1456,7 @@ describe("devboxes runner listen", () => {
     await writeFile(runnerTokenFile, "devboxes_runner_fixture\n", { mode: 0o600 });
     const listener = Bun.spawn([process.execPath, "src/cli.ts", ...(await listenTo(origin))], {
       cwd: join(import.meta.dir, ".."),
-      env: { ...process.env, ...localDocker, ...env },
+      env: { ...process.env, ...fixtureDocker, ...env },
       stdin: "ignore",
       stdout: "ignore",
       stderr: "pipe",
@@ -1563,8 +1561,8 @@ describe("devboxes runner listen", () => {
     });
     try {
       await writeFile(runnerTokenFile, "devboxes_runner_fixture\n", { mode: 0o600 });
-      const human = await runCli(await listenTo(api.url.origin), localDocker);
-      const json = await runCli(["--json", ...(await listenTo(api.url.origin))], localDocker);
+      const human = await runCli(await listenTo(api.url.origin), fixtureDocker);
+      const json = await runCli(["--json", ...(await listenTo(api.url.origin))], fixtureDocker);
 
       expect(human.exitCode).toBe(1);
       expect(human.stderr).toBe(`${code} (HTTP ${status}): ${message}\n`);
@@ -1576,13 +1574,34 @@ describe("devboxes runner listen", () => {
   });
 
   it.skipIf(process.platform === "win32")(
+    "fails with one JSON error that names the Docker CLI's answer when it cannot name its engine",
+    async () => {
+      await writeFile(runnerTokenFile, "devboxes_runner_fixture\n", { mode: 0o600 });
+      const refused = await runCli(["--json", ...(await listenTo(unusedOrigin))], {
+        DOCKER_HOST: undefined,
+        DOCKER_CONFIG: await mkdtemp(join(fixtureDirectory, "docker-config-")),
+        DOCKER_CONTEXT: "missing-context",
+      });
+
+      expect(refused.exitCode).toBe(1);
+      expect(JSON.parse(refused.stderr)).toMatchObject({
+        error: {
+          message: expect.stringContaining(
+            'docker context inspect failed, so devboxes cannot tell which Docker engine to use: context "missing-context"',
+          ),
+        },
+      });
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
     "refuses a Docker engine whose Task containers cannot reach this host, and names it",
     async () => {
       engine.name = "Ubuntu 24.04.3 LTS";
       engine.gateway = "192.0.2.1";
       try {
         await writeFile(runnerTokenFile, "devboxes_runner_fixture\n", { mode: 0o600 });
-        const refused = await runCli(["--json", ...(await listenTo(unusedOrigin))], localDocker);
+        const refused = await runCli(["--json", ...(await listenTo(unusedOrigin))], fixtureDocker);
 
         expect(refused.exitCode).toBe(1);
         expect(JSON.parse(refused.stderr)).toMatchObject({

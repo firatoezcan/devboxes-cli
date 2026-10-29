@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { confirm, isCancel, select, text } from "@clack/prompts";
 import { platformConfigHome } from "@firops/connections/local/config";
 import { writeSecretFile } from "@firops/connections/local/secret-file";
-import { dockerSocketPath } from "@firops/devbox/runner/docker-socket";
 import type { Command } from "commander";
 import Type from "typebox";
 
@@ -64,7 +63,6 @@ const runRunner = async (
     config?: string;
     tokenFile: string;
     stateDirectory: string;
-    dockerSocket?: string;
   },
 ) => {
   if (
@@ -94,7 +92,6 @@ const runRunner = async (
       : apiOrigin((await loadAccountContext(options)).config.apiBaseUrl),
     tokenFile: options.tokenFile,
     stateDirectory: options.stateDirectory,
-    socketPath: options.dockerSocket ?? dockerSocketPath(),
   });
 };
 
@@ -113,15 +110,13 @@ export const addRunnerCommands = (program: Command) => {
       "--state-directory <path>",
       "Runner state with the relay's signing key, owner-only (0700; on Windows, its access-control list decides)",
       runnerDirectory(),
-    )
-    .option("--docker-socket <path>", "Docker socket path");
+    );
   command.action(async () => {
     const options = command.optsWithGlobals<{
       api?: string;
       config?: string;
       tokenFile?: string;
       stateDirectory: string;
-      dockerSocket?: string;
     }>();
     const tokenFile = options.tokenFile ?? savedTokenFile();
     if (options.tokenFile === undefined && !(await Bun.file(tokenFile).exists()))
