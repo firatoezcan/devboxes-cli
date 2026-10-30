@@ -1,4 +1,4 @@
-#!/usr/bin/env -S bun --no-install
+#!/usr/bin/env -S bun --no-install --no-env-file
 
 "use strict";
 

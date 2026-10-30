@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { link, mkdir, readdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import {
@@ -66,6 +66,8 @@ export class DockerOpencodeTaskRuntime {
   readonly docker: Docker;
   /** The Claude Code volumes this Runner is checking or filling, by name. */
   readonly #claudeCodeFills = new Map<string, Promise<string>>();
+  /** The executors this Runner is checking or downloading, by SHA-256 digest. */
+  readonly #executorDownloads = new Map<string, Promise<string>>();
 
   constructor(readonly options: { socketPath: string; stateDirectory: string }) {
     this.docker = new Docker({ socketPath: options.socketPath });
@@ -192,6 +194,38 @@ export class DockerOpencodeTaskRuntime {
   }
 
   /**
+   * The path of `daemon`'s executor in this Runner's cache, `<state directory>/executors/<sha256>`.
+   * Each call hashes the cached file against the digest and downloads it again when it doesn't
+   * match. Then it deletes everything else in the cache that it can: older digests, and the
+   * temporary folders of downloads that a stopped Runner left. An entry it can't delete yet, such as
+   * a file a container holds open on Windows, stays for a later call and never fails this one.
+   * Calls for different digests must not overlap; `devboxes runner listen` starts one Task at a
+   * time. A Task's own hard link keeps an evicted executor until the Task's directory goes.
+   */
+  #executor(daemon: NativeTaskLaunch["daemon"]) {
+    const downloading = this.#executorDownloads.get(daemon.sha256);
+    if (downloading) return downloading;
+    const cache = resolve(this.options.stateDirectory, "executors");
+    const path = join(cache, daemon.sha256);
+    const downloaded = (async () => {
+      const cached = Bun.file(path);
+      const present = await cached.exists();
+      const hash = createHash("sha256");
+      if (present) for await (const chunk of cached.stream()) hash.update(chunk);
+      if (!present || hash.digest("hex") !== daemon.sha256) {
+        await mkdir(cache, { recursive: true, mode: 0o700 });
+        await stageExecutorArtifact(daemon, path);
+      }
+      for (const entry of await readdir(cache))
+        if (entry !== daemon.sha256)
+          await rm(join(cache, entry), { recursive: true, force: true }).catch(() => undefined);
+      return path;
+    })().finally(() => this.#executorDownloads.delete(daemon.sha256));
+    this.#executorDownloads.set(daemon.sha256, downloaded);
+    return downloaded;
+  }
+
+  /**
    * Whether a container of `image`, the image of the Task `taskId`, reaches `url` at
    * `host.docker.internal`. It runs the executor that `create` staged as plain Bun, the one HTTP
    * client that every Workspace Image runs.
@@ -236,7 +270,8 @@ export class DockerOpencodeTaskRuntime {
     const directory = resolve(this.options.stateDirectory, task.id);
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const binary = join(directory, "devboxes-executor");
-    await stageExecutorArtifact(task.daemon, binary);
+    await rm(binary, { force: true });
+    await link(await this.#executor(task.daemon), binary);
     await followDockerProgress(
       this.docker,
       await this.docker.pull(task.image, { platform: task.platform }),

@@ -1,5 +1,17 @@
 # devboxes
 
+## 0.10.0
+
+### Minor Changes
+
+- `devboxes runner listen` downloads `devboxes-executor` once for each executor release instead of once for every Task, and keeps that copy in the `executors` folder of its state directory. Before each Task it checks the copy against the release's SHA-256 digest and downloads it again only when the copy is missing or doesn't match. Each launch deletes every other copy in `executors`, so the folder holds one executor. Each Task folder holds a hard link to the copy, so a Task keeps its executor until its folder is removed.
+- `devboxes runner listen` uses the Docker engine that the `docker` command uses, so `DOCKER_HOST`, `DOCKER_CONTEXT` and the current Docker context apply. `docker` must be on `PATH`, and the `--docker-socket` option is gone.
+- When `devboxes runner listen` cannot start a Task, for example because the image pull or the executor download fails, it reports the reason, and the Run retries after 1, 4 and then 15 minutes before it fails with that reason. An executor download that receives no data for 30 seconds counts as such a failure.
+
+### Patch Changes
+
+- The `devboxes` command installed from npm no longer loads a `.env` file from the directory it runs in. The binaries from the install script already ignored it.
+
 ## 0.9.0
 
 ### Minor Changes

@@ -1,5 +1,11 @@
 # @devboxes/cli-darwin-arm64
 
+## 0.10.0
+
+### Minor Changes
+
+- The binary runs the devboxes CLI 0.10.0. See the devboxes changelog for its changes.
+
 ## 0.9.0
 
 ### Minor Changes

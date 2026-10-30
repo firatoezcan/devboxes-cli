@@ -76,14 +76,16 @@ The API's OpenAPI contract defines inputs, results, authority, and errors.
 
 ## Join an Organization
 
-An owner uses `invitations.create` to record an invitation for an email address.
-The intended recipient signs in to an account with that verified email,
-discovers the invitation with `invitations.received`, and accepts or declines
-with `invitations.respond`. Owners inspect and cancel invitations with
-`invitations.list` and `invitations.cancel`.
+An owner uses `invitations.create` to invite an email address, and devboxes
+emails that address a link to the invitation. When the email doesn't go out,
+the answer's `emailed` is `false`, and its `link` is for the owner to share. The intended recipient signs in
+to an account with that verified email and accepts or declines on that page,
+or with `invitations.received` and `invitations.respond`. Owners inspect and
+cancel invitations with `invitations.list` and `invitations.cancel`. To send
+the email again, cancel the invitation and create a new one.
 
-Invitation creation does not send a notification email. Admission requires the
-inviter to remain an active owner and cannot replace an active membership.
+An Organization sends at most 60 invitations in 24 hours. Admission requires
+the inviter to remain an active owner and cannot replace an active membership.
 
 ## Use the same commands through MCP
 

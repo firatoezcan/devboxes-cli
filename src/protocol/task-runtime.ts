@@ -44,6 +44,11 @@ export const managedExecutorVariables = {
   amd64: { url: "DEVBOX_EXECUTOR_AMD64_URL", sha256: "DEVBOX_EXECUTOR_AMD64_SHA256" },
   arm64: { url: "DEVBOX_EXECUTOR_ARM64_URL", sha256: "DEVBOX_EXECUTOR_ARM64_SHA256" },
 } as const;
+/**
+ * The exit code of executor-bootstrap when the executor download stalled. Its termination message
+ * then names the cause, which the Run's error quotes; every other failure exits 1 and writes none.
+ */
+export const executorDownloadStalledExitCode = 75;
 /** Where executor-bootstrap prepares managedTmpSubPath, which the Task container mounts at /tmp. */
 export const managedTmpVolumeDir = "/run/devboxes/tmp";
 export const managedTmpSubPath = "tmp";

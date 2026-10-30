@@ -29,6 +29,16 @@ const artifactUrl = (location: string) => {
   return url;
 };
 
+/** How long the executor download may receive no data before Bun fails it with a TimeoutError. */
+const executorStallSeconds = 30;
+
+/**
+ * The cause of a stalled executor download from `url`, for the Run's error: its host and the bound,
+ * then `message`, the TimeoutError's own text.
+ */
+export const stalledExecutorDownload = (url: string, message: string) =>
+  `The devboxes executor download from ${new URL(url).host} received no data for ${executorStallSeconds} seconds: ${message}`;
+
 export const stageExecutorArtifact = async (
   artifact: { url: string; sha256: string },
   destination: string,
@@ -37,7 +47,7 @@ export const stageExecutorArtifact = async (
   const directory = await mkdtemp(join(dirname(destination), ".executor-"));
   try {
     const staged = join(directory, "executor");
-    const response = await fetch(url, { redirect: "error" });
+    const response = await fetch(url, { redirect: "error", timeout: executorStallSeconds * 1000 });
     const body = response.body;
     if (!response.ok || !body)
       throw new Error(`The private executor artifact answered ${response.status}.`);

@@ -86,7 +86,6 @@ await symlink(
 const scoped = { DEVBOXES_API_URL: "https://api.example.com", DEVBOXES_TOKEN: "scoped" };
 const unusedOrigin = "http://127.0.0.1:9";
 const listen = ["--json", "--api", "https://api.example.com", "runner", "listen"];
-const localDocker = { DOCKER_HOST: undefined, DEVBOX_OPENCODE_DOCKER_SOCKET_PATH: undefined };
 
 /**
  * Runs the CLI in a pseudo-terminal, with an `open` and an `xdg-open` on PATH that only record
@@ -179,65 +178,65 @@ describe("devboxes entrypoint", () => {
     });
   });
 
-  it.skipIf(process.platform === "win32").each([
+  it.each([
     [
       "a shared token file",
       [...listen, "--token-file", sharedTokenFile],
-      localDocker,
+      {},
       "INVALID_RUNNER_TOKEN_FILE",
     ],
     [
       "an empty token file",
       [...listen, "--token-file", emptyTokenFile],
-      localDocker,
+      {},
       "INVALID_RUNNER_TOKEN_FILE",
     ],
     [
       "a missing token file",
       [...listen, "--token-file", join(fixtureDirectory, "absent")],
-      localDocker,
+      {},
       "INVALID_RUNNER_TOKEN_FILE",
     ],
     [
       "a state directory other users can write",
       [...listen, "--token-file", privateTokenFile, "--state-directory", sharedStateDirectory],
-      localDocker,
+      {},
       "INVALID_RUNNER_STATE_DIRECTORY",
     ],
     [
       "a state directory other users can write, after a token file that links to a private file",
       [...listen, "--token-file", linkedTokenFile, "--state-directory", sharedStateDirectory],
-      localDocker,
+      {},
       "INVALID_RUNNER_STATE_DIRECTORY",
     ],
     [
       "a token file this user cannot read",
       [...listen, "--token-file", unreadableTokenFile],
-      localDocker,
+      {},
       "INVALID_RUNNER_TOKEN_FILE",
     ],
     [
       "a token file that is a FIFO",
       [...listen, "--token-file", fifoTokenFile],
-      localDocker,
+      {},
       "INVALID_RUNNER_TOKEN_FILE",
     ],
     [
       "a relay key that is a symbolic link",
       [...listen, "--token-file", privateTokenFile, "--state-directory", linkedRelayKeyDirectory],
-      localDocker,
+      {},
       "INVALID_RUNNER_STATE_DIRECTORY",
     ],
     [
       "a relay key other users can read",
       [...listen, "--token-file", privateTokenFile, "--state-directory", sharedRelayKeyDirectory],
-      localDocker,
+      {},
       "INVALID_RUNNER_STATE_DIRECTORY",
     ],
     [
       "a Runner that was never added",
       listen,
-      { ...localDocker, XDG_CONFIG_HOME: join(fixtureDirectory, "never-added") },
+      { XDG_CONFIG_HOME: join(fixtureDirectory, "never-added") },
       "RUNNER_NOT_ADDED",
     ],
     [
@@ -1427,6 +1426,7 @@ describe("devboxes runner add", () => {
 describe("devboxes runner listen", () => {
   const runnerTokenFile = join(fixtureDirectory, "runner-token");
   const engine = { name: "Test Engine", gateway: "127.0.0.1" };
+  const fixtureDocker = { DOCKER_HOST: `unix://${join(fixtureDirectory, "docker.sock")}` };
   const docker = Bun.serve({
     unix: join(fixtureDirectory, "docker.sock"),
     fetch: (request) => {
@@ -1435,6 +1435,8 @@ describe("devboxes runner listen", () => {
         return Response.json({ OperatingSystem: engine.name, SecurityOptions: [] });
       if (pathname.endsWith("/networks/bridge"))
         return Response.json({ IPAM: { Config: [{ Gateway: engine.gateway }] } });
+      if (/\/containers\/[^/]+\/json$/.test(pathname))
+        return Response.json({ message: "No such container" }, { status: 404 });
       return Response.json({ message: `Unexpected ${pathname}` }, { status: 500 });
     },
   });
@@ -1446,8 +1448,6 @@ describe("devboxes runner listen", () => {
     "listen",
     "--token-file",
     runnerTokenFile,
-    "--docker-socket",
-    join(fixtureDirectory, "docker.sock"),
     "--state-directory",
     await mkdtemp(join(fixtureDirectory, "state-")),
   ];
@@ -1458,7 +1458,7 @@ describe("devboxes runner listen", () => {
     await writeFile(runnerTokenFile, "devboxes_runner_fixture\n", { mode: 0o600 });
     const listener = Bun.spawn([process.execPath, "src/cli.ts", ...(await listenTo(origin))], {
       cwd: join(import.meta.dir, ".."),
-      env: { ...process.env, ...localDocker, ...env },
+      env: { ...process.env, ...fixtureDocker, ...env },
       stdin: "ignore",
       stdout: "ignore",
       stderr: "pipe",
@@ -1482,77 +1482,134 @@ describe("devboxes runner listen", () => {
     };
   };
 
-  it.skipIf(process.platform === "win32")(
-    "retries a server error and a 404 after its first successful poll, names an invalid response, and stops without finishing its wait",
-    async () => {
-      const serve = (failure: {
-        path: "assignments" | "claim";
-        status: number;
-        code: string;
-        message: string;
-      }) => {
-        let failed = false;
-        return Bun.serve({
-          hostname: "127.0.0.1",
-          port: 0,
-          fetch: (request) => {
-            const path = new URL(request.url).pathname.split("/").at(-1);
-            if (path === failure.path && !failed) {
-              failed = true;
-              const { status, code, message } = failure;
-              return Response.json({ error: { code, message } }, { status });
-            }
-            return path === "assignments"
-              ? Response.json({ tasks: [] })
-              : Response.json({ task: { id: "not-a-task" } });
-          },
-        });
-      };
-      const serverErrorApi = serve({
-        path: "assignments",
-        status: 503,
-        code: "SERVICE_UNAVAILABLE",
-        message: "The API is restarting.",
+  it("retries a server error and a 404 after its first successful poll, names an invalid response, and stops without finishing its wait", async () => {
+    const serve = (failure: {
+      path: "assignments" | "claim";
+      status: number;
+      code: string;
+      message: string;
+    }) => {
+      let failed = false;
+      return Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: (request) => {
+          const path = new URL(request.url).pathname.split("/").at(-1);
+          if (path === failure.path && !failed) {
+            failed = true;
+            const { status, code, message } = failure;
+            return Response.json({ error: { code, message } }, { status });
+          }
+          return path === "assignments"
+            ? Response.json({ tasks: [] })
+            : Response.json({ task: { id: "not-a-task" } });
+        },
       });
-      const lateNotFoundApi = serve({
-        path: "claim",
-        status: 404,
-        code: "TASK_NOT_FOUND",
-        message: "The Task is not assigned.",
-      });
-      try {
-        await using serverError = await spawnListener(serverErrorApi.url.origin);
-        await using lateNotFound = await spawnListener(lateNotFoundApi.url.origin);
-        const runners = [serverError, lateNotFound];
-        await until(() =>
-          runners.every(
-            (runner) =>
-              runner.output.stderr.split("Polling failed").length > 2 ||
-              runner.listener.exitCode !== null,
-          ),
-        );
+    };
+    const serverErrorApi = serve({
+      path: "assignments",
+      status: 503,
+      code: "SERVICE_UNAVAILABLE",
+      message: "The API is restarting.",
+    });
+    const lateNotFoundApi = serve({
+      path: "claim",
+      status: 404,
+      code: "TASK_NOT_FOUND",
+      message: "The Task is not assigned.",
+    });
+    try {
+      await using serverError = await spawnListener(serverErrorApi.url.origin);
+      await using lateNotFound = await spawnListener(lateNotFoundApi.url.origin);
+      const runners = [serverError, lateNotFound];
+      await until(() =>
+        runners.every(
+          (runner) =>
+            runner.output.stderr.split("Polling failed").length > 2 ||
+            runner.listener.exitCode !== null,
+        ),
+      );
 
-        expect(serverError.output.stderr).toContain(
-          "SERVICE_UNAVAILABLE (HTTP 503): The API is restarting.",
-        );
-        expect(lateNotFound.output.stderr).toContain(
-          "TASK_NOT_FOUND (HTTP 404): The Task is not assigned.",
-        );
-        for (const runner of runners) {
-          expect(runner.output.stderr).toMatch(/claim response .*\/task/);
-          const stopping = performance.now();
-          runner.listener.kill("SIGTERM");
-          expect(await runner.listener.exited).toBe(0);
-          expect(performance.now() - stopping).toBeLessThan(2_000);
-        }
-      } finally {
-        await Promise.all([serverErrorApi.stop(true), lateNotFoundApi.stop(true)]);
+      expect(serverError.output.stderr).toContain(
+        "SERVICE_UNAVAILABLE (HTTP 503): The API is restarting.",
+      );
+      expect(lateNotFound.output.stderr).toContain(
+        "TASK_NOT_FOUND (HTTP 404): The Task is not assigned.",
+      );
+      for (const runner of runners) {
+        expect(runner.output.stderr).toMatch(/claim response .*\/task/);
+        const stopping = performance.now();
+        runner.listener.kill("SIGTERM");
+        expect(await runner.listener.exited).toBe(0);
+        expect(performance.now() - stopping).toBeLessThan(2_000);
       }
-    },
-    30_000,
-  );
+    } finally {
+      await Promise.all([serverErrorApi.stop(true), lateNotFoundApi.stop(true)]);
+    }
+  }, 30_000);
 
-  it.skipIf(process.platform === "win32").each([
+  it("reports a start that failed before its container existed again after a server error, and drops the report the API refuses", async () => {
+    const taskId = crypto.randomUUID();
+    const reports: unknown[] = [];
+    let claims = 0;
+    using api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async (request) => {
+        const path = new URL(request.url).pathname.split("/").at(-1);
+        if (path === "assignments") return Response.json({ tasks: [] });
+        if (path === "claim") {
+          claims += 1;
+          if (claims > 1) return Response.json({ task: null });
+          return Response.json({
+            task: {
+              id: taskId,
+              executorId: null,
+              containerId: null,
+              status: "queued",
+              image: `registry.devboxes.test/workspace@sha256:${"a".repeat(64)}`,
+              platform: "linux/amd64",
+              daemon: {
+                sha256: "0".repeat(64),
+                version: "test",
+                url: `${new URL(request.url).origin}/executor`,
+              },
+              claudeCode: null,
+              traceparent: `00-${"1".repeat(32)}-${"2".repeat(16)}-01`,
+            },
+          });
+        }
+        if (path === "reconcile") {
+          reports.push(await request.json());
+          return reports.length === 1
+            ? Response.json(
+                { error: { code: "SERVICE_UNAVAILABLE", message: "The API is restarting." } },
+                { status: 503 },
+              )
+            : Response.json(
+                { error: { code: "TASK_NOT_FOUND", message: "The Task does not exist." } },
+                { status: 404 },
+              );
+        }
+        return new Response(null, { status: 404 });
+      },
+    });
+    await using runner = await spawnListener(api.url.origin);
+
+    await until(() => claims >= 2 || runner.listener.exitCode !== null);
+
+    const report = {
+      taskId,
+      observation: "start-failed",
+      reason: "The private executor artifact answered 404.",
+    };
+    expect(reports).toEqual([report, report]);
+    expect(
+      runner.output.stderr.split(`The start failure of Task ${taskId} was refused`),
+    ).toHaveLength(2);
+  }, 60_000);
+
+  it.each([
     [401, "RUNNER_TOKEN_REVOKED", "The Runner credential is unavailable."],
     [404, "NOT_FOUND", "The requested route does not exist."],
   ])("stops when its first poll is rejected with HTTP %i", async (status, code, message) => {
@@ -1563,8 +1620,8 @@ describe("devboxes runner listen", () => {
     });
     try {
       await writeFile(runnerTokenFile, "devboxes_runner_fixture\n", { mode: 0o600 });
-      const human = await runCli(await listenTo(api.url.origin), localDocker);
-      const json = await runCli(["--json", ...(await listenTo(api.url.origin))], localDocker);
+      const human = await runCli(await listenTo(api.url.origin), fixtureDocker);
+      const json = await runCli(["--json", ...(await listenTo(api.url.origin))], fixtureDocker);
 
       expect(human.exitCode).toBe(1);
       expect(human.stderr).toBe(`${code} (HTTP ${status}): ${message}\n`);
@@ -1575,28 +1632,43 @@ describe("devboxes runner listen", () => {
     }
   });
 
-  it.skipIf(process.platform === "win32")(
-    "refuses a Docker engine whose Task containers cannot reach this host, and names it",
-    async () => {
-      engine.name = "Ubuntu 24.04.3 LTS";
-      engine.gateway = "192.0.2.1";
-      try {
-        await writeFile(runnerTokenFile, "devboxes_runner_fixture\n", { mode: 0o600 });
-        const refused = await runCli(["--json", ...(await listenTo(unusedOrigin))], localDocker);
+  it("fails with one JSON error that names the Docker CLI's answer when it cannot name its engine", async () => {
+    await writeFile(runnerTokenFile, "devboxes_runner_fixture\n", { mode: 0o600 });
+    const refused = await runCli(["--json", ...(await listenTo(unusedOrigin))], {
+      DOCKER_HOST: undefined,
+      DOCKER_CONFIG: await mkdtemp(join(fixtureDirectory, "docker-config-")),
+      DOCKER_CONTEXT: "missing-context",
+    });
 
-        expect(refused.exitCode).toBe(1);
-        expect(JSON.parse(refused.stderr)).toMatchObject({
-          error: {
-            code: "DOCKER_ENGINE_UNSUPPORTED",
-            message: expect.stringContaining('"Ubuntu 24.04.3 LTS"'),
-          },
-        });
-      } finally {
-        engine.name = "Test Engine";
-        engine.gateway = "127.0.0.1";
-      }
-    },
-  );
+    expect(refused.exitCode).toBe(1);
+    expect(JSON.parse(refused.stderr)).toMatchObject({
+      error: {
+        message: expect.stringContaining(
+          'docker context inspect failed, so devboxes cannot tell which Docker engine to use: context "missing-context"',
+        ),
+      },
+    });
+  });
+
+  it("refuses a Docker engine whose Task containers cannot reach this host, and names it", async () => {
+    engine.name = "Ubuntu 24.04.3 LTS";
+    engine.gateway = "192.0.2.1";
+    try {
+      await writeFile(runnerTokenFile, "devboxes_runner_fixture\n", { mode: 0o600 });
+      const refused = await runCli(["--json", ...(await listenTo(unusedOrigin))], fixtureDocker);
+
+      expect(refused.exitCode).toBe(1);
+      expect(JSON.parse(refused.stderr)).toMatchObject({
+        error: {
+          code: "DOCKER_ENGINE_UNSUPPORTED",
+          message: expect.stringContaining('"Ubuntu 24.04.3 LTS"'),
+        },
+      });
+    } finally {
+      engine.name = "Test Engine";
+      engine.gateway = "127.0.0.1";
+    }
+  });
 
   it.skipIf(process.platform !== "darwin").each([
     [undefined, "DO_NOT_TRACK=1"],
@@ -2045,75 +2117,71 @@ describe("devboxes signup and login", () => {
       await api.stop(true);
     }
   });
-  it.skipIf(process.platform === "win32")(
-    "exits after an interactive browser sign-in while the browser opener still runs",
-    async () => {
-      const openerDirectory = join(fixtureDirectory, "opener");
-      const openerPid = join(fixtureDirectory, "opener.pid");
-      await mkdir(openerDirectory, { recursive: true });
-      for (const name of ["open", "xdg-open"]) {
-        await writeFile(
-          join(openerDirectory, name),
-          `#!/bin/sh\necho $$ > ${openerPid}.tmp\nmv ${openerPid}.tmp ${openerPid}\nexec sleep 30\n`,
-          {
-            mode: 0o755,
-          },
-        );
-      }
-      const api = Bun.serve({
-        hostname: "127.0.0.1",
-        port: 0,
-        fetch: async (request) => {
-          const { pathname } = new URL(request.url);
-          if (pathname === "/api/auth/device/code")
-            return Response.json({
-              device_code: "device-code",
-              user_code: "ABCDEFGH",
-              verification_uri_complete: new URL("/device?user_code=ABCDEFGH", request.url).href,
-              expires_in: 60,
-              interval: 0,
-            });
-          if (pathname === "/api/auth/device/token") {
-            while (!(await Bun.file(openerPid).exists())) await Bun.sleep(50);
-            return Response.json({ access_token: "device-session", token_type: "Bearer" });
-          }
-          return Response.json({
-            session: {},
-            user: { id: "user", email: "device@example.com", name: "Device", emailVerified: true },
-          });
-        },
-      });
-      const login = Bun.spawn(
-        [
-          process.execPath,
-          "src/cli.ts",
-          "--config",
-          join(fixtureDirectory, "opener.json"),
-          "--api",
-          api.url.origin,
-          "login",
-          "--github",
-        ],
+  it("exits after an interactive browser sign-in while the browser opener still runs", async () => {
+    const openerDirectory = join(fixtureDirectory, "opener");
+    const openerPid = join(fixtureDirectory, "opener.pid");
+    await mkdir(openerDirectory, { recursive: true });
+    for (const name of ["open", "xdg-open"]) {
+      await writeFile(
+        join(openerDirectory, name),
+        `#!/bin/sh\necho $$ > ${openerPid}.tmp\nmv ${openerPid}.tmp ${openerPid}\nexec sleep 30\n`,
         {
-          cwd: join(import.meta.dir, ".."),
-          env: { ...process.env, PATH: `${openerDirectory}:${process.env.PATH}` },
-          terminal: {},
+          mode: 0o755,
         },
       );
-      try {
-        const exited = await Promise.race([login.exited, Bun.sleep(10_000).then(() => null)]);
-
-        expect(exited).toBe(0);
-      } finally {
-        login.kill();
-        await api.stop(true);
-        if (await Bun.file(openerPid).exists()) {
-          Bun.spawnSync(["kill", await Bun.file(openerPid).text()]);
+    }
+    const api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async (request) => {
+        const { pathname } = new URL(request.url);
+        if (pathname === "/api/auth/device/code")
+          return Response.json({
+            device_code: "device-code",
+            user_code: "ABCDEFGH",
+            verification_uri_complete: new URL("/device?user_code=ABCDEFGH", request.url).href,
+            expires_in: 60,
+            interval: 0,
+          });
+        if (pathname === "/api/auth/device/token") {
+          while (!(await Bun.file(openerPid).exists())) await Bun.sleep(50);
+          return Response.json({ access_token: "device-session", token_type: "Bearer" });
         }
+        return Response.json({
+          session: {},
+          user: { id: "user", email: "device@example.com", name: "Device", emailVerified: true },
+        });
+      },
+    });
+    const login = Bun.spawn(
+      [
+        process.execPath,
+        "src/cli.ts",
+        "--config",
+        join(fixtureDirectory, "opener.json"),
+        "--api",
+        api.url.origin,
+        "login",
+        "--github",
+      ],
+      {
+        cwd: join(import.meta.dir, ".."),
+        env: { ...process.env, PATH: `${openerDirectory}:${process.env.PATH}` },
+        terminal: {},
+      },
+    );
+    try {
+      const exited = await Promise.race([login.exited, Bun.sleep(10_000).then(() => null)]);
+
+      expect(exited).toBe(0);
+    } finally {
+      login.kill();
+      await api.stop(true);
+      if (await Bun.file(openerPid).exists()) {
+        Bun.spawnSync(["kill", await Bun.file(openerPid).text()]);
       }
-    },
-    20_000,
-  );
+    }
+  }, 20_000);
 });
 
 describe("devboxes after a refusal for an old sign-in", () => {
