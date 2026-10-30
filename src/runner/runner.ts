@@ -2,8 +2,8 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 
 import { confirm, isCancel, select, text } from "@clack/prompts";
-import { platformConfigHome } from "@firops/connections/local/config";
-import { writeSecretFile } from "@firops/connections/local/secret-file";
+import { platformConfigHome } from "../connections/config";
+import { writeSecretFile } from "../secret-file";
 import type { Command } from "commander";
 import Type from "typebox";
 

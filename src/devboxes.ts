@@ -1,5 +1,5 @@
 import { isCancel, password, select, text } from "@clack/prompts";
-import type { JsonValue } from "@firops/platform/protocol/json";
+import type { JsonValue } from "./protocol/json";
 import type { Command } from "commander";
 import Type from "typebox";
 import Value from "typebox/value";

@@ -4,15 +4,15 @@ import { constants } from "node:fs";
 import { mkdir, open, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-import { dockerSocketPath } from "@firops/devbox/runner/docker-socket";
-import { DockerOpencodeTaskRuntime } from "@firops/devbox/runner/docker-task-runtime";
-import { stalledExecutorDownload } from "@firops/devbox/runner/executor-artifact";
-import type { JsonValue } from "@firops/platform/protocol/json";
+import { dockerSocketPath } from "./docker-socket";
+import { DockerOpencodeTaskRuntime } from "./docker-task-runtime";
+import { stalledExecutorDownload } from "./executor-artifact";
+import type { JsonValue } from "../protocol/json";
 import {
   type RunnerAssignmentsSchema,
   type RunnerClaimSchema,
   runnerAnswers,
-} from "@firops/platform/protocol/runner-callbacks";
+} from "../protocol/runner-callbacks";
 import { proxy } from "hono/proxy";
 import { jwtVerify, SignJWT } from "jose";
 import Type, { type Static } from "typebox";

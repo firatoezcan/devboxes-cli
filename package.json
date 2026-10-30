@@ -11,44 +11,48 @@
     "url": "git+https://github.com/firatoezcan/devboxes-cli.git"
   },
   "type": "module",
-  "scripts": {
-    "build": "bun scripts/build-cli-binaries.ts",
-    "build:smoke": "bun scripts/build-cli-binaries.ts --smoke",
-    "devboxes:local": "bun src/cli.ts",
-    "test": "bun ../../scripts/run-workspace-tests.ts --task=test --timeout=60000 --changed=${DEVBOXES_CHANGED_BASE:-origin/dev}",
-    "test:full": "bun ../../scripts/run-workspace-tests.ts --task=test:full --timeout=60000"
-  },
   "dependencies": {
-    "@better-fetch/fetch": "catalog:",
+    "@better-fetch/fetch": "1.3.3",
     "@clack/prompts": "^1.7.0",
-    "@firops/connections": "workspace:*",
-    "@firops/devbox": "workspace:*",
-    "@firops/platform": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@opentelemetry/api": "catalog:",
-    "@opentelemetry/core": "catalog:",
-    "better-auth": "catalog:",
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/core": "2.7.0",
+    "better-auth": "1.7.13",
     "commander": "^14.0.3",
-    "dockerode": "catalog:",
-    "effect": "catalog:",
-    "elysia": "catalog:",
-    "hono": "catalog:",
-    "jose": "catalog:",
-    "oauth4webapi": "catalog:",
-    "tar-stream": "catalog:",
+    "dockerode": "5.0.1",
+    "effect": "4.0.1",
+    "elysia": "2.0.0-rc.0",
+    "hono": "4.12.15",
+    "jose": "6.2.12",
+    "oauth4webapi": "3.8.6",
+    "tar-stream": "3.1.7",
     "tough-cookie": "6.0.1",
-    "typebox": "catalog:"
+    "typebox": "^1.4.3"
   },
   "devDependencies": {
-    "@types/dockerode": "catalog:",
+    "@types/dockerode": "^4.0.1",
     "@types/node": "^26.6.5",
-    "@types/tar-stream": "catalog:",
-    "bun-types": "catalog:",
+    "@types/tar-stream": "3.1.5",
+    "bun-types": "1.4.4",
     "drizzle-orm": "1.0.0-rc.5",
-    "tsrs": "catalog:"
+    "tsrs": "0.18.0-ts7.1.0-dev.20260929"
   },
   "engines": {
     "bun": ">=1.4.4"
   },
-  "packageManager": "pnpm@12.15.0"
+  "exports": {
+    "./protocol/*": "./src/protocol/*.ts",
+    "./provider-connect/*": "./src/provider-connect/*.ts"
+  },
+  "scripts": {
+    "build": "bun scripts/build-cli-binaries.ts",
+    "build:smoke": "bun scripts/build-cli-binaries.ts --smoke",
+    "devboxes:local": "bun src/cli.ts",
+    "test": "bun test --isolate --no-orphans --timeout 60000",
+    "test:full": "bun test --isolate --no-orphans --timeout 60000"
+  },
+  "patchedDependencies": {
+    "better-auth@1.7.13": "patches/better-auth.patch",
+    "drizzle-kit@1.0.0-rc.5": "patches/drizzle-kit@1.0.0-rc.5.patch"
+  }
 }
