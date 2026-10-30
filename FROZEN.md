@@ -62,7 +62,13 @@ boundaries, not compatibility guarantees for retired protocols.
 - `packages/devbox/src/runner/docker-task-runtime.ts` owns Docker launch.
   The container name is `devboxes-task-<taskId>` and its identity label is
   `devboxes.task`. Launch reuses the existing named container when present.
-  It also owns the Claude Code volume of a Claude subscription Run.
+  It keeps the executor of its latest launch's digest in
+  `<state directory>/executors/<sha256>`, hashes it against the digest at each
+  launch, downloads it only when it is missing or doesn't match, deletes
+  everything else in `executors` that it can, and hard-links it into the Task's
+  directory. An entry it can't delete yet stays for a later launch and never
+  fails this one. It also owns the Claude Code volume of a Claude
+  subscription Run.
 - `packages/devbox/src/runner/executor-artifact.ts` downloads the executor over
   HTTPS and verifies its SHA-256 digest before the Runner mounts it, and
   verifies Claude Code's npm tarball and the binary in it against the SHA-512
