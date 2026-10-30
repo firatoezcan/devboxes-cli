@@ -10,17 +10,6 @@ const require = createRequire(import.meta.url);
 const { nativePackageByTarget } = require(join(import.meta.dir, "devboxes.cjs")) as {
   nativePackageByTarget: Record<string, string>;
 };
-const itOnPosix = process.platform === "win32" ? it.skip : it;
-const nativeTermination =
-  process.platform === "win32"
-    ? {
-        program: "setTimeout(() => process.exit(44), 10);",
-        result: { code: 44, signal: null },
-      }
-    : {
-        program: 'setTimeout(() => process.kill(process.pid, "SIGHUP"), 10);',
-        result: { code: null, signal: "SIGHUP" },
-      };
 
 const nativePackage = nativePackageByTarget[`${process.platform}-${process.arch}`];
 if (!nativePackage)
@@ -39,32 +28,12 @@ const installNativePackage = async (
     join(nativeRoot, "package.json"),
     `${JSON.stringify({ name: nativePackage, version: nativeVersion })}\n`,
   );
-  if (process.platform === "win32") {
-    const nativeSource = join(nativeRoot, "bin", "devboxes.ts");
-    await writeFile(nativeSource, nativeProgram);
-    const compiler = Bun.spawn(
-      [
-        process.execPath,
-        "build",
-        "--compile",
-        "--no-compile-autoload-dotenv",
-        "--no-compile-autoload-bunfig",
-        "--target=bun-windows-x64",
-        "--outfile",
-        nativeBinary,
-        nativeSource,
-      ],
-      { stdin: "ignore", stdout: "inherit", stderr: "inherit" },
-    );
-    if ((await compiler.exited) !== 0) throw new Error("Failed to compile the native fixture.");
-  } else {
-    // Like the release binary, which is compiled without .env autoloading.
-    await writeFile(
-      nativeBinary,
-      `#!/usr/bin/env -S ${process.execPath} --no-env-file\n${nativeProgram}\n`,
-    );
-    await chmod(nativeBinary, 0o755);
-  }
+  // Like the release binary, which is compiled without .env autoloading.
+  await writeFile(
+    nativeBinary,
+    `#!/usr/bin/env -S ${process.execPath} --no-env-file\n${nativeProgram}\n`,
+  );
+  await chmod(nativeBinary, 0o755);
 };
 
 const createInstalledLauncher = async (
@@ -142,7 +111,7 @@ process.stdin.on("end", () => {
     expect(stderr).toBe("native stderr");
   });
 
-  itOnPosix("forwards a targeted noninteractive Ctrl-C to the native command", async () => {
+  it("forwards a targeted noninteractive Ctrl-C to the native command", async () => {
     const launcher = await createInstalledLauncher(`
 process.on("SIGINT", () => {
   process.stdout.write("forwarded");
@@ -165,7 +134,7 @@ setInterval(() => {}, 1_000);
     expect(stdout).toBe("readyforwarded");
   });
 
-  itOnPosix("delivers one noninteractive process-group Ctrl-C", async () => {
+  it("delivers one noninteractive process-group Ctrl-C", async () => {
     const launcher = await createInstalledLauncher(`
 let signals = 0;
 process.on("SIGINT", () => {
@@ -232,7 +201,7 @@ setInterval(() => {}, 1_000);
     expect(output).not.toContain("signals:2");
   });
 
-  itOnPosix("forwards a targeted SIGTERM from an interactive launcher", async () => {
+  it("forwards a targeted SIGTERM from an interactive launcher", async () => {
     const launcher = await createInstalledLauncher(`
 process.on("SIGTERM", () => {
   process.stdout.write("forwarded\\n");
@@ -279,18 +248,15 @@ setTimeout(() => process.exit(97), 500);
         repository,
         dirname(dirname(launcher)),
       ],
-      { shell: true, stdio: "inherit" },
+      { stdio: "inherit" },
     );
     await expect(waitForExit(install)).resolves.toEqual({ code: 0, signal: null });
     await installNativePackage(join(repository, "node_modules"), program, "1.2.3");
     await writeFile(join(repository, ".env"), "DEVBOXES_API_URL=https://attacker.example\n");
 
-    // npm's command for the bin: on POSIX a link to the launcher, whose shebang runs, and on
-    // Windows the devboxes.cmd that npm writes from that shebang.
-    const command = `devboxes${process.platform === "win32" ? ".cmd" : ""}`;
-    const child = spawn(join(repository, "node_modules", ".bin", command), [], {
+    // npm links the bin to the launcher, whose shebang runs.
+    const child = spawn(join(repository, "node_modules", ".bin", "devboxes"), [], {
       cwd: repository,
-      shell: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -313,10 +279,12 @@ setTimeout(() => process.exit(97), 500);
   });
 
   it("preserves native termination", async () => {
-    const launcher = await createInstalledLauncher(nativeTermination.program);
+    const launcher = await createInstalledLauncher(
+      'setTimeout(() => process.kill(process.pid, "SIGHUP"), 10);',
+    );
     const child = spawn(process.execPath, ["--no-install", launcher], { stdio: "ignore" });
 
-    await expect(waitForExit(child)).resolves.toEqual(nativeTermination.result);
+    await expect(waitForExit(child)).resolves.toEqual({ code: null, signal: "SIGHUP" });
   });
 
   it("rejects a native package from a different devboxes release", async () => {
