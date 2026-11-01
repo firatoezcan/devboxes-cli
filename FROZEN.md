@@ -105,10 +105,9 @@ boundaries, not compatibility guarantees for retired protocols.
   writes to `/run/devboxes/egress` for the executor. Only the Task's
   `egress`-audience token authenticates there, at
   `/api/internal/execution/tasks/egress/model`, which answers the model
-  credential's current value, and at
-  `/api/internal/execution/tasks/egress/credential`, never its Run token. A
-  System Session's sidecar, whose environment sets `DEVBOX_SYSTEM_MODEL`,
-  reads and renews the system model's credential only at
+  credential's current value, never its Run token. A System Session's
+  sidecar, whose environment sets `DEVBOX_SYSTEM_MODEL`, reads the system
+  model's credential only at
   `/api/internal/execution/tasks/egress/system-model`.
   `apps/firops-api/src/execution/egress-proxy.ts` is the sidecar,
   `apps/elysia-opencode/src/executor/executor-proxy.ts` routes the executor
@@ -163,15 +162,28 @@ loopback. The sidecar writes the proxy's CA certificate, the executor's proxy
 URL and the agent's proxy URL, each with its own proxy session, into an
 `emptyDir` that the executor mounts read-only. The executor's URL is mode 0600
 for uid 1003, so bootstrap reads it as root before the privilege drop and keeps
-it only in memory. The executor sends through it only its model requests, its
-requests to the devboxes API and its requests to a sign-in's token host: the
-first two carry a header whose value only the executor's memory holds, so a
-request whose headers the agent configures, such as a remote MCP server's, goes
-around it. Bootstrap takes the stand-in Run token as the sign of a managed Task,
-and refuses to start without that URL. When the payload names bound secrets, the
-executor refuses to start without the agent's proxy URL; with it, the executor
-gives the agent `HTTPS_PROXY` and a CA bundle of the image's trusted CAs plus
-the proxy's, and redacts the session.
+it only in memory. The executor sends through it only its model requests and its
+requests to the devboxes API, which carry a header whose value only the
+executor's memory holds, so a request whose headers the agent configures, such
+as a remote MCP server's, goes around it. Bootstrap takes the stand-in Run token
+as the sign of a managed Task, and refuses to start without that URL. When the
+payload names bound secrets, the executor refuses to start without the agent's
+proxy URL; with it, the executor gives the agent `HTTPS_PROXY` and a CA bundle
+of the image's trusted CAs plus the proxy's, and redacts the session.
+
+Only the API refreshes a model account's sign-in. The payload,
+`model-accounts/runtime-read` and `egress/model` refresh a ChatGPT or xAI
+sign-in that expires within ten minutes before they answer it, and every Task,
+on managed capacity or on a Runner, holds `__devboxes-model-refresh__` in place
+of its refresh token. OpenCode refreshes within five minutes of expiry, so it
+sends no refresh while the API's refresh succeeds. When the provider's token
+endpoint fails into those last five minutes, OpenCode sends the stand-in, the
+provider refuses it, and the model request fails, as it did when the Task
+refreshed itself. A System Session's Task holds stand-ins with no expiry
+(`expires` 0), which the executor hands OpenCode as the largest safe integer,
+so OpenCode never refreshes them; only `egress/system-model` reads and
+refreshes the system model's credential. A GitHub Copilot sign-in keeps its
+token, which OpenCode sends as its bearer token and which doesn't expire.
 
 On managed capacity, the executor holds only the fixed stand-ins of
 `credentialStandIns` in `packages/platform/src/protocol/egress.ts`: its
@@ -182,22 +194,15 @@ On managed capacity, the executor holds only the fixed stand-ins of
 executor's proxy session sets the Run token as the Authorization header of
 requests to the devboxes API, in place of the executor's own, and leaves every
 other header as sent. It swaps the access token or key in headers of requests to
-the model's hosts, and on a sign-in's token host, even one that also serves the
-model, only the refresh token, in a request's body. agent-vault doesn't store
-the model credential: it resolves it at each request from the sidecar's hook, a
-Unix socket only uid 1003 may connect to, and the hook reads the model
-account's current credential from `egress/model`, so a renewal by any holder of
-the account applies to the next request and a restarted sidecar keeps nothing
-stale. A response from a sign-in's token host goes through the same hook, which
-stores the renewed tokens through the compare-and-swap at `egress/credential`,
-retried on a network failure or a 5xx, and answers stand-ins in their place, an
-ID token as `__devboxes-redacted-id-token__`. It reads a JSON or form-encoded
-answer, and fails one whose tokens it can't replace and one of any other content
-type. `model-accounts/runtime-write` refuses a managed Task with
-`MANAGED_CREDENTIAL_WRITE`. When the API refuses the `egress` sidecar's
-configuration for the rest of the Task, or the devboxes API URL isn't HTTPS on
-port 443, the sidecar exits with code 78 and the reason as its termination
-message, and the Task ends with that reason before it starts, without a retry.
+the model's hosts. agent-vault doesn't store the model credential: it resolves
+it at each request from the sidecar's hook, a Unix socket only uid 1003 may
+connect to, and the hook reads the model account's current credential from
+`egress/model`, so the API's refresh of the account applies to the next request
+and a restarted sidecar keeps nothing stale. When the API refuses the `egress`
+sidecar's configuration for the rest of the Task, or the devboxes API URL isn't
+HTTPS on port 443, the sidecar exits with code 78 and the reason as its
+termination message, and the Task ends with that reason before it starts,
+without a retry.
 The database Pod's init container ends the Task the same way; any other failure
 of it exits 1 with its reason as the termination message. Before the Run
 starts, any other exit of the Pod's containers, or a database Pod not Ready five

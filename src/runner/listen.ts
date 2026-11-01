@@ -132,8 +132,7 @@ export const listen = async (options: {
       const { pathname, search } = new URL(request.url);
       if (
         !pathname.startsWith("/api/internal/execution/tasks/") &&
-        pathname !== "/api/commands/model-accounts/runtime-read" &&
-        pathname !== "/api/commands/model-accounts/runtime-write"
+        pathname !== "/api/commands/model-accounts/runtime-read"
       )
         return Response.json(
           { error: { code: "NOT_RELAYED", message: "The Runner relays only Task callbacks." } },
