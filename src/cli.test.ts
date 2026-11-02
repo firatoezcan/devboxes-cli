@@ -2247,7 +2247,7 @@ describe("devboxes after a refusal for an old sign-in", () => {
               error: {
                 code: "SESSION_NOT_FRESH",
                 message:
-                  "This change needs a sign-in from the last 10 minutes. Sign in again, then repeat it.",
+                  "This change needs a sign-in from the last 5 minutes. Sign in again, then repeat it.",
               },
             },
             { status: 403 },
@@ -2256,7 +2256,7 @@ describe("devboxes after a refusal for an old sign-in", () => {
   });
   afterAll(() => api.stop(true));
   const rename = join(fixtureDirectory, "rename.json");
-  /** A saved account config whose session devboxes signed in more than 10 minutes ago. */
+  /** A saved account config whose session is too old for the change it makes. */
   const staleAccount = async (name: string) => {
     const config = join(fixtureDirectory, name);
     await writeFile(
