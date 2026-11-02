@@ -2,10 +2,10 @@ import { URLPattern } from "node:url";
 
 import type { BetterFetchOption } from "@better-fetch/fetch";
 import { isCancel, password as passwordPrompt, select, text } from "@clack/prompts";
+import { displayDeviceCode } from "@devboxes/protocol/device-code";
+import { JsonValueSchema, type JsonValue } from "@devboxes/protocol/json";
+import { describeErrors } from "@devboxes/protocol/validation-errors";
 import { writeConfig } from "@firops/connections/local/config";
-import { displayDeviceCode } from "@firops/platform/protocol/device-code";
-import { JsonValueSchema, type JsonValue } from "@firops/platform/protocol/json";
-import { describeErrors } from "@firops/platform/values/validation-errors";
 import { createAuthClient } from "better-auth/client";
 import { Option, type Command } from "commander";
 import { CookieJar } from "tough-cookie";

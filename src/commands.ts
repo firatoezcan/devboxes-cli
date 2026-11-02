@@ -3,10 +3,10 @@ import {
   type CatalogCommand,
   catalogCommands,
   commandDocumentSchema,
-} from "@firops/platform/protocol/command-catalog";
-import { JsonValueSchema, type JsonValue } from "@firops/platform/protocol/json";
-import { redactedSecret, secretRedactingReviver } from "@firops/platform/security/secret-redaction";
-import { describeErrors } from "@firops/platform/values/validation-errors";
+} from "@devboxes/protocol/command-catalog";
+import { JsonValueSchema, type JsonValue } from "@devboxes/protocol/json";
+import { redactedSecret, secretRedactingReviver } from "@devboxes/protocol/secret-redaction";
+import { describeErrors } from "@devboxes/protocol/validation-errors";
 import { defaultTextMapGetter, ROOT_CONTEXT, trace } from "@opentelemetry/api";
 import { W3CTraceContextPropagator } from "@opentelemetry/core";
 import Type, { type Static, type TObject, type TSchema } from "typebox";

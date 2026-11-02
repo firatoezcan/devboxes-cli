@@ -7,27 +7,27 @@ boundaries, not compatibility guarantees for retired protocols.
 
 ## Contract owners
 
-- `packages/platform/src/protocol/launch-spec.ts` defines
+- `packages/protocol/src/launch-spec.ts` defines
   `devboxes-native-launch` and the required Task environment: the Task
   identity and the Run's `TRACEPARENT`, which the Runner claim returns and the
   executor sends on every callback and Git request.
-- `packages/platform/src/protocol/runner-payload.ts` defines the native Task
+- `packages/protocol/src/runner-payload.ts` defines the native Task
   payload, execution snapshot, inputs, and Review results.
-- `packages/platform/src/protocol/execution-callbacks.ts` defines what each Task
+- `packages/protocol/src/execution-callbacks.ts` defines what each Task
   callback answers. Each schema is its route's `response`, which the API
   validates, and what the executor parses. Only Git's smart HTTP transport and
   `/capability` answer raw, and `law:callbacks-declare-their-answer` holds
   every other callback to a declared answer.
-- `packages/platform/src/protocol/task-runtime.ts` defines the Task container
+- `packages/protocol/src/task-runtime.ts` defines the Task container
   layout: the uids and gid, the home and workspace paths, the managed executor
   path, the executor environment, the executor drain time, and Runner heartbeat
   expiry.
-- `packages/platform/src/protocol/task-environment.ts` defines the environment
+- `packages/protocol/src/task-environment.ts` defines the environment
   keys the executor passes through to the agent, and the reserved Task keys.
-- `packages/platform/src/protocol/daemon-artifact.ts` defines the daemon
+- `packages/protocol/src/daemon-artifact.ts` defines the daemon
   release's bootstrap protocol and platforms. The API takes the executor digest
   that a Runner claim returns from that release.
-- `packages/platform/src/protocol/runner-callbacks.ts` defines what the Runner's
+- `packages/protocol/src/runner-callbacks.ts` defines what the Runner's
   claim, assignments and reconcile routes answer. Each schema is its route's
   `response`, which the API validates, and what `devboxes runner` parses. Every
   claim answer names the current executor for the Runner's platform, as the API
@@ -103,7 +103,7 @@ boundaries, not compatibility guarantees for retired protocols.
   Sandbox under either name with another uid, a lost create answer included,
   is deleted with both policies, and the Run retries with a new attempt and an
   alert.
-- `packages/platform/src/protocol/egress.ts` defines the egress sidecar's
+- `packages/protocol/src/egress.ts` defines the egress sidecar's
   environment, the configuration that `apps/firops-api/src/execution/egress.ts`
   answers at `/api/internal/execution/tasks/egress`, and the files the sidecar
   writes to `/run/devboxes/egress` for the executor. Only the Task's
@@ -190,7 +190,7 @@ refreshes the system model's credential. A GitHub Copilot sign-in keeps its
 token, which OpenCode sends as its bearer token and which doesn't expire.
 
 On managed capacity, the executor holds only the fixed stand-ins of
-`credentialStandIns` in `packages/platform/src/protocol/egress.ts`: its
+`credentialStandIns` in `packages/protocol/src/egress.ts`: its
 `DEVBOX_BACKEND_TOKEN` is `__devboxes-run-token__`, and the payload and
 `model-accounts/runtime-read` give each part of the model credential as
 `__devboxes-model-key__`, `__devboxes-model-access__` and

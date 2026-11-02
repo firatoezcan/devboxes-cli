@@ -21,9 +21,9 @@
   "dependencies": {
     "@better-fetch/fetch": "catalog:",
     "@clack/prompts": "^1.7.0",
+    "@devboxes/protocol": "workspace:*",
     "@firops/connections": "workspace:*",
     "@firops/devbox": "workspace:*",
-    "@firops/platform": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@opentelemetry/api": "catalog:",
     "@opentelemetry/core": "catalog:",
