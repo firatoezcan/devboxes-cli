@@ -1432,7 +1432,14 @@ describe("devboxes runner listen", () => {
     fetch: (request) => {
       const { pathname } = new URL(request.url);
       if (pathname.endsWith("/info"))
-        return Response.json({ OperatingSystem: engine.name, SecurityOptions: [] });
+        return Response.json({
+          OperatingSystem: engine.name,
+          SecurityOptions: [],
+          NCPU: 8,
+          MemTotal: 16 * 1024 ** 3,
+          MemoryLimit: true,
+          CpuCfsQuota: true,
+        });
       if (pathname.endsWith("/networks/bridge"))
         return Response.json({ IPAM: { Config: [{ Gateway: engine.gateway }] } });
       if (/\/containers\/[^/]+\/json$/.test(pathname))
@@ -1460,15 +1467,22 @@ describe("devboxes runner listen", () => {
     version: "test",
     url: `${new URL(request.url).origin}/executor`,
   });
-  const spawnListener = async (origin: string, env: Record<string, string | undefined> = {}) => {
+  const spawnListener = async (
+    origin: string,
+    env: Record<string, string | undefined> = {},
+    flags: string[] = [],
+  ) => {
     await writeFile(runnerTokenFile, "devboxes_runner_fixture\n", { mode: 0o600 });
-    const listener = Bun.spawn([process.execPath, "src/cli.ts", ...(await listenTo(origin))], {
-      cwd: join(import.meta.dir, ".."),
-      env: { ...process.env, ...fixtureDocker, ...env },
-      stdin: "ignore",
-      stdout: "ignore",
-      stderr: "pipe",
-    });
+    const listener = Bun.spawn(
+      [process.execPath, "src/cli.ts", ...(await listenTo(origin)), ...flags],
+      {
+        cwd: join(import.meta.dir, ".."),
+        env: { ...process.env, ...fixtureDocker, ...env },
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "pipe",
+      },
+    );
     const output = { stderr: "" };
     const reading = listener.stderr.pipeThrough(new TextDecoderStream()).pipeTo(
       new WritableStream({
@@ -1577,6 +1591,7 @@ describe("devboxes runner listen", () => {
               status: "queued",
               image: `registry.devboxes.test/workspace@sha256:${"a".repeat(64)}`,
               platform: "linux/amd64",
+              machineSize: "medium",
               daemon: executor,
               claudeCode: null,
               traceparent: `00-${"1".repeat(32)}-${"2".repeat(16)}-01`,
@@ -1646,6 +1661,7 @@ describe("devboxes runner listen", () => {
               status: "queued",
               image: `registry.devboxes.test/workspace@sha256:${"a".repeat(64)}`,
               platform: "linux/amd64",
+              machineSize: "medium",
               daemon: executor,
               claudeCode: null,
               traceparent: `00-${"1".repeat(32)}-${"2".repeat(16)}-01`,
@@ -1667,6 +1683,51 @@ describe("devboxes runner listen", () => {
       executorRequests: 1,
       reason: expect.stringContaining("/images/create"),
     });
+  }, 60_000);
+
+  it("claims with the lower of its owner's cap and what Docker reports, for CPUs and memory alike", async () => {
+    const claimsTo = () => {
+      const bodies: unknown[] = [];
+      const server = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: async (request) => {
+          if (new URL(request.url).pathname.endsWith("/assignments"))
+            return Response.json({ tasks: [] });
+          bodies.push(await request.json());
+          return Response.json({ task: null, executor: null });
+        },
+      });
+      return { server, bodies, [Symbol.dispose]: () => server.stop(true) };
+    };
+    using whole = claimsTo();
+    using capped = claimsTo();
+    using above = claimsTo();
+    await using wholeRunner = await spawnListener(whole.server.url.origin);
+    await using cappedRunner = await spawnListener(capped.server.url.origin, {}, [
+      "--cpus",
+      "2.5",
+      "--memory",
+      "3",
+    ]);
+    await using aboveRunner = await spawnListener(above.server.url.origin, {}, [
+      "--cpus",
+      "32",
+      "--memory",
+      "64",
+    ]);
+    const runners = [wholeRunner, cappedRunner, aboveRunner];
+    await until(
+      () =>
+        [whole, capped, above].every(({ bodies }) => bodies.length > 0) ||
+        runners.some((runner) => runner.listener.exitCode !== null),
+    );
+
+    expect([whole.bodies[0], capped.bodies[0], above.bodies[0]]).toEqual([
+      { cpus: 8, memoryBytes: 16 * 1024 ** 3 },
+      { cpus: 2.5, memoryBytes: 3 * 1024 ** 3 },
+      { cpus: 8, memoryBytes: 16 * 1024 ** 3 },
+    ]);
   }, 60_000);
 
   it("tries a failed executor download again on a later claim", async () => {
@@ -1703,6 +1764,7 @@ describe("devboxes runner listen", () => {
               status: "queued",
               image: `registry.devboxes.test/workspace@sha256:${"a".repeat(64)}`,
               platform: "linux/amd64",
+              machineSize: "medium",
               daemon: executor,
               claudeCode: null,
               traceparent: `00-${"1".repeat(32)}-${"2".repeat(16)}-01`,

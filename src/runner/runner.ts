@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { confirm, isCancel, select, text } from "@clack/prompts";
 import { platformConfigHome } from "@firops/connections/local/config";
 import { writeSecretFile } from "@firops/connections/local/secret-file";
-import type { Command } from "commander";
+import { type Command, InvalidArgumentError } from "commander";
 import Type from "typebox";
 
 import {
@@ -63,6 +63,8 @@ const runRunner = async (
     config?: string;
     tokenFile: string;
     stateDirectory: string;
+    cpus?: number;
+    memory?: number;
   },
 ) => {
   if (
@@ -92,9 +94,18 @@ const runRunner = async (
       : apiOrigin((await loadAccountContext(options)).config.apiBaseUrl),
     tokenFile: options.tokenFile,
     stateDirectory: options.stateDirectory,
+    cpus: options.cpus,
+    memoryGiB: options.memory,
   });
   // listen waits for every Task start; only a download of the next executor may still run.
   process.exit(0);
+};
+
+/** A command-line value that must be a number above 0. */
+const positiveNumber = (value: string) => {
+  const number = Number(value);
+  if (!(number > 0)) throw new InvalidArgumentError("Give a number above 0.");
+  return number;
 };
 
 export const addRunnerCommands = (program: Command) => {
@@ -112,6 +123,16 @@ export const addRunnerCommands = (program: Command) => {
       "--state-directory <path>",
       "Runner state with the relay's signing key, owner-only (0700; on Windows, its access-control list decides)",
       runnerDirectory(),
+    )
+    .option(
+      "--cpus <count>",
+      "The most CPUs devboxes may use on this machine; defaults to all that Docker reports",
+      positiveNumber,
+    )
+    .option(
+      "--memory <GiB>",
+      "The most memory, in GiB, devboxes may use on this machine; defaults to all that Docker reports",
+      positiveNumber,
     );
   command.action(async () => {
     const options = command.optsWithGlobals<{
@@ -119,6 +140,8 @@ export const addRunnerCommands = (program: Command) => {
       config?: string;
       tokenFile?: string;
       stateDirectory: string;
+      cpus?: number;
+      memory?: number;
     }>();
     const tokenFile = options.tokenFile ?? savedTokenFile();
     if (options.tokenFile === undefined && !(await Bun.file(tokenFile).exists()))

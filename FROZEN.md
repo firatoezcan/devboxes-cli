@@ -28,19 +28,28 @@ boundaries, not compatibility guarantees for retired protocols.
   release's bootstrap protocol and platforms. The API takes the executor digest
   that a Runner claim returns from that release.
 - `packages/protocol/src/runner-callbacks.ts` defines what the Runner's
-  claim, assignments and reconcile routes answer. Each schema is its route's
-  `response`, which the API validates, and what `devboxes runner` parses. Every
-  claim answer names the current executor for the Runner's platform, as the API
-  last read the release channel, at most once every five minutes for all
-  Runners, or null when that read failed. `devboxes runner listen` downloads a new one into its cache
+  claim, assignments and reconcile routes answer, and the claim's body: the
+  CPUs and memory devboxes may use on the Runner's machine, the lower of what
+  its Docker engine reports and the `--cpus` and `--memory` cap of
+  `devboxes runner listen`. Each schema is its route's `response`, which the API
+  validates, and what `devboxes runner` parses. Every claim answer names the
+  current executor for the Runner's platform, as the API last read the release
+  channel, at most once every five minutes for all Runners, or null when that
+  read failed. `devboxes runner listen` downloads a new one into its cache
   without waiting for it, so the first Task after a release finds it there.
 - `apps/firops-api/src/execution/runners.ts` owns
   `/api/internal/execution/runners` claims, assignments, stop reports, and
-  Runner heartbeat expiry. A start that fails before the Task's container
-  exists, the Runner reports to `/reconcile` as `start-failed` with its reason.
-  The API then holds the Task from `/claim` for 1, 4 and then 15 minutes, as
-  `nextRetry` schedules a managed retry, and after the third retry ends the Run
-  with that reason.
+  Runner heartbeat expiry. A claim hands out another Task while the machine
+  sizes of the Runner's live Tasks and that Task fit what the claim says it may
+  use, and one Task to a Runner that runs none. It reads the live Tasks in the
+  transaction that claims, so claims that arrive together can't overfill the
+  Runner. A claim with an empty body, which a CLI up to 0.10.0 sends, gets 403
+  `RUNNER_OUTDATED`, which stops that listener and names the release to update
+  to. A start that fails before the Task's container exists, the Runner reports
+  to `/reconcile` as `start-failed` with its reason. The API then holds the
+  Task from `/claim` for 1, 4 and then 15 minutes, as `nextRetry` schedules a
+  managed retry, and hands out other Tasks that fit meanwhile. After the third
+  retry it ends the Run with that reason.
 - `apps/firops-api/src/execution/callbacks.ts` owns Task callbacks. The hidden
   `runtime-*` routes in `apps/firops-api/src/routes/commands/model-accounts.ts` are
   Task callbacks for the Run's model account.
@@ -51,7 +60,9 @@ boundaries, not compatibility guarantees for retired protocols.
 - `apps/devboxes-cli/src/runner/listen.ts` owns the Runner's relay. It signs
   each executor's token, accepts only Task callbacks with it, and forwards them
   to the API with the Runner credential and the token's Task in
-  `devboxes-task`. The API accepts no token from a Runner's container.
+  `devboxes-task`. The API accepts no token from a Runner's container. At
+  start it says once when Docker reports that it can't limit a container's
+  memory or CPUs, as on rootless Docker without delegated cgroup controllers.
 - `apps/firops-api/src/execution/capabilities.ts` owns the capability
   callbacks: `/capabilities` lists the Run's capabilities with their argument
   schemas, and `/capability` runs one. It is the authority for a
@@ -71,8 +82,10 @@ boundaries, not compatibility guarantees for retired protocols.
   hashes it against the digest, downloads it only when it is missing or doesn't
   match, deletes everything else in `executors` that it can, and for a launch
   hard-links it into the Task's directory. An entry it can't delete yet stays
-  for a later staging and never fails this one. It also owns the Claude Code
-  volume of a Claude subscription Run.
+  for a later staging and never fails this one. It limits a Task's container to
+  the CPUs and memory of its machine size, at most what the Runner may use, and
+  gives it no swap. It also owns the Claude Code volume of a Claude
+  subscription Run.
 - `packages/devbox/src/runner/executor-artifact.ts` downloads the executor over
   HTTPS and verifies its SHA-256 digest before the Runner mounts it, and
   verifies Claude Code's npm tarball and the binary in it against the SHA-512

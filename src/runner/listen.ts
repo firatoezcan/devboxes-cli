@@ -5,6 +5,7 @@ import { mkdir, open, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import type { JsonValue } from "@devboxes/protocol/json";
+import { machineSizeResources } from "@devboxes/protocol/project";
 import {
   type RunnerAssignmentsSchema,
   type RunnerClaimSchema,
@@ -35,6 +36,9 @@ export const listen = async (options: {
   apiOrigin: string;
   tokenFile: string;
   stateDirectory: string;
+  /** The most CPUs and GiB of memory its owner lets devboxes use; the whole machine when unset. */
+  cpus?: number;
+  memoryGiB?: number;
 }) => {
   /**
    * Whether only this user can read or change a file. Windows synthesizes a stat's mode from file
@@ -96,6 +100,20 @@ export const listen = async (options: {
     stateDirectory: directory,
   });
   const engine = await runtime.docker.info();
+  const capacity = {
+    cpus: Math.min(options.cpus ?? engine.NCPU, engine.NCPU),
+    memoryBytes: Math.floor(
+      Math.min((options.memoryGiB ?? Number.POSITIVE_INFINITY) * 1024 ** 3, engine.MemTotal),
+    ),
+  };
+  const limits = Value.Parse(
+    Type.Object({ MemoryLimit: Type.Boolean(), CpuCfsQuota: Type.Boolean() }),
+    engine,
+  );
+  if (!limits.MemoryLimit || !limits.CpuCfsQuota)
+    console.error(
+      "This Docker engine can't limit a container's memory or CPUs, so Tasks run without their machine size's limits. On rootless Docker, delegate the cgroup controllers to your user, as Docker's rootless guide describes under Limiting resources.",
+    );
   const rootless = engine.SecurityOptions.includes("name=rootless");
   let relayReachable = !rootless;
   let hostname = "127.0.0.1";
@@ -230,8 +248,13 @@ export const listen = async (options: {
   const startClaimed = async (task: NonNullable<Static<typeof RunnerClaimSchema>["task"]>) => {
     const existing = await runtime.inspect(task.executorId ?? `devboxes-task-${task.id}`);
     if (!existing) {
+      const size = machineSizeResources[task.machineSize];
       const container = await runtime.create({
         ...task,
+        resources: {
+          cpus: Math.min(size.cpus, capacity.cpus),
+          memoryBytes: Math.min(size.memoryBytes, capacity.memoryBytes),
+        },
         apiBaseUrl,
         token: await new SignJWT()
           .setProtectedHeader({ alg: "HS256" })
@@ -327,7 +350,7 @@ export const listen = async (options: {
         throw error;
       }
       if (starting.size === 0) {
-        const { task, executor } = await api("claim", {});
+        const { task, executor } = await api("claim", capacity);
         if (executor && executor.sha256 !== prefetched) {
           prefetched = executor.sha256;
           runtime.stageExecutor(executor).catch((error: Error) => {
