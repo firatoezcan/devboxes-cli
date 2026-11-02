@@ -341,6 +341,7 @@ describe("devboxes invoke", () => {
             "/api/commands/sessions/dispatch": {
               post: {
                 operationId: "sessions.dispatch",
+                summary: "Start Sessions in the Project",
                 "x-devboxes": {
                   effect: "write",
                   roles: ["owner", "admin", "member", "reviewer", "viewer"],
@@ -352,6 +353,7 @@ describe("devboxes invoke", () => {
             "/api/commands/sessions/list": {
               post: {
                 operationId: "sessions.list",
+                summary: "List the Organization's Sessions",
                 "x-devboxes": {
                   effect: "read",
                   roles: ["owner", "admin", "member", "reviewer", "viewer"],
@@ -363,6 +365,7 @@ describe("devboxes invoke", () => {
             "/api/commands/delegations/create": {
               post: {
                 operationId: "delegations.create",
+                summary: "Create a token that acts for a member with limited access",
                 "x-devboxes": {
                   effect: "write",
                   roles: ["owner", "admin", "member", "reviewer", "viewer"],
@@ -374,6 +377,7 @@ describe("devboxes invoke", () => {
             "/api/commands/sessions/events": {
               post: {
                 operationId: "sessions.events",
+                summary: "Read a Session's agent log",
                 "x-devboxes": {
                   effect: "read",
                   roles: ["owner", "admin", "member", "reviewer", "viewer"],
@@ -385,6 +389,7 @@ describe("devboxes invoke", () => {
             "/api/commands/sessions/inspect": {
               post: {
                 operationId: "sessions.inspect",
+                summary: "Read Sessions and their results",
                 "x-devboxes": {
                   effect: "read",
                   roles: ["owner", "admin", "member", "reviewer", "viewer"],
@@ -600,7 +605,12 @@ describe("devboxes commands", () => {
     openapi: "3.0.3",
     paths: {
       "/api/commands/billing/portal": {
-        post: { operationId: "billing.portal", "x-devboxes": contract, responses: {} },
+        post: {
+          operationId: "billing.portal",
+          summary: "Open the Stripe customer portal for the Organization's subscription",
+          "x-devboxes": contract,
+          responses: {},
+        },
       },
     },
   });
@@ -623,7 +633,9 @@ describe("devboxes commands", () => {
     ];
     for (const contract of contracts) {
       const listed = await list(contract);
-      expect(listed.stdout).toBe("billing.portal\twrite\n");
+      expect(listed.stdout).toBe(
+        "billing.portal\twrite\tOpen the Stripe customer portal for the Organization's subscription\n",
+      );
       expect(listed.exitCode).toBe(0);
     }
   });
@@ -654,6 +666,7 @@ describe("devboxes invoke in a terminal", () => {
   const operation = (operationId: string, schema: JsonValue) => ({
     post: {
       operationId,
+      summary: "Run the command",
       "x-devboxes": {
         effect: "write",
         roles: ["owner", "admin", "member", "reviewer", "viewer"],
@@ -923,6 +936,7 @@ describe("devboxes connect", () => {
   const operation = (operationId: string) => ({
     post: {
       operationId,
+      summary: "Run the command",
       "x-devboxes": {
         effect: "write",
         roles: ["owner", "admin"],
@@ -1293,7 +1307,14 @@ describe("devboxes runner add", () => {
               },
             ].map(({ operationId, ...contract }) => [
               `/api/commands/${operationId.replace(".", "/")}`,
-              { post: { operationId, "x-devboxes": contract, responses: {} } },
+              {
+                post: {
+                  operationId,
+                  summary: "Run the command",
+                  "x-devboxes": contract,
+                  responses: {},
+                },
+              },
             ]),
           ),
         });
@@ -1925,6 +1946,7 @@ describe("devboxes mcp", () => {
     const operation = (operationId: string) => ({
       post: {
         operationId,
+        summary: "List the Organization's Sessions",
         "x-devboxes": {
           effect: "read",
           roles: ["owner", "admin", "member", "reviewer", "viewer"],
@@ -1968,7 +1990,13 @@ describe("devboxes mcp", () => {
       });
 
       expect(listed.structuredContent).toEqual({
-        commands: [{ operationId: "sessions.list", effect: "read" }],
+        commands: [
+          {
+            operationId: "sessions.list",
+            effect: "read",
+            summary: "List the Organization's Sessions",
+          },
+        ],
       });
       expect(inspected.isError).toBeUndefined();
       expect(inspected.structuredContent).toMatchObject({
@@ -2413,6 +2441,7 @@ describe("devboxes after a refusal for an old sign-in", () => {
             "/api/commands/organizations/update": {
               post: {
                 operationId: "organizations.update",
+                summary: "Change the Organization's settings",
                 "x-devboxes": {
                   effect: "write",
                   elevated: true,

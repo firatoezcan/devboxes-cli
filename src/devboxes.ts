@@ -55,11 +55,9 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
     } else {
       for (const operation of description.commands) {
         await writeOutput(
-          `${[
-            operation.operationId,
-            operation["x-devboxes"].effect,
-            ...(operation.summary ? [operation.summary] : []),
-          ].join("\t")}\n`,
+          `${[operation.operationId, operation["x-devboxes"].effect, operation.summary].join(
+            "\t",
+          )}\n`,
         );
       }
     }
