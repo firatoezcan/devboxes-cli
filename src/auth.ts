@@ -3,13 +3,13 @@ import { URLPattern } from "node:url";
 import type { BetterFetchOption } from "@better-fetch/fetch";
 import { isCancel, password as passwordPrompt, select, text } from "@clack/prompts";
 import { displayDeviceCode } from "@devboxes/protocol/device-code";
-import { JsonValueSchema, type JsonValue } from "@devboxes/protocol/json";
+import type { JsonValue } from "@devboxes/protocol/json";
 import { describeErrors } from "@devboxes/protocol/validation-errors";
 import { writeConfig } from "@firops/connections/local/config";
 import { createAuthClient } from "better-auth/client";
 import { Option, type Command } from "commander";
 import { CookieJar } from "tough-cookie";
-import Type, { type Static, type TObject } from "typebox";
+import Type, { type Static } from "typebox";
 import Value from "typebox/value";
 
 import { cliUserAgent } from "./api";
@@ -23,7 +23,6 @@ import {
   httpUrl,
   openInBrowser,
   parseResponse,
-  readCommandInput,
   writeOutput,
 } from "./commands";
 import { loadAccountContext, type AccountContext } from "./connection";
@@ -38,15 +37,7 @@ const authenticationSchema = Type.Object({
   token: Type.Union([Type.String({ minLength: 1 }), Type.Null()]),
   user: userSchema,
 });
-const ownSessionSelectionSchema = Type.Object(
-  { id: Type.String({ minLength: 1, description: "The session id that /list-sessions returns" }) },
-  { additionalProperties: false },
-);
-const sessionSelectionSchemas = new Map<string, TObject>([
-  ["/revoke-session", ownSessionSelectionSchema],
-]);
 const oauthFailureSchema = Type.Object({ error: Type.String(), error_description: Type.String() });
-const listedSessionSchema = Type.Object({ id: Type.String(), token: Type.String() });
 
 const signInMethods: {
   method: "github" | "google" | "email" | "password";
@@ -67,6 +58,8 @@ type AccountOptions = {
   google?: boolean;
   email?: string;
   codeStdin?: boolean;
+  secondFactorStdin?: boolean;
+  emailSecondFactor?: boolean;
   passwordStdin?: boolean;
   json?: boolean;
 };
@@ -90,7 +83,7 @@ const authenticationResponse = async (
       Record<string, string | number | boolean>,
       Record<string, string>
     >,
-    "body" | "method" | "params" | "query"
+    "body" | "method"
   > = {},
   redactResponse = true,
 ) => {
@@ -113,7 +106,7 @@ const authenticationResponse = async (
         if (new URL(url).origin !== origin || !endpoint.test(String(url))) {
           throw new CommandError(
             "INVALID_AUTH_ENDPOINT",
-            "The authentication endpoint escaped its advertised route.",
+            "The authentication endpoint escaped its route.",
           );
         }
         const cookie = cookies.getCookieStringSync(String(url));
@@ -131,7 +124,7 @@ const authenticationResponse = async (
             .flatMap((cookie) => (cookie.httpOnly ? [cookie.value] : [])),
         );
         if (!response.ok) {
-          for (const value of Object.values(options.body ?? options.query ?? {})) {
+          for (const value of Object.values(options.body ?? {})) {
             if (Value.Check(Type.String(), value)) secrets.push(value);
           }
         }
@@ -219,6 +212,18 @@ export const addAuthenticationCommands = (program: Command) => {
             "--password-stdin",
             "Sign in with the account password from stdin instead of a code",
           ).conflicts("codeStdin"),
+        )
+        .addOption(
+          new Option(
+            "--second-factor-stdin",
+            "Finish a password sign-in that asked for a second factor, with an authenticator or backup code from stdin",
+          ).conflicts(["github", "google", "email", "codeStdin", "passwordStdin"]),
+        )
+        .addOption(
+          new Option(
+            "--email-second-factor",
+            "Email a code for that second factor; with --second-factor-stdin, finish the sign-in with it",
+          ).conflicts(["github", "google", "email", "codeStdin", "passwordStdin"]),
         );
     const methods =
       action === "signup"
@@ -240,6 +245,43 @@ export const addAuthenticationCommands = (program: Command) => {
             (entry.method === "password") === (action === "signup" || !!options.passwordStdin),
       );
       const context = await loadAccountContext(options);
+      const report = async (user: Static<typeof userSchema>) => {
+        await writeOutput(
+          `${
+            options.json
+              ? JSON.stringify({ user: Value.Clean(userSchema, user), signedIn: true })
+              : `Signed in as ${user.email}.`
+          }\n`,
+        );
+      };
+      if (options.secondFactorStdin || options.emailSecondFactor) {
+        if (!options.secondFactorStdin) {
+          await requestAuthentication(context, "/two-factor/send-otp", {
+            method: "POST",
+            body: {},
+          });
+          await writeOutput(
+            `${
+              options.json
+                ? JSON.stringify({ signedIn: false, codeSent: true })
+                : "devboxes emailed you a code. Pipe it into devboxes login --email-second-factor --second-factor-stdin."
+            }\n`,
+          );
+          return;
+        }
+        const code = (await Bun.stdin.text()).replace(/\s/g, "");
+        const path = options.emailSecondFactor
+          ? "/two-factor/verify-otp"
+          : /^\d{6}$/.test(code)
+            ? "/two-factor/verify-totp"
+            : "/two-factor/verify-backup-code";
+        const verified = await requestAuthentication(context, path, {
+          method: "POST",
+          body: { code },
+        });
+        await report(parseResponse(authenticationSchema, verified.data, path).user);
+        return;
+      }
       if (!choice) {
         if (!interactive) {
           throw new CommandError(
@@ -256,15 +298,6 @@ export const addAuthenticationCommands = (program: Command) => {
         if (isCancel(selected)) throw new CommandError("CANCELLED", "Authentication cancelled.");
         choice = selected;
       }
-      const report = async (user: Static<typeof userSchema>) => {
-        await writeOutput(
-          `${
-            options.json
-              ? JSON.stringify({ user: Value.Clean(userSchema, user), signedIn: true })
-              : `Signed in as ${user.email}.`
-          }\n`,
-        );
-      };
 
       if (choice.method === "github" || choice.method === "google") {
         const device = (
@@ -463,7 +496,7 @@ export const addAuthenticationCommands = (program: Command) => {
                       twoFactorRequired: true,
                       twoFactorMethods: challenge.twoFactorMethods,
                     })
-                  : 'Two-factor verification is required. Pipe {"code":"<authenticator code>"} into devboxes auth /two-factor/verify-totp --input -, or {"code":"<backup code>"} into devboxes auth /two-factor/verify-backup-code --input -. To get a code by email, pipe {} into devboxes auth /two-factor/send-otp --input -, then {"code":"<emailed code>"} into devboxes auth /two-factor/verify-otp --input -.'
+                  : "Two-factor verification is required. Pipe an authenticator or backup code into devboxes login --second-factor-stdin. For a code by email, run devboxes login --email-second-factor, then pipe the code into devboxes login --email-second-factor --second-factor-stdin."
               }\n`,
             );
             return;
@@ -572,178 +605,6 @@ export const addAuthenticationCommands = (program: Command) => {
           ? JSON.stringify({ signedOut: true })
           : "Signed out. The session has been revoked."
       }\n`,
-    );
-  });
-
-  const nativeAuth = program
-    .command("auth")
-    .description(
-      "discover or run account and security operations, such as two-factor sign-in and sessions",
-    )
-    .argument("[path]", "Native authentication endpoint path; omit to list its generated schema")
-    .option("--method <method>", "GET or POST when an endpoint supports both")
-    .option("--input <source>", "Invoke with JSON from @file or - for stdin; omit to describe");
-  nativeAuth.action(async (endpoint?: string) => {
-    if (process.env.DEVBOXES_TOKEN !== undefined) {
-      throw new CommandError(
-        "SCOPED_AUTHENTICATION",
-        "Scoped connections cannot manage a personal account.",
-      );
-    }
-    const options = nativeAuth.optsWithGlobals<{
-      api?: string;
-      config?: string;
-      json?: boolean;
-      input?: string;
-      method?: string;
-    }>();
-    const context = await loadAccountContext(options);
-    const response = await requestAuthentication(context, "/open-api/generate-schema");
-    const document = parseResponse(
-      Type.Object({
-        paths: Type.Record(Type.String(), Type.Record(Type.String(), Type.Unknown())),
-        components: Type.Optional(Type.Unknown()),
-      }),
-      response.data,
-      "/open-api/generate-schema",
-    );
-    const operations = [];
-    for (const [path, methods] of Object.entries(document.paths)) {
-      for (const [method, schema] of Object.entries(methods)) {
-        if (method !== "get" && method !== "post") continue;
-        if (!Value.Check(Type.Record(Type.String(), Type.Unknown()), schema)) continue;
-        const selection = sessionSelectionSchemas.get(path);
-        operations.push({
-          schema: selection
-            ? {
-                ...schema,
-                requestBody: {
-                  required: true,
-                  content: { "application/json": { schema: selection } },
-                },
-              }
-            : schema,
-          path,
-          method,
-        });
-      }
-    }
-    if (!endpoint) {
-      await writeOutput(
-        `${JSON.stringify(
-          { operations, components: document.components },
-          null,
-          options.json ? undefined : 2,
-        )}\n`,
-      );
-      return;
-    }
-    const matches = operations.filter(
-      (entry) =>
-        entry.path === endpoint &&
-        (!options.method || entry.method === options.method.toLowerCase()),
-    );
-    const [operation] = matches;
-    if (!operation)
-      throw new CommandError(
-        "UNKNOWN_AUTH_OPERATION",
-        "The installed authentication owner does not advertise this endpoint and method.",
-      );
-    if (matches.length > 1)
-      throw new CommandError(
-        "AUTH_METHOD_REQUIRED",
-        "This endpoint accepts GET and POST. Select one with --method.",
-      );
-    if (!options.input) {
-      await writeOutput(
-        `${JSON.stringify(
-          { operation, components: document.components },
-          null,
-          options.json ? undefined : 2,
-        )}\n`,
-      );
-      return;
-    }
-    const submitted = await readCommandInput(options.input);
-    if (!Value.Check(Type.Record(Type.String(), JsonValueSchema), submitted))
-      throw new CommandError("INVALID_INPUT", "Authentication input must be a JSON object.");
-    let input = submitted;
-    if (operation.path === "/revoke-session") {
-      if (!Value.Check(ownSessionSelectionSchema, submitted))
-        throw new CommandError(
-          "INVALID_INPUT",
-          "Select the session to revoke by the id that /list-sessions returns.",
-        );
-      const listed = await requestAuthentication(context, "/list-sessions", {}, false);
-      const token = parseResponse(
-        Type.Array(listedSessionSchema),
-        listed.data,
-        "/list-sessions",
-      ).find((listedSession) => listedSession.id === submitted.id)?.token;
-      if (!token)
-        throw new CommandError(
-          "SESSION_NOT_FOUND",
-          "No active session of this account has that id.",
-        );
-      input = { token };
-    }
-    if (
-      !operation.path.startsWith("/") ||
-      operation.path.startsWith("//") ||
-      operation.path.includes("..") ||
-      operation.path.includes("?") ||
-      operation.path.includes("#")
-    ) {
-      throw new CommandError(
-        "INVALID_DISCOVERY",
-        "The authentication owner advertised an invalid endpoint path.",
-      );
-    }
-    const params: Record<string, string> = {};
-    const path = operation.path.replace(/\{([^}]+)\}/g, (_match, name: string) => {
-      const value = input[name];
-      if (!Value.Check(Type.String({ minLength: 1 }), value)) {
-        throw new CommandError(
-          "INVALID_INPUT",
-          `Authentication input requires path parameter ${name}.`,
-        );
-      }
-      delete input[name];
-      params[name] = value;
-      return `:${name}`;
-    });
-    const query = operation.method === "get" ? input : undefined;
-    if (
-      query &&
-      !Value.Check(
-        Type.Record(Type.String(), Type.Union([Type.String(), Type.Number(), Type.Boolean()])),
-        query,
-      )
-    )
-      throw new CommandError(
-        "INVALID_INPUT",
-        "GET authentication input accepts string, number, and boolean query values.",
-      );
-    const result = await requestAuthentication(context, path, {
-      method: operation.method.toUpperCase(),
-      params,
-      body: operation.method === "post" ? input : undefined,
-      query,
-    });
-    await writeOutput(
-      `${JSON.stringify(
-        {
-          status: result.status,
-          data: Value.Check(authenticationSchema, result.data)
-            ? {
-                user: Value.Clean(userSchema, result.data.user),
-                signedIn: result.data.token !== null,
-              }
-            : result.data,
-        },
-        null,
-        options.json ? undefined : 2,
-      )}\n`,
     );
   });
 };

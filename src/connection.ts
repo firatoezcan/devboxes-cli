@@ -1,5 +1,6 @@
 import {
   loadContext,
+  writeConfig,
   type DevboxesCliOptions,
   type DevboxesContext,
 } from "@firops/connections/local/config";
@@ -93,7 +94,14 @@ export const loadCommandConnection = async (
       "Sign in with devboxes login before invoking commands.",
     );
   }
-  const connection = { origin: apiOrigin(context.config.apiBaseUrl), token: tokenFromConfig };
+  const connection = {
+    origin: apiOrigin(context.config.apiBaseUrl),
+    token: tokenFromConfig,
+    saveToken: async (token: string) => {
+      context.config.sessionToken = token;
+      await writeConfig(context);
+    },
+  };
   return {
     ...connection,
     ...(logIn &&

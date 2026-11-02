@@ -23,6 +23,11 @@ export type CommandConnection = {
   token: string;
   organizationId?: string;
   /**
+   * Saves the session token a response hands over in `set-auth-token`, which replaces the account
+   * session's when the change ends that session, as turning on two-factor authentication does.
+   */
+  saveToken?: (token: string) => Promise<void>;
+  /**
    * Signs the person at the terminal in again and answers the new session token, for an account
    * session that may ask: `requestJson` then sends a request refused with SESSION_NOT_FRESH once more.
    */
@@ -245,7 +250,9 @@ export const requestJson = async (
     headers,
     redirect: "error",
     jsonParser: (text) => credentialSafeJson(text, [connection.token]),
-    onResponse: ({ response }) => {
+    onResponse: async ({ response }) => {
+      const replaced = response.headers.get("set-auth-token");
+      if (replaced && connection.saveToken) await connection.saveToken(replaced);
       traceId =
         trace.getSpanContext(
           w3cTraceContext.extract(

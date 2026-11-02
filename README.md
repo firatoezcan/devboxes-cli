@@ -40,19 +40,11 @@ Credentials are saved atomically with file mode `0600`. Use `--config <path>` to
 keep separate API origins or accounts in separate files. `devboxes logout`
 revokes the current session and clears its saved credential.
 
-`devboxes auth` reads Better Auth's generated schema and exposes the installed
-two-factor, email-code, password, account, session, and factor-management
-endpoints. An endpoint that accepts both GET and POST requires `--method GET` or
-`--method POST`. GET input supplies query parameters; template-path parameters
-use the same JSON object. Authentication operations follow the native owner's
-semantics. Enrollment results contain authenticator secrets and backup codes;
+Manage the account with the `account.*` commands, such as `account.devices`,
+`account.enable-two-factor` and `account.change-password`; `devboxes commands`
+lists them. They take only a signed-in account, never a scoped connection.
+Enabling two-factor authentication and replacing backup codes return secrets;
 store them privately.
-
-The CLI redacts session tokens from its output. To revoke one session, submit
-`{"id":"<session id>"}` from `/list-sessions` to `/revoke-session`. The CLI
-resolves that session's token itself and fails with `SESSION_NOT_FOUND` when the
-listing has no session with that id. Describing the operation shows this id
-input.
 
 ## Discover and invoke application commands
 
