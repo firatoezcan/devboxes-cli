@@ -172,57 +172,58 @@ export const addAuthenticationCommands = (program: Command) => {
       .command(action)
       .description(
         action === "signup"
-          ? "create an account with GitHub, Google, or your email and a password"
-          : "sign in with GitHub, Google, a code sent to your email, or your password",
+          ? "Create a devboxes account. With --github or --google, it's a single run through the browser. With an email address, it takes two runs. First, run `devboxes signup --email <address> --password-stdin` and pipe in the new password; this emails you a code and exits. Then run `devboxes signup --email <address> --code-stdin` and pipe in that code to finish creating the account."
+          : "Sign in with GitHub, with Google, with a code sent to your email, or with your password. For a password sign-in, run `devboxes login --email <address> --password-stdin` and pipe in the password.\n\nIf the account has two-factor authentication, the sign-in then waits for a second factor. To finish, run `devboxes login --second-factor-stdin` and pipe in a code from your authenticator app (6 digits) or a backup code (anything else). If you'd rather get the code by email, run `devboxes login --email-second-factor` first, then pipe the emailed code into `devboxes login --email-second-factor --second-factor-stdin`.",
       )
       .addOption(
-        new Option("--github", "Continue with GitHub in a browser").conflicts([
-          "google",
-          "email",
-          "codeStdin",
-          "passwordStdin",
-        ]),
+        new Option(
+          "--github",
+          action === "signup"
+            ? "Sign up with GitHub in a browser."
+            : "Sign in with GitHub in a browser.",
+        ).conflicts(["google", "email", "codeStdin", "passwordStdin"]),
       )
       .addOption(
-        new Option("--google", "Continue with Google in a browser").conflicts([
-          "email",
-          "codeStdin",
-          "passwordStdin",
-        ]),
+        new Option(
+          "--google",
+          action === "signup"
+            ? "Sign up with Google in a browser."
+            : "Sign in with Google in a browser.",
+        ).conflicts(["email", "codeStdin", "passwordStdin"]),
       );
     if (action === "signup")
       command
-        .option("--email <email>", "Create the account for this email address")
-        .option("--password-stdin", "Read the new account's password from stdin")
+        .option("--email <email>", "Create the account for this email address.")
+        .option("--password-stdin", "Read the new account's password from stdin.")
         .addOption(
           new Option(
             "--code-stdin",
-            "Read the emailed code from stdin and finish creating the account",
+            "Read the emailed code from stdin and finish creating the account. The code has to be piped in; in a terminal with nothing piped in, it refuses with CODE_INPUT_REQUIRED.",
           ).conflicts("passwordStdin"),
         );
     else
       command
         .option(
           "--email <email>",
-          "Sign in with this email address, by default with an emailed code",
+          "Sign in with this email address. By default, devboxes emails you a code.",
         )
-        .option("--code-stdin", "Read the emailed code from stdin and finish the sign-in")
+        .option("--code-stdin", "Read the emailed code from stdin and finish signing in.")
         .addOption(
           new Option(
             "--password-stdin",
-            "Sign in with the account password from stdin instead of a code",
+            "Sign in with your account password, read from stdin, instead of an emailed code.",
           ).conflicts("codeStdin"),
         )
         .addOption(
           new Option(
             "--second-factor-stdin",
-            "Finish a password sign-in that asked for a second factor, with an authenticator or backup code from stdin",
+            "Finish a password sign-in that's waiting for a second factor, reading the code from stdin. Six digits count as an authenticator code; anything else counts as a backup code.",
           ).conflicts(["github", "google", "email", "codeStdin", "passwordStdin"]),
         )
         .addOption(
           new Option(
             "--email-second-factor",
-            "Email a code for that second factor; with --second-factor-stdin, finish the sign-in with it",
+            "Have devboxes email you a code for the second factor. Then pass it with --email-second-factor --second-factor-stdin to finish signing in.",
           ).conflicts(["github", "google", "email", "codeStdin", "passwordStdin"]),
         );
     const methods =
@@ -566,7 +567,9 @@ export const addAuthenticationCommands = (program: Command) => {
 
   const logout = program
     .command("logout")
-    .description("revoke the current session and remove its saved credential");
+    .description(
+      "Sign out. This revokes your current sign-in on the server and deletes the saved credential from this computer.",
+    );
   logout.action(async () => {
     const options = logout.optsWithGlobals<{ config?: string; api?: string; json?: boolean }>();
     if (process.env.DEVBOXES_TOKEN !== undefined) {

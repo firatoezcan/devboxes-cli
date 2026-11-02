@@ -111,27 +111,31 @@ const positiveNumber = (value: string) => {
 export const addRunnerCommands = (program: Command) => {
   const runner = program
     .command("runner")
-    .description("run this computer as a Runner of your Organization");
+    .description(
+      "Run this computer as a Runner, a machine of your own that runs your Organization's work instead of devboxes' managed machines. Register it first with devboxes runner add, then start it with devboxes runner listen.",
+    );
   const command = runner
     .command("listen")
-    .description("launch assigned Tasks and observe their Docker executors")
+    .description(
+      "Start this computer working as a Runner. It runs in the foreground until you stop it. Each piece of work the Runner claims runs in its own Docker container, and listen keeps telling devboxes how each one is doing: running, finished with its result, or gone.\n\nlisten doesn't restart a container that failed. It keeps the failed container so you can inspect it, and prints the command that removes it. Stopping listen doesn't stop the work: the containers keep running, and listen picks them up again the next time it starts.\n\nContainers send their callbacks to the relay, a local endpoint that listen runs. The relay forwards them to devboxes signed with the Runner's key, so the key never enters a container. For the same reason, listen won't start if the key file or the state files belong to another user, or if anyone else can read or write them.\n\nRegister the computer with devboxes runner add before you start it.",
+    )
     .option(
       "--token-file <path>",
-      "Runner key file from devboxes runner add, owner-only (0600; on Windows, its access-control list decides); defaults to the one it saved",
+      "The Runner's key file. By default it's devboxes/runner/token in the config folder, where devboxes runner add saved it. It must belong to you and be readable by nobody else (mode 0600; on Windows, its access-control list decides).",
     )
     .option(
       "--state-directory <path>",
-      "Runner state with the relay's signing key, owner-only (0700; on Windows, its access-control list decides)",
+      "The Runner's state directory, which holds the relay's signing key. By default it's devboxes/runner in the config folder. It must belong to you and be accessible to nobody else (mode 0700; on Windows, its access-control list decides).",
       runnerDirectory(),
     )
     .option(
       "--cpus <count>",
-      "The most CPUs devboxes may use on this machine; defaults to all that Docker reports",
+      "The most CPUs devboxes may use on this machine. By default, it uses all the CPUs Docker reports.",
       positiveNumber,
     )
     .option(
       "--memory <GiB>",
-      "The most memory, in GiB, devboxes may use on this machine; defaults to all that Docker reports",
+      "The most memory, in GiB, that devboxes may use on this machine. By default, it uses all the memory Docker reports.",
       positiveNumber,
     );
   command.action(async () => {
@@ -154,12 +158,17 @@ export const addRunnerCommands = (program: Command) => {
 
   const add = runner
     .command("add")
-    .description("add this computer as a Runner that runs your Organization's work")
+    .description(
+      "Register this computer as a Runner for an Organization's work. It saves the Runner's key as devboxes/runner/token in the config folder, where devboxes runner listen will find it. Because it calls runners.add, you need to be an owner or admin of the Organization and to have signed in within the last 5 minutes.",
+    )
     .option(
       "--organization <id>",
-      "The Organization whose work the Runner runs. In a terminal, devboxes asks for it.",
+      "The Organization whose work the Runner will run. In a terminal, devboxes asks for it if you leave it out.",
     )
-    .option("--name <name>", "The Runner's name. In a terminal, devboxes asks for it.");
+    .option(
+      "--name <name>",
+      "A name for the Runner. In a terminal, devboxes asks for it if you leave it out.",
+    );
   add.action(async () => {
     const options = add.optsWithGlobals<{
       api?: string;
