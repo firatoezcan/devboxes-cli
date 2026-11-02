@@ -279,6 +279,19 @@ export const listen = async (options: {
     try {
       const assignments = await api("assignments", {});
       connected = true;
+      /**
+       * Logs the API's refusal of a report about Task `taskId` and lets the poll go on to the
+       * other Tasks. A refusal that ends the listener, and a server error, fail the poll.
+       */
+      const refusedReport = (taskId: string) => (refusal: Error) => {
+        if (
+          refusal instanceof CommandError &&
+          !endsListener(refusal) &&
+          (refusal.options.status ?? 500) < 500
+        )
+          return console.error(`The report about Task ${taskId} was refused: ${refusal}`);
+        throw refusal;
+      };
       for (const task of assignments.tasks) {
         if (stopping) break;
         if (starting.has(task.id)) continue;
@@ -298,8 +311,9 @@ export const listen = async (options: {
             containerId: task.containerId,
             observation: "absent",
             observedAt: new Date().toISOString(),
-          });
-          console.info(`Task ${task.id} ended as ${result.status}; its executor is absent.`);
+          }).catch(refusedReport(task.id));
+          if (result)
+            console.info(`Task ${task.id} ended as ${result.status}; its executor is absent.`);
           continue;
         }
         if (executor.State.Status === "created") {
@@ -317,8 +331,8 @@ export const listen = async (options: {
                 startedAt: executor.State.StartedAt,
                 stoppedAt: executor.State.FinishedAt,
               }),
-        });
-        if (!executor.State.Running) {
+        }).catch(refusedReport(task.id));
+        if (result && !executor.State.Running) {
           if (
             result.status === "succeeded" ||
             result.status === "cancelled" ||

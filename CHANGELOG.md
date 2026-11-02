@@ -11,6 +11,7 @@
 
 ### Patch Changes
 
+- `devboxes runner listen` reports each Task's container on its own. When the API refuses one report, the listener logs it with its Task and goes on with the others. Before, one refused report failed the whole poll, so every other Task's start and end waited until the refusal cleared.
 - The CLI's published source holds only the files the CLI runs. Eleven files that nothing in it imports are gone, among them the `provider-connect` flows and three protocol modules, along with the Chat agent's log tools, which `devboxes mcp` never served. `devboxes mcp` serves `describe` and `invoke`, as before.
 
 ## 0.10.0

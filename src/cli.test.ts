@@ -1650,6 +1650,74 @@ describe("devboxes runner listen", () => {
     ).toHaveLength(2);
   }, 60_000);
 
+  it("reports each Task's executor on its own, so a report the API refuses holds up no other Task", async () => {
+    const [refused, accepted] = [crypto.randomUUID(), crypto.randomUUID()];
+    const reports: { taskId: string; observation: string }[] = [];
+    using api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async (request) => {
+        const path = new URL(request.url).pathname.split("/").at(-1);
+        const executor = absentExecutor(request);
+        if (path === "assignments")
+          return Response.json({
+            tasks: [refused, accepted].map((id) => ({
+              id,
+              executorId: null,
+              containerId: null,
+              status: "succeeded",
+              image: `registry.devboxes.test/workspace@sha256:${"a".repeat(64)}`,
+              platform: "linux/amd64",
+              machineSize: "medium",
+              toolCache: { organizationId: "cli-test", paths: [] },
+              daemon: executor,
+              claudeCode: null,
+              traceparent: `00-${"1".repeat(32)}-${"2".repeat(16)}-01`,
+            })),
+          });
+        if (path === "claim") return Response.json({ task: null, executor });
+        if (path === "reconcile") {
+          const report = (await request.json()) as { taskId: string; observation: string };
+          reports.push(report);
+          return report.taskId === refused
+            ? Response.json(
+                {
+                  error: {
+                    code: "EXECUTOR_CLOCK_INVALID",
+                    message:
+                      "Docker timestamps must describe this executor's observed lifetime or absence.",
+                  },
+                },
+                { status: 400 },
+              )
+            : Response.json({ status: "succeeded" });
+        }
+        return new Response(null, { status: 404 });
+      },
+    });
+    await using runner = await spawnListener(api.url.origin);
+
+    await until(
+      () =>
+        reports.some(({ taskId }) => taskId === accepted) ||
+        runner.output.stderr.split("Polling failed").length > 2 ||
+        runner.listener.exitCode !== null,
+    );
+
+    expect({
+      reported: reports.slice(0, 2).map(({ taskId, observation }) => ({ taskId, observation })),
+      refusal: runner.output.stderr.includes(
+        `The report about Task ${refused} was refused: EXECUTOR_CLOCK_INVALID (HTTP 400)`,
+      ),
+    }).toEqual({
+      reported: [
+        { taskId: refused, observation: "absent" },
+        { taskId: accepted, observation: "absent" },
+      ],
+      refusal: true,
+    });
+  }, 60_000);
+
   it("downloads the current executor while idle, so the next Task's launch needs no download", async () => {
     const taskId = crypto.randomUUID();
     const executorBytes = "#!/bin/sh\nexit 0\n";
