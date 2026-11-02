@@ -442,7 +442,7 @@ export const invokeCommand = async (
  * A devboxes command tool. Its run refuses input that `input` rejects, and returns that refusal or a
  * command failure as an error result the agent reads.
  */
-const commandTool = <Input extends TObject, Result>(
+export const commandTool = <Input extends TObject, Result>(
   name: string,
   description: string,
   input: Input,
@@ -466,9 +466,9 @@ const commandTool = <Input extends TObject, Result>(
 });
 
 /**
- * The devboxes command tools. `devboxes mcp` serves describe and invoke over stdio, and the Chat
- * native host runs all four in its own process. Each call reads the advertised commands with `readCommands`, which
- * by default asks the API again.
+ * The devboxes command tools, describe and invoke, which `devboxes mcp` serves over stdio and the
+ * Chat native host runs in its own process. Each call reads the advertised commands with
+ * `readCommands`, which by default asks the API again.
  */
 export const devboxesCommandTools = (
   connection: CommandConnection,
@@ -499,28 +499,5 @@ export const devboxesCommandTools = (
       input: Type.Unsafe<JsonValue>({}),
     }),
     (invocation) => invokeCommand(connection, invocation, readCommands),
-  ),
-  zoom: commandTool(
-    "devboxes_zoom",
-    "Open a line of a Chat log into the two lines it was made from, or a message whole with n 1. Pass this conversation's conversationId for its log, or none for Organization memory.",
-    Type.Object({
-      conversationId: Type.Optional(Type.String({ minLength: 1 })),
-      id: Type.Integer({ minimum: 0 }),
-      n: Type.Integer({ minimum: 1 }),
-    }),
-    (input) => invokeCommand(connection, { command: "chat.zoom", input }, readCommands),
-  ),
-  erase: commandTool(
-    "devboxes_erase",
-    "Erase messages of this conversation's Chat log, by the ids devboxes_zoom shows with n 1, when a person in this conversation asks for it: their text and who wrote them go, with the Organization memory entries they saved. Their posts in the chat stay.",
-    Type.Object({
-      conversationId: Type.String({ minLength: 1 }),
-      ids: Type.Array(Type.Integer({ minimum: 0 }), {
-        minItems: 1,
-        maxItems: 100,
-        uniqueItems: true,
-      }),
-    }),
-    (input) => invokeCommand(connection, { command: "chat.erase-messages", input }, readCommands),
   ),
 });

@@ -19,9 +19,11 @@ boundaries, not compatibility guarantees for retired protocols.
   `/capability` answer raw, and `law:callbacks-declare-their-answer` holds
   every other callback to a declared answer.
 - `packages/protocol/src/task-runtime.ts` defines the Task container
-  layout: the uids and gid, the home and workspace paths, the managed executor
-  path, the executor environment, the executor drain time, and Runner heartbeat
-  expiry.
+  layout: the uids and gid, the home and workspace paths, the executor
+  environment, the executor drain time, and Runner heartbeat expiry. The public
+  CLI source carries it. `packages/protocol/src/managed-task-runtime.ts` defines
+  the managed Task's Pod beside it: the egress proxy, the database Pod, and
+  executor-bootstrap's executor path, variables and exit code.
 - `packages/protocol/src/task-environment.ts` defines the environment
   keys the executor passes through to the agent, and the reserved Task keys.
 - `packages/protocol/src/daemon-artifact.ts` defines the daemon
