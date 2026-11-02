@@ -18,5 +18,5 @@
     "types": ["bun-types", "node"],
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "scripts/**/*.ts"]
+  "include": ["src/**/*.ts", "scripts/**/*.ts", "bin/**/*.ts", "vite.config.ts"]
 }
