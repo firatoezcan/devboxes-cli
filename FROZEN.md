@@ -377,6 +377,15 @@ home path with a signed read URL for its current archive on the executor's
 platform. `/tool-cache-upload` signs an archive's upload, and `/tool-cache-ack`
 makes it the path's current archive only while the archive the Run restored, or
 the absence of one, is still current. Review and recheck Runs get no paths.
+A Runner Task's paths come back `mounted`, without archives or a limit: the
+claim answer gives the Runner the Organization and the Project's paths, and the
+Runner keeps each path in a Docker volume on its machine named by the
+Organization, the platform and the path, which the Tasks of that Organization's
+Projects there share. Before a Task starts, the Runner gives each such volume
+and the folders above its mount to the agent's uid. At the Run's end the
+executor scans a mounted path that changed for sensitive secret values, as it
+scans an archive, and empties it when it holds one. Binding a Project to a
+Runner supersedes its archives.
 `/tool-cache` also returns `entryLimit`: without a paid plan, the largest
 archive of one path that `/tool-cache-upload` registers (`bytes`) and the reason
 the executor reports for a larger one (`refusal`). It is null on a paid plan and
