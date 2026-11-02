@@ -1,6 +1,6 @@
 {
   "name": "devboxes",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "private": true,
   "description": "devboxes CLI: discover and invoke application commands, authenticate, run execution capacity, and serve stdio MCP.",
   "homepage": "https://github.com/firatoezcan/devboxes-cli#readme",
@@ -41,8 +41,7 @@
     "bun": ">=1.4.4"
   },
   "exports": {
-    "./protocol/*": "./src/protocol/*.ts",
-    "./provider-connect/*": "./src/provider-connect/*.ts"
+    "./protocol/*": "./src/protocol/*.ts"
   },
   "scripts": {
     "build": "bun scripts/build-cli-binaries.ts",

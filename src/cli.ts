@@ -26,8 +26,10 @@ const logInAgain: LogIn = async ({ config, api }) => {
 export const createDevboxesCommand = () => {
   const program = new Command()
     .name("devboxes")
-    .description("Discover and invoke devboxes application commands")
-    .version(cliVersion)
+    .description(
+      "The devboxes command-line tool. Use it to sign in, to find your Organization's application commands and run them from a terminal, and to run a computer as a Runner.",
+    )
+    .version(cliVersion, "-V, --version", "Print the version number and exit.")
     .showHelpAfterError()
     .configureOutput({
       writeErr: (text) => {
@@ -39,14 +41,17 @@ export const createDevboxesCommand = () => {
         throw new CommandError("INVALID_USAGE", error.message.replace(/^error: /, ""));
       }
     })
-    .option("--config <path>", "Use another saved account file")
+    .option(
+      "--config <path>",
+      "Use a different saved account file. The file holds the API origin and your sign-in credential, but no default Organization. By default it's devboxes/config.json in your platform's config folder: $XDG_CONFIG_HOME when that's set, ~/Library/Application Support on macOS, %APPDATA% on Windows, and ~/.config everywhere else.",
+    )
     .option(
       "--api <url>",
       defaultApiOrigin
-        ? `API origin, also read from DEVBOXES_API_URL; defaults to the saved account's origin, then ${defaultApiOrigin}`
+        ? "The API origin to talk to. It takes precedence over DEVBOXES_API_URL, which takes precedence over the saved account's origin, which in turn takes precedence over this release's default origin. A saved credential belongs to a single origin, so pointing the same file at another origin is refused with API_ORIGIN_MISMATCH; use a separate --config file for each origin."
         : "API origin, also read from DEVBOXES_API_URL; required without a saved account",
     )
-    .option("--json", "Write machine-readable results and errors");
+    .option("--json", "Write results and errors as machine-readable JSON.");
 
   addRunnerCommands(program);
   addAccountCommands(program, logInAgain);

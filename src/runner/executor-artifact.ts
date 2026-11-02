@@ -4,10 +4,7 @@ import { mkdtemp, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
 
-import {
-  type ClaudeCodeArtifact,
-  containerClaudeCodeUid,
-} from "../protocol/task-runtime";
+import { type ClaudeCodeArtifact, containerClaudeCodeUid } from "../protocol/task-runtime";
 import { pack } from "tar-stream";
 
 /** An artifact's URL: HTTPS, or loopback HTTP outside production, without embedded credentials. */

@@ -23,6 +23,11 @@ export type CommandConnection = {
   token: string;
   organizationId?: string;
   /**
+   * Saves the session token a response hands over in `set-auth-token`, which replaces the account
+   * session's when the change ends that session, as turning on two-factor authentication does.
+   */
+  saveToken?: (token: string) => Promise<void>;
+  /**
    * Signs the person at the terminal in again and answers the new session token, for an account
    * session that may ask: `requestJson` then sends a request refused with SESSION_NOT_FRESH once more.
    */
@@ -245,7 +250,9 @@ export const requestJson = async (
     headers,
     redirect: "error",
     jsonParser: (text) => credentialSafeJson(text, [connection.token]),
-    onResponse: ({ response }) => {
+    onResponse: async ({ response }) => {
+      const replaced = response.headers.get("set-auth-token");
+      if (replaced && connection.saveToken) await connection.saveToken(replaced);
       traceId =
         trace.getSpanContext(
           w3cTraceContext.extract(
@@ -435,7 +442,7 @@ export const invokeCommand = async (
  * A devboxes command tool. Its run refuses input that `input` rejects, and returns that refusal or a
  * command failure as an error result the agent reads.
  */
-const commandTool = <Input extends TObject, Result>(
+export const commandTool = <Input extends TObject, Result>(
   name: string,
   description: string,
   input: Input,
@@ -459,9 +466,9 @@ const commandTool = <Input extends TObject, Result>(
 });
 
 /**
- * The devboxes command tools. `devboxes mcp` serves describe and invoke over stdio, and the Chat
- * native host runs all four in its own process. Each call reads the advertised commands with `readCommands`, which
- * by default asks the API again.
+ * The devboxes command tools, describe and invoke, which `devboxes mcp` serves over stdio and the
+ * Chat native host runs in its own process. Each call reads the advertised commands with
+ * `readCommands`, which by default asks the API again.
  */
 export const devboxesCommandTools = (
   connection: CommandConnection,
@@ -469,7 +476,7 @@ export const devboxesCommandTools = (
 ) => ({
   describe: commandTool(
     "devboxes_describe",
-    "List devboxes command IDs, effects, and summaries when command is omitted. Pass an exact command ID to read its OpenAPI input, response, and authority contract before using devboxes_invoke. Discovery does not grant authority.",
+    "Look up devboxes application commands before you use one. Without `command`, it lists the commands you can call, each with its `operationId`, its `effect` (read or write) and a one-line `summary`. With an exact command ID, it returns that command's full contract: its input and response schemas, who may call it and, for an elevated write, its elevation level and `approverRoles`, the roles whose Members can approve it. Describe a command before you first call it with devboxes_invoke, because its description carries the rules for using it. Being listed doesn't promise a call will succeed: a command can still refuse you because of your role, the Chat policy or a stale sign-in.",
     Type.Object({ command: Type.Optional(Type.String({ minLength: 1 })) }),
     async ({ command }) => {
       const description = await readCommands(connection);
@@ -485,35 +492,12 @@ export const devboxesCommandTools = (
   ),
   invoke: commandTool(
     "devboxes_invoke",
-    "Invoke an advertised devboxes command. Supply JSON input directly, never a local file reference. HTTP acceptance is not evidence that asynchronous work completed.",
+    "Run a devboxes application command. Pass `command`, its operation ID, and `input`, a JSON object written into the call itself, never a path to a local file; devboxes checks it against the command's schema. You get back the command's own response. When a command refuses, the answer looks like `{ error: { code, message, details, retryable }, status }`, for example with the code ROLE_REQUIRED, and the code and details tell you what went wrong.\n\nCommands that start work (sessions.dispatch, sessions.continue, sessions.input, review.request and schedules.run) answer as soon as the work is admitted, with what started, such as its `sessionUrl`. The result comes later, as finishedWork in a later turn or through sessions.inspect, so never report admitted work as done.\n\nFrom Chat, an elevated write doesn't run straight away. The call refuses with ELEVATION_REQUIRED, and `details.elevation` holds `{ requestId, approvalUrl }`. Tell the person the change is waiting for approval, say who can approve it (the roles in the command's approverRoles, which devboxes_describe shows) and link approvalUrl. Once a Member with one of those roles approves it (for a direct conversation, only that conversation's person can), the change runs by itself, so don't call the command again. If you learn that an approver refused it, tell the person who asked, in this conversation, that the change was refused and won't run, so nobody keeps waiting for it. devboxes_erase is the one exception: it runs at once.\n\nDescribe a command with devboxes_describe before you first invoke it.",
     Type.Object({
       command: Type.String({ minLength: 1 }),
       // Tool arguments arrive as JSON, so the advertised schema accepts every value.
       input: Type.Unsafe<JsonValue>({}),
     }),
     (invocation) => invokeCommand(connection, invocation, readCommands),
-  ),
-  zoom: commandTool(
-    "devboxes_zoom",
-    "Open a line of a Chat log into the two lines it was made from, or a message whole with n 1. Pass this conversation's conversationId for its log, or none for Organization memory.",
-    Type.Object({
-      conversationId: Type.Optional(Type.String({ minLength: 1 })),
-      id: Type.Integer({ minimum: 0 }),
-      n: Type.Integer({ minimum: 1 }),
-    }),
-    (input) => invokeCommand(connection, { command: "chat.zoom", input }, readCommands),
-  ),
-  erase: commandTool(
-    "devboxes_erase",
-    "Erase messages of this conversation's Chat log, by the ids devboxes_zoom shows with n 1, when a person in this conversation asks for it: their text and who wrote them go, with the Organization memory entries they saved. Their posts in the chat stay.",
-    Type.Object({
-      conversationId: Type.String({ minLength: 1 }),
-      ids: Type.Array(Type.Integer({ minimum: 0 }), {
-        minItems: 1,
-        maxItems: 100,
-        uniqueItems: true,
-      }),
-    }),
-    (input) => invokeCommand(connection, { command: "chat.erase-messages", input }, readCommands),
   ),
 });

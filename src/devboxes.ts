@@ -45,7 +45,9 @@ const connectCompleteSchema = Type.Union([
 export const addAccountCommands = (program: Command, logIn: LogIn) => {
   const commands = program
     .command("commands")
-    .description("list every advertised application command");
+    .description(
+      "List every application command the API offers your account, with its operation ID, its effect and a one-line summary. Being listed doesn't guarantee a command will accept your call; to read one in detail, use devboxes describe.",
+    );
   commands.action(async () => {
     const options = commands.optsWithGlobals<{ api?: string; config?: string; json?: boolean }>();
     const connection = await loadCommandConnection(options, logIn);
@@ -55,11 +57,9 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
     } else {
       for (const operation of description.commands) {
         await writeOutput(
-          `${[
-            operation.operationId,
-            operation["x-devboxes"].effect,
-            ...(operation.summary ? [operation.summary] : []),
-          ].join("\t")}\n`,
+          `${[operation.operationId, operation["x-devboxes"].effect, operation.summary].join(
+            "\t",
+          )}\n`,
         );
       }
     }
@@ -67,8 +67,13 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
 
   const describe = program
     .command("describe")
-    .description("show a command's input, response, and authority contract")
-    .argument("<operationId>", "Discovered operation ID");
+    .description(
+      "Show everything about one application command: its input schema, its response schema and its authority contract, which says who may call it and, for an elevated write, its elevation level.",
+    )
+    .argument(
+      "<operationId>",
+      "The command's ID as devboxes commands lists it, for example sessions.list.",
+    );
   describe.action(async (operationId: string) => {
     const options = describe.optsWithGlobals<{ api?: string; config?: string; json?: boolean }>();
     const connection = await loadCommandConnection(options, logIn);
@@ -84,12 +89,12 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
   const invoke = program
     .command("invoke")
     .description(
-      "invoke a discovered command. In a terminal without --input, it asks for the input field by field, and then for the Blueprint inputs and the issue that the Session needs.",
+      "Run an application command, passing its input as JSON with --input. In a terminal, if you leave out --input, devboxes asks you for the input one field at a time. When the input names a Blueprint, as it does for commands that start or continue work such as sessions.dispatch, devboxes then also asks for that Blueprint's inputs, and for the issue if the Blueprint works on one.\n\nAn elevated write needs a recent sign-in: within the last 5 minutes for a change to access or credentials, and within the last hour for any other. If yours is older, the command refuses with SESSION_NOT_FRESH; sign in again with devboxes login.",
     )
-    .argument("<operationId>", "Discovered operation ID")
+    .argument("<operationId>", "The command's ID as devboxes commands lists it.")
     .option(
       "--input <source>",
-      "Read JSON from @file or - for stdin; input is never shell-evaluated",
+      "Where to read the JSON input from: @path for a file, or - for stdin. devboxes never passes the input through a shell.",
     );
   invoke.action(async (operationId: string) => {
     const options = invoke.optsWithGlobals<{
@@ -140,18 +145,26 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
 
   const connect = program
     .command("connect")
-    .description("connect a model account by signing in with the provider or with an API key")
+    .description(
+      "Connect a model account to an Organization, either by signing in with the model provider or, with --api-key, by entering an API key. Without --account, this creates a new model account. With --account, the new sign-in or key replaces that existing account's credential.",
+    )
     .argument(
       "[providerId]",
-      "The provider ID from model-accounts.providers. In a terminal, devboxes asks for it.",
+      "The provider's ID, as model-accounts.providers lists it. In a terminal, devboxes asks for it if you leave it out.",
     )
     .option(
       "--organization <id>",
-      "The Organization that gets the model account. In a terminal, devboxes asks for it.",
+      "The Organization that gets the model account. In a terminal, devboxes asks for it if you leave it out.",
     )
-    .option("--label <label>", "The model account's name. In a terminal, devboxes asks for it.")
-    .option("--account <id>", "The model account whose credential the sign-in or key replaces")
-    .option("--api-key", "connect an API key instead of signing in");
+    .option(
+      "--label <label>",
+      "A name for the new model account, stored with the sign-in. A label another model account already uses is refused. In a terminal, devboxes asks for it if you leave it out.",
+    )
+    .option(
+      "--account <id>",
+      "The existing model account whose credential the new sign-in or key should replace. Leave it out to add a new model account instead.",
+    )
+    .option("--api-key", "Connect with an API key instead of signing in with the provider.");
   connect.action(async (providerId?: string) => {
     const options = connect.optsWithGlobals<{
       api?: string;
@@ -351,7 +364,9 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
 
   const mcp = program
     .command("mcp")
-    .description("serve devboxes tools to a coding agent over stdio");
+    .description(
+      "Offer devboxes to a coding agent on this computer, over stdio, as two MCP tools: devboxes_describe and devboxes_invoke, with the same descriptions Chat's versions have. The agent acts with the full authority of the account signed in to the config file, so it can do anything you can.",
+    );
   mcp.action(async () => {
     const options = mcp.optsWithGlobals<{ api?: string; config?: string }>();
     await runDevboxesMcpServer(() => loadCommandConnection({ ...options, json: true }));

@@ -4,5 +4,8 @@
  */
 export const endedRunStatuses = ["succeeded", "failed", "cancelled", "paused"] as const;
 
+/** The statuses of a Run that has not ended: it waits to start, works, or stops at a request. */
+export const unendedRunStatuses = ["queued", "running", "cancel_requested"] as const;
+
 /** Every status of a Run. Its Task has none of its own. */
-export const runStatuses = ["queued", "running", "cancel_requested", ...endedRunStatuses] as const;
+export const runStatuses = [...unendedRunStatuses, ...endedRunStatuses] as const;

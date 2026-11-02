@@ -1,6 +1,7 @@
 import Type from "typebox";
 
 import { opencodeDaemonPlatforms } from "./daemon-artifact";
+import { machineSizes } from "./project";
 import { runStatuses } from "./run-statuses";
 import { ClaudeCodeArtifactSchema } from "./task-runtime";
 
@@ -18,26 +19,53 @@ const AssignedTaskSchema = Type.Object({
   status: Type.Enum(runStatuses),
 });
 
-/** `/claim`: the Task this Runner starts next, or none. */
+const ExecutorSchema = Type.Object({
+  sha256: Type.String(),
+  version: Type.String(),
+  url: Type.String(),
+});
+
+/**
+ * `/claim`: the Task this Runner starts next, or none, and the current executor for the Runner's
+ * platform, which the Runner downloads before a Task needs it, or null when the API could not read
+ * the release channel.
+ */
 export const RunnerClaimSchema = Type.Object({
   task: Type.Union([
     Type.Object({
       ...AssignedTaskSchema.properties,
       image: Type.String(),
       platform: Type.Enum(opencodeDaemonPlatforms),
+      machineSize: Type.Enum(machineSizes),
       daemon: Type.Object({
-        sha256: Type.String(),
-        version: Type.String(),
-        url: Type.String(),
+        ...ExecutorSchema.properties,
         sha256ByArchitecture: Type.Optional(
           Type.Object({ amd64: Type.Optional(Type.String()), arm64: Type.Optional(Type.String()) }),
         ),
       }),
       claudeCode: Type.Union([ClaudeCodeArtifactSchema, Type.Null()]),
+      /**
+       * The home paths the Runner keeps in Docker volumes on its machine, shared by the Tasks of
+       * the Organization's Projects there, in place of the tool cache archives of managed Tasks.
+       */
+      toolCache: Type.Object({
+        organizationId: Type.String({ minLength: 1 }),
+        paths: Type.Array(Type.String({ minLength: 1 })),
+      }),
       traceparent: Type.String({ minLength: 1 }),
     }),
     Type.Null(),
   ]),
+  executor: Type.Union([ExecutorSchema, Type.Null()]),
+});
+
+/**
+ * `/claim`'s body: the CPUs and memory devboxes may use on the Runner's machine, the lower of what
+ * its Docker engine reports and the cap its owner set.
+ */
+export const RunnerCapacitySchema = Type.Object({
+  cpus: Type.Number({ exclusiveMinimum: 0 }),
+  memoryBytes: Type.Integer({ minimum: 1 }),
 });
 
 /** `/assignments`: the Tasks this Runner holds an executor for, or must stop one of. */

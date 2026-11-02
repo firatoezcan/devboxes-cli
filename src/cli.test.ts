@@ -341,6 +341,7 @@ describe("devboxes invoke", () => {
             "/api/commands/sessions/dispatch": {
               post: {
                 operationId: "sessions.dispatch",
+                summary: "Start Sessions in the Project",
                 "x-devboxes": {
                   effect: "write",
                   roles: ["owner", "admin", "member", "reviewer", "viewer"],
@@ -352,6 +353,7 @@ describe("devboxes invoke", () => {
             "/api/commands/sessions/list": {
               post: {
                 operationId: "sessions.list",
+                summary: "List the Organization's Sessions",
                 "x-devboxes": {
                   effect: "read",
                   roles: ["owner", "admin", "member", "reviewer", "viewer"],
@@ -363,6 +365,7 @@ describe("devboxes invoke", () => {
             "/api/commands/delegations/create": {
               post: {
                 operationId: "delegations.create",
+                summary: "Create a token that acts for a member with limited access",
                 "x-devboxes": {
                   effect: "write",
                   roles: ["owner", "admin", "member", "reviewer", "viewer"],
@@ -374,6 +377,7 @@ describe("devboxes invoke", () => {
             "/api/commands/sessions/events": {
               post: {
                 operationId: "sessions.events",
+                summary: "Read a Session's agent log",
                 "x-devboxes": {
                   effect: "read",
                   roles: ["owner", "admin", "member", "reviewer", "viewer"],
@@ -385,6 +389,7 @@ describe("devboxes invoke", () => {
             "/api/commands/sessions/inspect": {
               post: {
                 operationId: "sessions.inspect",
+                summary: "Read Sessions and their results",
                 "x-devboxes": {
                   effect: "read",
                   roles: ["owner", "admin", "member", "reviewer", "viewer"],
@@ -600,7 +605,12 @@ describe("devboxes commands", () => {
     openapi: "3.0.3",
     paths: {
       "/api/commands/billing/portal": {
-        post: { operationId: "billing.portal", "x-devboxes": contract, responses: {} },
+        post: {
+          operationId: "billing.portal",
+          summary: "Open the Stripe customer portal for the Organization's subscription",
+          "x-devboxes": contract,
+          responses: {},
+        },
       },
     },
   });
@@ -623,7 +633,9 @@ describe("devboxes commands", () => {
     ];
     for (const contract of contracts) {
       const listed = await list(contract);
-      expect(listed.stdout).toBe("billing.portal\twrite\n");
+      expect(listed.stdout).toBe(
+        "billing.portal\twrite\tOpen the Stripe customer portal for the Organization's subscription\n",
+      );
       expect(listed.exitCode).toBe(0);
     }
   });
@@ -654,6 +666,7 @@ describe("devboxes invoke in a terminal", () => {
   const operation = (operationId: string, schema: JsonValue) => ({
     post: {
       operationId,
+      summary: "Run the command",
       "x-devboxes": {
         effect: "write",
         roles: ["owner", "admin", "member", "reviewer", "viewer"],
@@ -923,6 +936,7 @@ describe("devboxes connect", () => {
   const operation = (operationId: string) => ({
     post: {
       operationId,
+      summary: "Run the command",
       "x-devboxes": {
         effect: "write",
         roles: ["owner", "admin"],
@@ -1293,7 +1307,14 @@ describe("devboxes runner add", () => {
               },
             ].map(({ operationId, ...contract }) => [
               `/api/commands/${operationId.replace(".", "/")}`,
-              { post: { operationId, "x-devboxes": contract, responses: {} } },
+              {
+                post: {
+                  operationId,
+                  summary: "Run the command",
+                  "x-devboxes": contract,
+                  responses: {},
+                },
+              },
             ]),
           ),
         });
@@ -1432,7 +1453,14 @@ describe("devboxes runner listen", () => {
     fetch: (request) => {
       const { pathname } = new URL(request.url);
       if (pathname.endsWith("/info"))
-        return Response.json({ OperatingSystem: engine.name, SecurityOptions: [] });
+        return Response.json({
+          OperatingSystem: engine.name,
+          SecurityOptions: [],
+          NCPU: 8,
+          MemTotal: 16 * 1024 ** 3,
+          MemoryLimit: true,
+          CpuCfsQuota: true,
+        });
       if (pathname.endsWith("/networks/bridge"))
         return Response.json({ IPAM: { Config: [{ Gateway: engine.gateway }] } });
       if (/\/containers\/[^/]+\/json$/.test(pathname))
@@ -1454,15 +1482,28 @@ describe("devboxes runner listen", () => {
   const until = async (condition: () => boolean) => {
     while (!condition()) await Bun.sleep(50);
   };
-  const spawnListener = async (origin: string, env: Record<string, string | undefined> = {}) => {
+  /** A current executor that the fake API answering `request` doesn't serve. */
+  const absentExecutor = (request: Request) => ({
+    sha256: "0".repeat(64),
+    version: "test",
+    url: `${new URL(request.url).origin}/executor`,
+  });
+  const spawnListener = async (
+    origin: string,
+    env: Record<string, string | undefined> = {},
+    flags: string[] = [],
+  ) => {
     await writeFile(runnerTokenFile, "devboxes_runner_fixture\n", { mode: 0o600 });
-    const listener = Bun.spawn([process.execPath, "src/cli.ts", ...(await listenTo(origin))], {
-      cwd: join(import.meta.dir, ".."),
-      env: { ...process.env, ...fixtureDocker, ...env },
-      stdin: "ignore",
-      stdout: "ignore",
-      stderr: "pipe",
-    });
+    const listener = Bun.spawn(
+      [process.execPath, "src/cli.ts", ...(await listenTo(origin)), ...flags],
+      {
+        cwd: join(import.meta.dir, ".."),
+        env: { ...process.env, ...fixtureDocker, ...env },
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "pipe",
+      },
+    );
     const output = { stderr: "" };
     const reading = listener.stderr.pipeThrough(new TextDecoderStream()).pipeTo(
       new WritableStream({
@@ -1502,7 +1543,7 @@ describe("devboxes runner listen", () => {
           }
           return path === "assignments"
             ? Response.json({ tasks: [] })
-            : Response.json({ task: { id: "not-a-task" } });
+            : Response.json({ task: { id: "not-a-task" }, executor: absentExecutor(request) });
         },
       });
     };
@@ -1560,8 +1601,10 @@ describe("devboxes runner listen", () => {
         if (path === "assignments") return Response.json({ tasks: [] });
         if (path === "claim") {
           claims += 1;
-          if (claims > 1) return Response.json({ task: null });
+          const executor = absentExecutor(request);
+          if (claims > 1) return Response.json({ task: null, executor });
           return Response.json({
+            executor,
             task: {
               id: taskId,
               executorId: null,
@@ -1569,11 +1612,9 @@ describe("devboxes runner listen", () => {
               status: "queued",
               image: `registry.devboxes.test/workspace@sha256:${"a".repeat(64)}`,
               platform: "linux/amd64",
-              daemon: {
-                sha256: "0".repeat(64),
-                version: "test",
-                url: `${new URL(request.url).origin}/executor`,
-              },
+              machineSize: "medium",
+              toolCache: { organizationId: "cli-test", paths: [] },
+              daemon: executor,
               claudeCode: null,
               traceparent: `00-${"1".repeat(32)}-${"2".repeat(16)}-01`,
             },
@@ -1607,6 +1648,269 @@ describe("devboxes runner listen", () => {
     expect(
       runner.output.stderr.split(`The start failure of Task ${taskId} was refused`),
     ).toHaveLength(2);
+  }, 60_000);
+
+  it("reports each Task's executor on its own, so a report the API refuses holds up no other Task", async () => {
+    const [refused, accepted] = [crypto.randomUUID(), crypto.randomUUID()];
+    const reports: { taskId: string; observation: string }[] = [];
+    using api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async (request) => {
+        const path = new URL(request.url).pathname.split("/").at(-1);
+        const executor = absentExecutor(request);
+        if (path === "assignments")
+          return Response.json({
+            tasks: [refused, accepted].map((id) => ({
+              id,
+              executorId: null,
+              containerId: null,
+              status: "succeeded",
+              image: `registry.devboxes.test/workspace@sha256:${"a".repeat(64)}`,
+              platform: "linux/amd64",
+              machineSize: "medium",
+              toolCache: { organizationId: "cli-test", paths: [] },
+              daemon: executor,
+              claudeCode: null,
+              traceparent: `00-${"1".repeat(32)}-${"2".repeat(16)}-01`,
+            })),
+          });
+        if (path === "claim") return Response.json({ task: null, executor });
+        if (path === "reconcile") {
+          const report = (await request.json()) as { taskId: string; observation: string };
+          reports.push(report);
+          return report.taskId === refused
+            ? Response.json(
+                {
+                  error: {
+                    code: "EXECUTOR_CLOCK_INVALID",
+                    message:
+                      "Docker timestamps must describe this executor's observed lifetime or absence.",
+                  },
+                },
+                { status: 400 },
+              )
+            : Response.json({ status: "succeeded" });
+        }
+        return new Response(null, { status: 404 });
+      },
+    });
+    await using runner = await spawnListener(api.url.origin);
+
+    await until(
+      () =>
+        reports.some(({ taskId }) => taskId === accepted) ||
+        runner.output.stderr.split("Polling failed").length > 2 ||
+        runner.listener.exitCode !== null,
+    );
+
+    expect({
+      reported: reports.slice(0, 2).map(({ taskId, observation }) => ({ taskId, observation })),
+      refusal: runner.output.stderr.includes(
+        `The report about Task ${refused} was refused: EXECUTOR_CLOCK_INVALID (HTTP 400)`,
+      ),
+    }).toEqual({
+      reported: [
+        { taskId: refused, observation: "absent" },
+        { taskId: accepted, observation: "absent" },
+      ],
+      refusal: true,
+    });
+  }, 60_000);
+
+  it("downloads the current executor while idle, so the next Task's launch needs no download", async () => {
+    const taskId = crypto.randomUUID();
+    const executorBytes = "#!/bin/sh\nexit 0\n";
+    const reports: { reason?: string }[] = [];
+    let claims = 0;
+    let executorRequests = 0;
+    using api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async (request) => {
+        const path = new URL(request.url).pathname.split("/").at(-1);
+        const executor = {
+          sha256: new Bun.CryptoHasher("sha256").update(executorBytes).digest("hex"),
+          version: "release",
+          url: `${new URL(request.url).origin}/executor`,
+        };
+        if (path === "executor") {
+          executorRequests += 1;
+          return claims < 2 ? new Response(executorBytes) : new Response(null, { status: 404 });
+        }
+        if (path === "assignments") return Response.json({ tasks: [] });
+        if (path === "claim") {
+          claims += 1;
+          if (claims !== 2) return Response.json({ task: null, executor });
+          return Response.json({
+            executor,
+            task: {
+              id: taskId,
+              executorId: null,
+              containerId: null,
+              status: "queued",
+              image: `registry.devboxes.test/workspace@sha256:${"a".repeat(64)}`,
+              platform: "linux/amd64",
+              machineSize: "medium",
+              toolCache: { organizationId: "cli-test", paths: [] },
+              daemon: executor,
+              claudeCode: null,
+              traceparent: `00-${"1".repeat(32)}-${"2".repeat(16)}-01`,
+            },
+          });
+        }
+        if (path === "reconcile") {
+          reports.push(await request.json());
+          return Response.json({ status: "queued" });
+        }
+        return new Response(null, { status: 404 });
+      },
+    });
+    await using runner = await spawnListener(api.url.origin);
+
+    await until(() => reports.length > 0 || runner.listener.exitCode !== null);
+
+    expect({ executorRequests, reason: reports[0]?.reason }).toEqual({
+      executorRequests: 1,
+      reason: expect.stringContaining("/images/create"),
+    });
+  }, 60_000);
+
+  it("claims with the lower of its owner's cap and what Docker reports, for CPUs and memory alike", async () => {
+    const claimsTo = () => {
+      const bodies: unknown[] = [];
+      const server = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: async (request) => {
+          if (new URL(request.url).pathname.endsWith("/assignments"))
+            return Response.json({ tasks: [] });
+          bodies.push(await request.json());
+          return Response.json({ task: null, executor: null });
+        },
+      });
+      return { server, bodies, [Symbol.dispose]: () => server.stop(true) };
+    };
+    using whole = claimsTo();
+    using capped = claimsTo();
+    using above = claimsTo();
+    await using wholeRunner = await spawnListener(whole.server.url.origin);
+    await using cappedRunner = await spawnListener(capped.server.url.origin, {}, [
+      "--cpus",
+      "2.5",
+      "--memory",
+      "3",
+    ]);
+    await using aboveRunner = await spawnListener(above.server.url.origin, {}, [
+      "--cpus",
+      "32",
+      "--memory",
+      "64",
+    ]);
+    const runners = [wholeRunner, cappedRunner, aboveRunner];
+    await until(
+      () =>
+        [whole, capped, above].every(({ bodies }) => bodies.length > 0) ||
+        runners.some((runner) => runner.listener.exitCode !== null),
+    );
+
+    expect([whole.bodies[0], capped.bodies[0], above.bodies[0]]).toEqual([
+      { cpus: 8, memoryBytes: 16 * 1024 ** 3 },
+      { cpus: 2.5, memoryBytes: 3 * 1024 ** 3 },
+      { cpus: 8, memoryBytes: 16 * 1024 ** 3 },
+    ]);
+  }, 60_000);
+
+  it("tries a failed executor download again on a later claim", async () => {
+    const taskId = crypto.randomUUID();
+    const executorBytes = "#!/bin/sh\nexit 0\n";
+    const reports: { reason?: string }[] = [];
+    let claims = 0;
+    let executorRequests = 0;
+    using api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async (request) => {
+        const path = new URL(request.url).pathname.split("/").at(-1);
+        const executor = {
+          sha256: new Bun.CryptoHasher("sha256").update(executorBytes).digest("hex"),
+          version: "release",
+          url: `${new URL(request.url).origin}/executor`,
+        };
+        if (path === "executor") {
+          executorRequests += 1;
+          if (executorRequests === 1) return new Response(null, { status: 503 });
+          return claims < 3 ? new Response(executorBytes) : new Response(null, { status: 404 });
+        }
+        if (path === "assignments") return Response.json({ tasks: [] });
+        if (path === "claim") {
+          claims += 1;
+          if (claims !== 3) return Response.json({ task: null, executor });
+          return Response.json({
+            executor,
+            task: {
+              id: taskId,
+              executorId: null,
+              containerId: null,
+              status: "queued",
+              image: `registry.devboxes.test/workspace@sha256:${"a".repeat(64)}`,
+              platform: "linux/amd64",
+              machineSize: "medium",
+              toolCache: { organizationId: "cli-test", paths: [] },
+              daemon: executor,
+              claudeCode: null,
+              traceparent: `00-${"1".repeat(32)}-${"2".repeat(16)}-01`,
+            },
+          });
+        }
+        if (path === "reconcile") {
+          reports.push(await request.json());
+          return Response.json({ status: "queued" });
+        }
+        return new Response(null, { status: 404 });
+      },
+    });
+    await using runner = await spawnListener(api.url.origin);
+
+    await until(() => reports.length > 0 || runner.listener.exitCode !== null);
+
+    expect({ executorRequests, reason: reports[0]?.reason }).toEqual({
+      executorRequests: 2,
+      reason: expect.stringContaining("/images/create"),
+    });
+  }, 60_000);
+
+  it("stops at once while it downloads an executor that no Task waits for", async () => {
+    let downloading = false;
+    using api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      idleTimeout: 0,
+      fetch: (request) => {
+        const path = new URL(request.url).pathname.split("/").at(-1);
+        if (path === "executor") {
+          downloading = true;
+          return new Response(
+            new ReadableStream({
+              async pull(controller) {
+                controller.enqueue(new Uint8Array(1));
+                await Bun.sleep(1_000);
+              },
+            }),
+          );
+        }
+        if (path === "assignments") return Response.json({ tasks: [] });
+        return Response.json({ task: null, executor: absentExecutor(request) });
+      },
+    });
+    await using runner = await spawnListener(api.url.origin);
+    await until(() => downloading || runner.listener.exitCode !== null);
+
+    const stopping = performance.now();
+    runner.listener.kill("SIGTERM");
+
+    expect(await runner.listener.exited).toBe(0);
+    expect(performance.now() - stopping).toBeLessThan(2_000);
   }, 60_000);
 
   it.each([
@@ -1684,7 +1988,7 @@ describe("devboxes runner listen", () => {
           polled = true;
           return new URL(request.url).pathname.endsWith("/assignments")
             ? Response.json({ tasks: [] })
-            : Response.json({ task: null });
+            : Response.json({ task: null, executor: absentExecutor(request) });
         },
       });
       await using runner = await spawnListener(api.url.origin, { DO_NOT_TRACK: configured });
@@ -1710,6 +2014,7 @@ describe("devboxes mcp", () => {
     const operation = (operationId: string) => ({
       post: {
         operationId,
+        summary: "List the Organization's Sessions",
         "x-devboxes": {
           effect: "read",
           roles: ["owner", "admin", "member", "reviewer", "viewer"],
@@ -1753,7 +2058,13 @@ describe("devboxes mcp", () => {
       });
 
       expect(listed.structuredContent).toEqual({
-        commands: [{ operationId: "sessions.list", effect: "read" }],
+        commands: [
+          {
+            operationId: "sessions.list",
+            effect: "read",
+            summary: "List the Organization's Sessions",
+          },
+        ],
       });
       expect(inspected.isError).toBeUndefined();
       expect(inspected.structuredContent).toMatchObject({
@@ -2198,6 +2509,7 @@ describe("devboxes after a refusal for an old sign-in", () => {
             "/api/commands/organizations/update": {
               post: {
                 operationId: "organizations.update",
+                summary: "Change the Organization's settings",
                 "x-devboxes": {
                   effect: "write",
                   elevated: true,
@@ -2247,7 +2559,7 @@ describe("devboxes after a refusal for an old sign-in", () => {
               error: {
                 code: "SESSION_NOT_FRESH",
                 message:
-                  "This change needs a sign-in from the last 10 minutes. Sign in again, then repeat it.",
+                  "This change needs a sign-in from the last 5 minutes. Sign in again, then repeat it.",
               },
             },
             { status: 403 },
@@ -2256,7 +2568,7 @@ describe("devboxes after a refusal for an old sign-in", () => {
   });
   afterAll(() => api.stop(true));
   const rename = join(fixtureDirectory, "rename.json");
-  /** A saved account config whose session devboxes signed in more than 10 minutes ago. */
+  /** A saved account config whose session is too old for the change it makes. */
   const staleAccount = async (name: string) => {
     const config = join(fixtureDirectory, name);
     await writeFile(

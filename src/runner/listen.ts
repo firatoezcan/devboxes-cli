@@ -4,15 +4,16 @@ import { constants } from "node:fs";
 import { mkdir, open, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-import { dockerSocketPath } from "./docker-socket";
-import { DockerOpencodeTaskRuntime } from "./docker-task-runtime";
-import { stalledExecutorDownload } from "./executor-artifact";
 import type { JsonValue } from "../protocol/json";
+import { machineSizeResources } from "../protocol/project";
 import {
   type RunnerAssignmentsSchema,
   type RunnerClaimSchema,
   runnerAnswers,
 } from "../protocol/runner-callbacks";
+import { dockerSocketPath } from "./docker-socket";
+import { DockerOpencodeTaskRuntime } from "./docker-task-runtime";
+import { stalledExecutorDownload } from "./executor-artifact";
 import { proxy } from "hono/proxy";
 import { jwtVerify, SignJWT } from "jose";
 import Type, { type Static } from "typebox";
@@ -35,6 +36,9 @@ export const listen = async (options: {
   apiOrigin: string;
   tokenFile: string;
   stateDirectory: string;
+  /** The most CPUs and GiB of memory its owner lets devboxes use; the whole machine when unset. */
+  cpus?: number;
+  memoryGiB?: number;
 }) => {
   /**
    * Whether only this user can read or change a file. Windows synthesizes a stat's mode from file
@@ -96,6 +100,20 @@ export const listen = async (options: {
     stateDirectory: directory,
   });
   const engine = await runtime.docker.info();
+  const capacity = {
+    cpus: Math.min(options.cpus ?? engine.NCPU, engine.NCPU),
+    memoryBytes: Math.floor(
+      Math.min((options.memoryGiB ?? Number.POSITIVE_INFINITY) * 1024 ** 3, engine.MemTotal),
+    ),
+  };
+  const limits = Value.Parse(
+    Type.Object({ MemoryLimit: Type.Boolean(), CpuCfsQuota: Type.Boolean() }),
+    engine,
+  );
+  if (!limits.MemoryLimit || !limits.CpuCfsQuota)
+    console.error(
+      "This Docker engine can't limit a container's memory or CPUs, so Tasks run without their machine size's limits. On rootless Docker, delegate the cgroup controllers to your user, as Docker's rootless guide describes under Limiting resources.",
+    );
   const rootless = engine.SecurityOptions.includes("name=rootless");
   let relayReachable = !rootless;
   let hostname = "127.0.0.1";
@@ -132,8 +150,7 @@ export const listen = async (options: {
       const { pathname, search } = new URL(request.url);
       if (
         !pathname.startsWith("/api/internal/execution/tasks/") &&
-        pathname !== "/api/commands/model-accounts/runtime-read" &&
-        pathname !== "/api/commands/model-accounts/runtime-write"
+        pathname !== "/api/commands/model-accounts/runtime-read"
       )
         return Response.json(
           { error: { code: "NOT_RELAYED", message: "The Runner relays only Task callbacks." } },
@@ -186,6 +203,11 @@ export const listen = async (options: {
   const interrupt = () => {
     stopping = true;
   };
+  /**
+   * The executor digest the Runner is downloading or downloaded ahead of its Tasks. A failed
+   * download clears it, so a later claim tries again.
+   */
+  let prefetched: string | null = null;
   const startCreated = async (
     task: Static<typeof RunnerAssignmentsSchema>["tasks"][number],
     containerId: string,
@@ -226,8 +248,13 @@ export const listen = async (options: {
   const startClaimed = async (task: NonNullable<Static<typeof RunnerClaimSchema>["task"]>) => {
     const existing = await runtime.inspect(task.executorId ?? `devboxes-task-${task.id}`);
     if (!existing) {
+      const size = machineSizeResources[task.machineSize];
       const container = await runtime.create({
         ...task,
+        resources: {
+          cpus: Math.min(size.cpus, capacity.cpus),
+          memoryBytes: Math.min(size.memoryBytes, capacity.memoryBytes),
+        },
         apiBaseUrl,
         token: await new SignJWT()
           .setProtectedHeader({ alg: "HS256" })
@@ -252,6 +279,19 @@ export const listen = async (options: {
     try {
       const assignments = await api("assignments", {});
       connected = true;
+      /**
+       * Logs the API's refusal of a report about Task `taskId` and lets the poll go on to the
+       * other Tasks. A refusal that ends the listener, and a server error, fail the poll.
+       */
+      const refusedReport = (taskId: string) => (refusal: Error) => {
+        if (
+          refusal instanceof CommandError &&
+          !endsListener(refusal) &&
+          (refusal.options.status ?? 500) < 500
+        )
+          return console.error(`The report about Task ${taskId} was refused: ${refusal}`);
+        throw refusal;
+      };
       for (const task of assignments.tasks) {
         if (stopping) break;
         if (starting.has(task.id)) continue;
@@ -271,8 +311,9 @@ export const listen = async (options: {
             containerId: task.containerId,
             observation: "absent",
             observedAt: new Date().toISOString(),
-          });
-          console.info(`Task ${task.id} ended as ${result.status}; its executor is absent.`);
+          }).catch(refusedReport(task.id));
+          if (result)
+            console.info(`Task ${task.id} ended as ${result.status}; its executor is absent.`);
           continue;
         }
         if (executor.State.Status === "created") {
@@ -290,8 +331,8 @@ export const listen = async (options: {
                 startedAt: executor.State.StartedAt,
                 stoppedAt: executor.State.FinishedAt,
               }),
-        });
-        if (!executor.State.Running) {
+        }).catch(refusedReport(task.id));
+        if (result && !executor.State.Running) {
           if (
             result.status === "succeeded" ||
             result.status === "cancelled" ||
@@ -323,7 +364,16 @@ export const listen = async (options: {
         throw error;
       }
       if (starting.size === 0) {
-        const { task } = await api("claim", {});
+        const { task, executor } = await api("claim", capacity);
+        if (executor && executor.sha256 !== prefetched) {
+          prefetched = executor.sha256;
+          runtime.stageExecutor(executor).catch((error: Error) => {
+            prefetched = null;
+            console.error(
+              `Downloading executor ${executor.version} ahead of its Tasks failed: ${error.message}`,
+            );
+          });
+        }
         if (task && !stopping && task.containerId === null)
           starting.set(
             task.id,

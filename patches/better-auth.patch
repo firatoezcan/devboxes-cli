@@ -78,7 +78,7 @@ index bd1d49c816757f268106cc12f0cddc2f912912fd..29434787c71e4df620aa23d7719cdacd
          password: z.ZodString;
        }, z.core.$strip>;
 diff --git a/dist/plugins/two-factor/index.mjs b/dist/plugins/two-factor/index.mjs
-index 8cd2d6bce08023e1c1f1a4aa274636dae924c95c..8335927e7b87ffd68907b1917bb73fc28dddafdd 100644
+index 8cd2d6bce08023e1c1f1a4aa274636dae924c95c..cadd330c64b587e367592a8a97b0b34b166a73c0 100644
 --- a/dist/plugins/two-factor/index.mjs
 +++ b/dist/plugins/two-factor/index.mjs
 @@ -17,6 +17,7 @@ import { createAuthEndpoint, createAuthMiddleware } from "@better-auth/core/api"
@@ -98,7 +98,29 @@ index 8cd2d6bce08023e1c1f1a4aa274636dae924c95c..8335927e7b87ffd68907b1917bb73fc2
  	return {
  		id: "two-factor",
  		version: PACKAGE_VERSION,
-@@ -151,14 +152,19 @@ const twoFactor = (options) => {
+@@ -114,13 +115,15 @@ const twoFactor = (options) => {
+ 				if (method === "otp" && !options?.otpOptions?.sendOTP) throw APIError.from("BAD_REQUEST", TWO_FACTOR_ERROR_CODES.OTP_NOT_CONFIGURED);
+ 				if (method === "totp" && options?.totpOptions?.disable) throw APIError.from("BAD_REQUEST", TWO_FACTOR_ERROR_CODES.TOTP_NOT_CONFIGURED);
+ 				if (method === "otp") {
+-					const updatedUser = await ctx.context.internalAdapter.updateUser(user.id, { twoFactorEnabled: true });
+-					const newSession = await ctx.context.internalAdapter.createSession(updatedUser.id, false, ctx.context.session.session);
+-					await setSessionCookie(ctx, {
+-						session: newSession,
+-						user: updatedUser
++					await runWithTransaction(ctx.context.adapter, async () => {
++						const updatedUser = await ctx.context.internalAdapter.updateUser(user.id, { twoFactorEnabled: true });
++						const newSession = await ctx.context.internalAdapter.createSession(updatedUser.id, false, ctx.context.session.session);
++						await setSessionCookie(ctx, {
++							session: newSession,
++							user: updatedUser
++						});
++						await ctx.context.internalAdapter.deleteSession(ctx.context.session.session.token);
+ 					});
+-					await ctx.context.internalAdapter.deleteSession(ctx.context.session.session.token);
+ 					return ctx.json({ method: "otp" });
+ 				}
+ 				const existingTwoFactor = await ctx.context.adapter.findOne({
+@@ -151,14 +154,19 @@ const twoFactor = (options) => {
  					backupCodes: backupCodes.encryptedBackupCodes,
  					verified: !!options?.skipVerificationOnEnable
  				};
@@ -126,7 +148,7 @@ index 8cd2d6bce08023e1c1f1a4aa274636dae924c95c..8335927e7b87ffd68907b1917bb73fc2
  				else await ctx.context.adapter.create({
  					model: opts.twoFactorTable,
  					data: {
-@@ -216,23 +222,26 @@ const twoFactor = (options) => {
+@@ -216,23 +224,26 @@ const twoFactor = (options) => {
  						userId: user.id
  					})) throw APIError.from("BAD_REQUEST", BASE_ERROR_CODES.INVALID_PASSWORD);
  				}

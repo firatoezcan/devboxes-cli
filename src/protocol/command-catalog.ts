@@ -28,6 +28,7 @@ export const roadmapInterestRoles: readonly (typeof organizationRoles)[number][]
 
 const sharedFields = {
   delegable: Type.Optional(Type.Literal(false)),
+  chat: Type.Optional(Type.Union([Type.Literal("policy"), Type.Literal("always")])),
   authority: Type.String({ minLength: 1 }),
   shipped: Type.Optional(
     Type.Object({
@@ -38,6 +39,7 @@ const sharedFields = {
 };
 
 const contractFields = {
+  does: Type.String({ pattern: "^[a-z][^\\n]*[^.\\n]$" }),
   roles: Type.Immutable(Type.Array(Type.Enum(organizationRoles), { uniqueItems: true })),
   lifecycle: Type.Optional(Type.Literal("any")),
   ...sharedFields,
@@ -47,9 +49,10 @@ const contractFields = {
  * Why a write is elevated: it spends money; changes who can do or see what; hands over or replaces
  * a credential; destroys data that can't be restored; or acts outside devboxes in the
  * Organization's name. A write that does none of these, or that can be undone, is `false`. An
- * account session makes an elevated write only within ten minutes of signing in, and is otherwise
- * refused with SESSION_NOT_FRESH: sign in again in the browser or with `devboxes login`. A member
- * delegation makes one only if a session signed in within those ten minutes created it, and is
+ * account session makes an `access` or `credential` write only within 5 minutes of signing in, and
+ * any other elevated write within an hour (DEC-recent-sign-in-five-or-sixty-minutes); it is
+ * otherwise refused with SESSION_NOT_FRESH: sign in again in the browser or with `devboxes login`. A
+ * member delegation makes one only if a session signed in within that window created it, and is
  * otherwise refused with DELEGATION_NOT_FRESH: the member makes the change after signing in, or
  * creates the delegation again. A Run's delegation makes the elevated writes a Blueprint may grant,
  * `publication.commit` and `repositories.github-write`, whatever the sign-in that started the Run.
@@ -66,15 +69,23 @@ const elevationSchema = Type.Union([
 ]);
 
 /**
- * A command's `x-devboxes`: whether it only reads or also writes, which is the level a grant of its
+ * A command's contract: `does`, what the command lets devboxes do, as an infinitive phrase that
+ * completes "lets devboxes …" and "asked devboxes to …", without a final period, which the
+ * document serves capitalized as the command's `summary` and every reader shows a person in place
+ * of the operationId; whether it only reads or also writes, which is the level a grant of its
  * resource needs (`grants`); for a write, the class that makes
  * it `elevated`, which laws/LAWS.bend states for each class; the Organization roles that may call
  * it, none for a command that takes no Organization; `lifecycle: "any"` when it also runs on an
  * Organization that is archived or being deleted; `delegable: false` when only a
- * person's session may call it, never a member delegation; who may call it, in words; and, once it
- * is usable from Chat, `shipped`: the day and a one-line note on what it lets devboxes do. A Chat
- * turn calls a command under the Organization's Chat policy, and the roles bind the people the turn
- * answers only where the route names a `chatRequesterAction`. A read is never elevated. A write
+ * person's session may call it, never a member delegation; `chat` when a Chat delegation may hold
+ * it: `policy` when the Chat policy's resources grant it, and `always` when every Chat turn may
+ * call it whatever its policy lists, which only the listings of Projects and work setups, reading a
+ * tracker conversation's own issue, and opening and erasing the turn's own conversation log are
+ * (DEC-memory-erasure-collaborative, DEC-chat-elevated-writes-need-approval); without it, the
+ * command refuses a Chat token; who may call it, in words; and, once it is usable from Chat,
+ * `shipped`: the day and a one-line note on what it lets devboxes do. A Chat turn calls a command
+ * under the Organization's Chat policy, and the roles bind the people the turn
+ * answers only where the route names a `chatRequester` action. A read is never elevated. A write
  * states `elevated: false` too, so dropping the flag can't pass unseen; the document the API serves
  * leaves it out, as `servedDocument` says. An elevated write that Chat holds for approval names
  * the `approverRoles` whose members approve it, which law:chat-held-writes-name-approvers requires
@@ -116,7 +127,7 @@ const servedContractSchema = Type.Union([
 
 const operationSchema = Type.Object({
   operationId: Type.String({ minLength: 1 }),
-  summary: Type.Optional(Type.String()),
+  summary: Type.String({ minLength: 1 }),
   "x-devboxes": servedContractSchema,
   requestBody: Type.Optional(Type.Unknown()),
   responses: Type.Record(Type.String(), Type.Unknown()),
@@ -125,9 +136,10 @@ const operationSchema = Type.Object({
 export type CatalogCommand = Static<typeof operationSchema> & { path: string; method: "POST" };
 
 /**
- * The document as the API serves it, in the shape every released client reads: an elevated write's
- * contract says `elevated: true` and names its class in `elevation`, which those clients ignore,
- * and any other write leaves both out. A document it served already comes back as it is.
+ * The document as the API serves it, in the shape every released client reads: a contract leaves
+ * out `does`, which the operation's `summary` serves, an elevated write's contract says
+ * `elevated: true` and names its class in `elevation`, which those clients ignore, and any other
+ * write leaves both out.
  */
 export const servedDocument = (document: Static<typeof commandDocumentSchema>) => ({
   ...document,
@@ -135,11 +147,12 @@ export const servedDocument = (document: Static<typeof commandDocumentSchema>) =
     Object.entries(document.paths).map(([path, item]) => {
       const operation = item.post as { "x-devboxes"?: unknown } | undefined;
       const contract = operation?.["x-devboxes"];
-      if (!Value.Check(commandContractSchema, contract) || contract.effect === "read")
-        return [path, item];
-      const { elevated, ...served } = contract;
-      const shown =
-        elevated === false ? served : { ...served, elevated: true, elevation: elevated };
+      if (!Value.Check(commandContractSchema, contract)) return [path, item];
+      const { does: _does, ...served } = contract;
+      if (served.effect === "read")
+        return [path, { ...item, post: { ...operation, "x-devboxes": served } }];
+      const { elevated, ...write } = served;
+      const shown = elevated === false ? write : { ...write, elevated: true, elevation: elevated };
       return [path, { ...item, post: { ...operation, "x-devboxes": shown } }];
     }),
   ),
@@ -225,13 +238,17 @@ export const ungrantedResources = (
 export type DelegationResource = Record<GrantLevel, string[]> & { elevated: string[] };
 
 /**
- * The resources a member delegation can reach, with the operations each level grants. Commands with
- * `delegable: false` refuse every delegation and are left out, and so is a resource left with none.
+ * The resources that grants of `operations` reach, each with the operations each level grants and
+ * the elevated ones among them. A token's are the served commands without `delegable: false`; a
+ * Chat policy's are the contracts whose `chat` is `policy` (`chatResources`).
  */
-export const delegationResources = (commands: readonly CatalogCommand[]) => {
+export const delegationResources = (
+  operations: Iterable<
+    readonly [operationId: string, contract: { effect: "read" | "write"; elevated?: unknown }]
+  >,
+) => {
   const resources = new Map<string, DelegationResource>();
-  for (const { operationId, "x-devboxes": detail } of commands) {
-    if (detail.delegable === false) continue;
+  for (const [operationId, detail] of operations) {
     const resource = resourceOf(operationId);
     const entry = resources.get(resource) ?? { read: [], write: [], elevated: [] };
     for (const level of ["read", "write"] as const)

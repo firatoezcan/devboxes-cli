@@ -19,7 +19,7 @@ import {
   opencodeMemoryHomeDirectories,
 } from "../protocol/task-runtime";
 import Docker from "dockerode";
-import { extract } from "tar-stream";
+import { extract, pack } from "tar-stream";
 
 import { claudeCodeArchive, stageExecutorArtifact } from "./executor-artifact";
 
@@ -30,9 +30,13 @@ export type NativeTaskLaunch = {
   token: string;
   image: string;
   platform: "linux/amd64" | "linux/arm64";
+  /** The CPUs and memory the Task's container may use. */
+  resources: { cpus: number; memoryBytes: number };
   daemon: { sha256: string; version: string; url: string };
   /** The Claude Code tarball a Claude subscription Run needs, or none. */
   claudeCode: ClaudeCodeArtifact | null;
+  /** The home paths kept in this machine's volumes for the Organization's Tasks. */
+  toolCache: { organizationId: string; paths: string[] };
   traceparent: string;
 };
 
@@ -66,8 +70,11 @@ export class DockerOpencodeTaskRuntime {
   readonly docker: Docker;
   /** The Claude Code volumes this Runner is checking or filling, by name. */
   readonly #claudeCodeFills = new Map<string, Promise<string>>();
-  /** The executors this Runner is checking or downloading, by SHA-256 digest. */
-  readonly #executorDownloads = new Map<string, Promise<string>>();
+  /**
+   * The executor cache's last step: each `stageExecutor` runs after the one before it, so an
+   * eviction never removes a file that another step still links.
+   */
+  #executorStaging: Promise<unknown> = Promise.resolve();
 
   constructor(readonly options: { socketPath: string; stateDirectory: string }) {
     this.docker = new Docker({ socketPath: options.socketPath });
@@ -194,20 +201,18 @@ export class DockerOpencodeTaskRuntime {
   }
 
   /**
-   * The path of `daemon`'s executor in this Runner's cache, `<state directory>/executors/<sha256>`.
-   * Each call hashes the cached file against the digest and downloads it again when it doesn't
-   * match. Then it deletes everything else in the cache that it can: older digests, and the
-   * temporary folders of downloads that a stopped Runner left. An entry it can't delete yet, such as
-   * a file a container holds open on Windows, stays for a later call and never fails this one.
-   * Calls for different digests must not overlap; `devboxes runner listen` starts one Task at a
-   * time. A Task's own hard link keeps an evicted executor until the Task's directory goes.
+   * Makes `daemon`'s executor the one in this Runner's cache, `<state directory>/executors/<sha256>`,
+   * and hard-links it at `destination` when one is given. It hashes the cached file against the
+   * digest and downloads it again when it doesn't match. Then it deletes everything else in the
+   * cache that it can: older digests, and the temporary folders of downloads that a stopped Runner
+   * left. An entry it can't delete yet, such as a file a container holds open on Windows, stays for
+   * a later call and never fails this one. A Task's own hard link keeps an evicted executor until the
+   * Task's directory goes.
    */
-  #executor(daemon: NativeTaskLaunch["daemon"]) {
-    const downloading = this.#executorDownloads.get(daemon.sha256);
-    if (downloading) return downloading;
-    const cache = resolve(this.options.stateDirectory, "executors");
-    const path = join(cache, daemon.sha256);
-    const downloaded = (async () => {
+  stageExecutor(daemon: { sha256: string; url: string }, destination?: string) {
+    const staged = this.#executorStaging.then(async () => {
+      const cache = resolve(this.options.stateDirectory, "executors");
+      const path = join(cache, daemon.sha256);
       const cached = Bun.file(path);
       const present = await cached.exists();
       const hash = createHash("sha256");
@@ -219,10 +224,13 @@ export class DockerOpencodeTaskRuntime {
       for (const entry of await readdir(cache))
         if (entry !== daemon.sha256)
           await rm(join(cache, entry), { recursive: true, force: true }).catch(() => undefined);
-      return path;
-    })().finally(() => this.#executorDownloads.delete(daemon.sha256));
-    this.#executorDownloads.set(daemon.sha256, downloaded);
-    return downloaded;
+      if (destination) {
+        await rm(destination, { force: true });
+        await link(path, destination);
+      }
+    });
+    this.#executorStaging = staged.catch(() => undefined);
+    return staged;
   }
 
   /**
@@ -263,15 +271,14 @@ export class DockerOpencodeTaskRuntime {
     }
   }
 
-  async create(task: NativeTaskLaunch) {
+  async create(task: NativeTaskLaunch): Promise<Docker.Container> {
     const name = `devboxes-task-${task.id}`;
     const existing = await this.inspect(name);
     if (existing) return this.docker.getContainer(existing.Id);
     const directory = resolve(this.options.stateDirectory, task.id);
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const binary = join(directory, "devboxes-executor");
-    await rm(binary, { force: true });
-    await link(await this.#executor(task.daemon), binary);
+    await this.stageExecutor(task.daemon, binary);
     await followDockerProgress(
       this.docker,
       await this.docker.pull(task.image, { platform: task.platform }),
@@ -289,7 +296,11 @@ export class DockerOpencodeTaskRuntime {
       }),
       DEVBOX_EXECUTOR_ID: name,
     };
-    return this.docker.createContainer({
+    const toolCache = task.toolCache.paths.map((path) => ({
+      path,
+      volume: `devboxes-tool-cache-${task.toolCache.organizationId}-${task.platform.replace("/", "-")}-${createHash("sha256").update(path).digest("hex").slice(0, 16)}`,
+    }));
+    const container = await this.docker.createContainer({
       name,
       Image: task.image,
       platform: task.platform,
@@ -310,6 +321,9 @@ export class DockerOpencodeTaskRuntime {
         // the executor dropped to the agent's uid and with it every capability.
         CapAdd: ["DAC_OVERRIDE", "KILL", "SETGID", "SETUID"],
         SecurityOpt: ["no-new-privileges"],
+        NanoCpus: Math.round(task.resources.cpus * 1e9),
+        Memory: task.resources.memoryBytes,
+        MemorySwap: task.resources.memoryBytes,
         Mounts: [
           {
             Type: "bind",
@@ -328,6 +342,12 @@ export class DockerOpencodeTaskRuntime {
                 },
               ]
             : []),
+          ...toolCache.map(({ path, volume }) => ({
+            Type: "volume" as const,
+            Source: volume,
+            Target: `${containerHome}/${path}`,
+            VolumeOptions: { ...withoutImageContent, Labels: { "devboxes.tool-cache": path } },
+          })),
         ],
         Tmpfs: {
           [containerDaemonPrivateDir]: `rw,noexec,nosuid,size=1g,mode=0700,${agentOwner}`,
@@ -343,5 +363,27 @@ export class DockerOpencodeTaskRuntime {
         ExtraHosts: ["host.docker.internal:host-gateway"],
       },
     });
+    if (toolCache.length > 0) {
+      // Docker creates each volume, and any missing folder above its mount, owned by root. A
+      // directory entry for each, extracted before the start, gives them all to the agent,
+      // including each volume's own root folder.
+      const owned = pack();
+      const folders = new Set(
+        toolCache.flatMap(({ path }) =>
+          path.split("/").map((_, index, parts) => parts.slice(0, index + 1).join("/")),
+        ),
+      );
+      for (const folder of folders)
+        owned.entry({
+          name: `${containerHome.slice(1)}/${folder}`,
+          type: "directory",
+          mode: 0o755,
+          uid: containerAgentUid,
+          gid: containerSharedGid,
+        });
+      owned.finalize();
+      await container.putArchive(owned, { path: "/" });
+    }
+    return container;
   }
 }

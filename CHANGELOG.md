@@ -1,5 +1,19 @@
 # devboxes
 
+## 0.11.0
+
+### Minor Changes
+
+- `devboxes auth` is gone. Manage your account with the `account.*` commands through `devboxes invoke`: `account.devices`, `account.sign-out-device`, `account.sign-out-other-devices`, `account.enable-two-factor`, `account.confirm-two-factor`, `account.disable-two-factor`, `account.regenerate-backup-codes`, `account.change-password`, `account.change-email` and `account.update`. A password sign-in that asks for a second factor outside a terminal finishes with `devboxes login --second-factor-stdin`, or with `--email-second-factor` for a code by email.
+- `devboxes runner listen` downloads each new devboxes executor release while it waits for work, so the first Task after a release starts without waiting for the download.
+- `devboxes runner listen` runs Tasks side by side while their Projects' machine sizes fit the machine, limits each Task's container to its size's CPUs and memory, and takes `--cpus` and `--memory` to cap how much of the machine devboxes may use.
+- `devboxes runner listen` keeps the tool cache in Docker volumes on the machine, one for each Organization, platform and cached directory, shared by the Runs of that Organization's Projects there, instead of downloading and uploading archives at every Run.
+
+### Patch Changes
+
+- `devboxes runner listen` reports each Task's container on its own. When the API refuses one report, the listener logs it with its Task and goes on with the others. Before, one refused report failed the whole poll, so every other Task's start and end waited until the refusal cleared.
+- The CLI's published source holds only the files the CLI runs. Eleven files that nothing in it imports are gone, among them the `provider-connect` flows and three protocol modules, along with the Chat agent's log tools, which `devboxes mcp` never served. `devboxes mcp` serves `describe` and `invoke`, as before.
+
 ## 0.10.0
 
 ### Minor Changes
