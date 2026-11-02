@@ -93,6 +93,8 @@ const runRunner = async (
     tokenFile: options.tokenFile,
     stateDirectory: options.stateDirectory,
   });
+  // listen waits for every Task start; only a download of the next executor may still run.
+  process.exit(0);
 };
 
 export const addRunnerCommands = (program: Command) => {

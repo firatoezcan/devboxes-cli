@@ -29,7 +29,11 @@ boundaries, not compatibility guarantees for retired protocols.
   that a Runner claim returns from that release.
 - `packages/platform/src/protocol/runner-callbacks.ts` defines what the Runner's
   claim, assignments and reconcile routes answer. Each schema is its route's
-  `response`, which the API validates, and what `devboxes runner` parses.
+  `response`, which the API validates, and what `devboxes runner` parses. Every
+  claim answer names the current executor for the Runner's platform, as the API
+  last read the release channel, at most once every five minutes for all
+  Runners, or null when that read failed. `devboxes runner listen` downloads a new one into its cache
+  without waiting for it, so the first Task after a release finds it there.
 - `apps/firops-api/src/execution/runners.ts` owns
   `/api/internal/execution/runners` claims, assignments, stop reports, and
   Runner heartbeat expiry. A start that fails before the Task's container
@@ -62,13 +66,13 @@ boundaries, not compatibility guarantees for retired protocols.
 - `packages/devbox/src/runner/docker-task-runtime.ts` owns Docker launch.
   The container name is `devboxes-task-<taskId>` and its identity label is
   `devboxes.task`. Launch reuses the existing named container when present.
-  It keeps the executor of its latest launch's digest in
-  `<state directory>/executors/<sha256>`, hashes it against the digest at each
-  launch, downloads it only when it is missing or doesn't match, deletes
-  everything else in `executors` that it can, and hard-links it into the Task's
-  directory. An entry it can't delete yet stays for a later launch and never
-  fails this one. It also owns the Claude Code volume of a Claude
-  subscription Run.
+  It keeps the executor of the digest it staged last in
+  `<state directory>/executors/<sha256>`, one staging at a time. Each staging
+  hashes it against the digest, downloads it only when it is missing or doesn't
+  match, deletes everything else in `executors` that it can, and for a launch
+  hard-links it into the Task's directory. An entry it can't delete yet stays
+  for a later staging and never fails this one. It also owns the Claude Code
+  volume of a Claude subscription Run.
 - `packages/devbox/src/runner/executor-artifact.ts` downloads the executor over
   HTTPS and verifies its SHA-256 digest before the Runner mounts it, and
   verifies Claude Code's npm tarball and the binary in it against the SHA-512

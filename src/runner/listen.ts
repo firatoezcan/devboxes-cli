@@ -185,6 +185,11 @@ export const listen = async (options: {
   const interrupt = () => {
     stopping = true;
   };
+  /**
+   * The executor digest the Runner is downloading or downloaded ahead of its Tasks. A failed
+   * download clears it, so a later claim tries again.
+   */
+  let prefetched: string | null = null;
   const startCreated = async (
     task: Static<typeof RunnerAssignmentsSchema>["tasks"][number],
     containerId: string,
@@ -322,7 +327,16 @@ export const listen = async (options: {
         throw error;
       }
       if (starting.size === 0) {
-        const { task } = await api("claim", {});
+        const { task, executor } = await api("claim", {});
+        if (executor && executor.sha256 !== prefetched) {
+          prefetched = executor.sha256;
+          runtime.stageExecutor(executor).catch((error: Error) => {
+            prefetched = null;
+            console.error(
+              `Downloading executor ${executor.version} ahead of its Tasks failed: ${error.message}`,
+            );
+          });
+        }
         if (task && !stopping && task.containerId === null)
           starting.set(
             task.id,

@@ -1454,6 +1454,12 @@ describe("devboxes runner listen", () => {
   const until = async (condition: () => boolean) => {
     while (!condition()) await Bun.sleep(50);
   };
+  /** A current executor that the fake API answering `request` doesn't serve. */
+  const absentExecutor = (request: Request) => ({
+    sha256: "0".repeat(64),
+    version: "test",
+    url: `${new URL(request.url).origin}/executor`,
+  });
   const spawnListener = async (origin: string, env: Record<string, string | undefined> = {}) => {
     await writeFile(runnerTokenFile, "devboxes_runner_fixture\n", { mode: 0o600 });
     const listener = Bun.spawn([process.execPath, "src/cli.ts", ...(await listenTo(origin))], {
@@ -1502,7 +1508,7 @@ describe("devboxes runner listen", () => {
           }
           return path === "assignments"
             ? Response.json({ tasks: [] })
-            : Response.json({ task: { id: "not-a-task" } });
+            : Response.json({ task: { id: "not-a-task" }, executor: absentExecutor(request) });
         },
       });
     };
@@ -1560,8 +1566,10 @@ describe("devboxes runner listen", () => {
         if (path === "assignments") return Response.json({ tasks: [] });
         if (path === "claim") {
           claims += 1;
-          if (claims > 1) return Response.json({ task: null });
+          const executor = absentExecutor(request);
+          if (claims > 1) return Response.json({ task: null, executor });
           return Response.json({
+            executor,
             task: {
               id: taskId,
               executorId: null,
@@ -1569,11 +1577,7 @@ describe("devboxes runner listen", () => {
               status: "queued",
               image: `registry.devboxes.test/workspace@sha256:${"a".repeat(64)}`,
               platform: "linux/amd64",
-              daemon: {
-                sha256: "0".repeat(64),
-                version: "test",
-                url: `${new URL(request.url).origin}/executor`,
-              },
+              daemon: executor,
               claudeCode: null,
               traceparent: `00-${"1".repeat(32)}-${"2".repeat(16)}-01`,
             },
@@ -1607,6 +1611,152 @@ describe("devboxes runner listen", () => {
     expect(
       runner.output.stderr.split(`The start failure of Task ${taskId} was refused`),
     ).toHaveLength(2);
+  }, 60_000);
+
+  it("downloads the current executor while idle, so the next Task's launch needs no download", async () => {
+    const taskId = crypto.randomUUID();
+    const executorBytes = "#!/bin/sh\nexit 0\n";
+    const reports: { reason?: string }[] = [];
+    let claims = 0;
+    let executorRequests = 0;
+    using api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async (request) => {
+        const path = new URL(request.url).pathname.split("/").at(-1);
+        const executor = {
+          sha256: new Bun.CryptoHasher("sha256").update(executorBytes).digest("hex"),
+          version: "release",
+          url: `${new URL(request.url).origin}/executor`,
+        };
+        if (path === "executor") {
+          executorRequests += 1;
+          return claims < 2 ? new Response(executorBytes) : new Response(null, { status: 404 });
+        }
+        if (path === "assignments") return Response.json({ tasks: [] });
+        if (path === "claim") {
+          claims += 1;
+          if (claims !== 2) return Response.json({ task: null, executor });
+          return Response.json({
+            executor,
+            task: {
+              id: taskId,
+              executorId: null,
+              containerId: null,
+              status: "queued",
+              image: `registry.devboxes.test/workspace@sha256:${"a".repeat(64)}`,
+              platform: "linux/amd64",
+              daemon: executor,
+              claudeCode: null,
+              traceparent: `00-${"1".repeat(32)}-${"2".repeat(16)}-01`,
+            },
+          });
+        }
+        if (path === "reconcile") {
+          reports.push(await request.json());
+          return Response.json({ status: "queued" });
+        }
+        return new Response(null, { status: 404 });
+      },
+    });
+    await using runner = await spawnListener(api.url.origin);
+
+    await until(() => reports.length > 0 || runner.listener.exitCode !== null);
+
+    expect({ executorRequests, reason: reports[0]?.reason }).toEqual({
+      executorRequests: 1,
+      reason: expect.stringContaining("/images/create"),
+    });
+  }, 60_000);
+
+  it("tries a failed executor download again on a later claim", async () => {
+    const taskId = crypto.randomUUID();
+    const executorBytes = "#!/bin/sh\nexit 0\n";
+    const reports: { reason?: string }[] = [];
+    let claims = 0;
+    let executorRequests = 0;
+    using api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async (request) => {
+        const path = new URL(request.url).pathname.split("/").at(-1);
+        const executor = {
+          sha256: new Bun.CryptoHasher("sha256").update(executorBytes).digest("hex"),
+          version: "release",
+          url: `${new URL(request.url).origin}/executor`,
+        };
+        if (path === "executor") {
+          executorRequests += 1;
+          if (executorRequests === 1) return new Response(null, { status: 503 });
+          return claims < 3 ? new Response(executorBytes) : new Response(null, { status: 404 });
+        }
+        if (path === "assignments") return Response.json({ tasks: [] });
+        if (path === "claim") {
+          claims += 1;
+          if (claims !== 3) return Response.json({ task: null, executor });
+          return Response.json({
+            executor,
+            task: {
+              id: taskId,
+              executorId: null,
+              containerId: null,
+              status: "queued",
+              image: `registry.devboxes.test/workspace@sha256:${"a".repeat(64)}`,
+              platform: "linux/amd64",
+              daemon: executor,
+              claudeCode: null,
+              traceparent: `00-${"1".repeat(32)}-${"2".repeat(16)}-01`,
+            },
+          });
+        }
+        if (path === "reconcile") {
+          reports.push(await request.json());
+          return Response.json({ status: "queued" });
+        }
+        return new Response(null, { status: 404 });
+      },
+    });
+    await using runner = await spawnListener(api.url.origin);
+
+    await until(() => reports.length > 0 || runner.listener.exitCode !== null);
+
+    expect({ executorRequests, reason: reports[0]?.reason }).toEqual({
+      executorRequests: 2,
+      reason: expect.stringContaining("/images/create"),
+    });
+  }, 60_000);
+
+  it("stops at once while it downloads an executor that no Task waits for", async () => {
+    let downloading = false;
+    using api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      idleTimeout: 0,
+      fetch: (request) => {
+        const path = new URL(request.url).pathname.split("/").at(-1);
+        if (path === "executor") {
+          downloading = true;
+          return new Response(
+            new ReadableStream({
+              async pull(controller) {
+                controller.enqueue(new Uint8Array(1));
+                await Bun.sleep(1_000);
+              },
+            }),
+          );
+        }
+        if (path === "assignments") return Response.json({ tasks: [] });
+        return Response.json({ task: null, executor: absentExecutor(request) });
+      },
+    });
+    await using runner = await spawnListener(api.url.origin);
+    await until(() => downloading || runner.listener.exitCode !== null);
+
+    const stopping = performance.now();
+    runner.listener.kill("SIGTERM");
+
+    expect(await runner.listener.exited).toBe(0);
+    expect(performance.now() - stopping).toBeLessThan(2_000);
   }, 60_000);
 
   it.each([
@@ -1684,7 +1834,7 @@ describe("devboxes runner listen", () => {
           polled = true;
           return new URL(request.url).pathname.endsWith("/assignments")
             ? Response.json({ tasks: [] })
-            : Response.json({ task: null });
+            : Response.json({ task: null, executor: absentExecutor(request) });
         },
       });
       await using runner = await spawnListener(api.url.origin, { DO_NOT_TRACK: configured });
