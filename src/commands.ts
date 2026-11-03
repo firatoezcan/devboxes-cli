@@ -22,6 +22,8 @@ export type CommandConnection = {
   origin: string;
   token: string;
   organizationId?: string;
+  /** Headers every request sends besides the ones `requestJson` sets. */
+  headers?: Record<string, string>;
   /**
    * Saves the session token a response hands over in `set-auth-token`, which replaces the account
    * session's when the change ends that session, as turning on two-factor authentication does.
@@ -237,7 +239,11 @@ export const requestJson = async (
   path: string,
   body?: JsonValue,
 ): Promise<CommandResponse> => {
-  const headers = new Headers({ Accept: "application/json", "User-Agent": cliUserAgent });
+  const headers = new Headers({
+    ...connection.headers,
+    Accept: "application/json",
+    "User-Agent": cliUserAgent,
+  });
   injectCallerTrace(headers);
   let traceId: string | null = null;
   let requestId: string | null = null;

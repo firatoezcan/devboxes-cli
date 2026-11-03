@@ -35,13 +35,13 @@ const registeredSchema = Type.Object({
   token: Type.String({ minLength: 1 }),
 });
 
-/** Whether the API still accepts the Runner key in `tokenFile`, asked the way the Runner asks. */
+/** Whether the API still accepts the Runner key in `tokenFile`. */
 const keyWorks = async (connection: CommandConnection, tokenFile: string) => {
   const token = (await Bun.file(tokenFile).text()).trim();
   try {
     await requestJson(
       { origin: connection.origin, token },
-      "/api/internal/execution/runners/assignments",
+      "/api/internal/execution/runners/identify",
       {},
     );
     return true;

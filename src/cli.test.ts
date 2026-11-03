@@ -1319,13 +1319,13 @@ describe("devboxes runner add", () => {
           ),
         });
       if (pathname === "/api/commands/organizations/list") return Response.json({ organizations });
-      if (pathname === "/api/internal/execution/runners/assignments")
+      if (pathname === "/api/internal/execution/runners/identify")
         return refusedKeys.has(request.headers.get("authorization")?.replace("Bearer ", "") ?? "")
           ? Response.json(
               { error: { code: "RUNNER_REVOKED", message: "The Runner is unavailable." } },
               { status: 401 },
             )
-          : Response.json({ tasks: [] });
+          : Response.json({ id: "runner-1" });
       const body = await request.json();
       registrations.push(body);
       return Response.json(
@@ -1453,6 +1453,7 @@ describe("devboxes runner listen", () => {
       const { pathname } = new URL(request.url);
       if (pathname.endsWith("/info"))
         return Response.json({
+          ID: "test-engine",
           OperatingSystem: engine.name,
           Architecture: "aarch64",
           SecurityOptions: [],

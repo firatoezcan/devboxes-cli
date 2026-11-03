@@ -47,9 +47,16 @@ boundaries, not compatibility guarantees for retired protocols.
   sizes of the Runner's live Tasks and that Task fit what the claim says it may
   use, and one Task to a Runner that runs none. It reads the live Tasks in the
   transaction that claims, so claims that arrive together can't overfill the
-  Runner. A claim without the platform, which a CLI up to 0.11.0 sends, gets 403
-  `RUNNER_OUTDATED`, which stops that listener and names the release to update
-  to. A start that fails before the Task's container exists, the Runner reports
+  Runner. One listener holds a Runner (DEC-one-listener-per-runner): `listen`
+  names itself in `runnerListenerHeader` on `/claim`, `/assignments`,
+  `/reconcile` and `/release`, another listener gets 409
+  `RUNNER_LISTENING_ELSEWHERE` until the holder's heartbeat lapses, and
+  `/release`, which `listen` calls when a signal stops it, lets go of the
+  Runner while no Task's container runs on its machine. A call without the
+  header, which a CLI up to 0.12.0 sends, gets 403 `RUNNER_OUTDATED`, which
+  stops that listener and names the release to update to. `/identify` answers
+  which Runner a credential belongs to, for `devboxes runner add`, and holds
+  nothing. A start that fails before the Task's container exists, the Runner reports
   to `/reconcile` as `start-failed` with its reason. The API then holds the
   Task from `/claim` for 1, 4 and then 15 minutes, as `nextRetry` schedules a
   managed retry, and hands out other Tasks that fit meanwhile. After the third
