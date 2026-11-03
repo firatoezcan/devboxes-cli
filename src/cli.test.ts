@@ -1338,7 +1338,6 @@ describe("devboxes runner add", () => {
     },
   });
   afterAll(() => api.stop(true));
-  const platform = process.arch === "arm64" ? "linux/arm64" : "linux/amd64";
   const runnerEnvironment = async () => {
     const config = await mkdtemp(join(fixtureDirectory, "runner-"));
     return {
@@ -1367,7 +1366,7 @@ describe("devboxes runner add", () => {
     const token = (await Bun.file(tokenFile).text()).trim();
     expect(exitCode).toBe(0);
     expect(registrations).toEqual([
-      { organizationId: organizations[2]?.id, name: hostname(), platform, cost: null },
+      { organizationId: organizations[2]?.id, name: hostname(), cost: null },
     ]);
     expect(token).toStartWith("devboxes_runner_1_");
     expect((await stat(tokenFile)).mode & 0o777).toBe(0o600);
@@ -1413,7 +1412,7 @@ describe("devboxes runner add", () => {
     expect(again.exitCode).toBe(1);
     expect(JSON.parse(again.stderr)).toMatchObject({ error: { code: "RUNNER_ALREADY_ADDED" } });
     expect(registrations).toEqual([
-      { organizationId: organizations[0]?.id, name: "Build server", platform, cost: null },
+      { organizationId: organizations[0]?.id, name: "Build server", cost: null },
     ]);
   });
 
@@ -1455,6 +1454,7 @@ describe("devboxes runner listen", () => {
       if (pathname.endsWith("/info"))
         return Response.json({
           OperatingSystem: engine.name,
+          Architecture: "aarch64",
           SecurityOptions: [],
           NCPU: 8,
           MemTotal: 16 * 1024 ** 3,
@@ -1776,7 +1776,7 @@ describe("devboxes runner listen", () => {
     });
   }, 60_000);
 
-  it("claims with the lower of its owner's cap and what Docker reports, for CPUs and memory alike", async () => {
+  it("claims with the lower of its owner's cap and what Docker reports, for CPUs and memory alike, and with the platform Docker runs", async () => {
     const claimsTo = () => {
       const bodies: unknown[] = [];
       const server = Bun.serve({
@@ -1815,9 +1815,9 @@ describe("devboxes runner listen", () => {
     );
 
     expect([whole.bodies[0], capped.bodies[0], above.bodies[0]]).toEqual([
-      { cpus: 8, memoryBytes: 16 * 1024 ** 3 },
-      { cpus: 2.5, memoryBytes: 3 * 1024 ** 3 },
-      { cpus: 8, memoryBytes: 16 * 1024 ** 3 },
+      { cpus: 8, memoryBytes: 16 * 1024 ** 3, platform: "linux/arm64" },
+      { cpus: 2.5, memoryBytes: 3 * 1024 ** 3, platform: "linux/arm64" },
+      { cpus: 8, memoryBytes: 16 * 1024 ** 3, platform: "linux/arm64" },
     ]);
   }, 60_000);
 

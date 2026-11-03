@@ -26,13 +26,16 @@ boundaries, not compatibility guarantees for retired protocols.
 - `packages/protocol/src/task-environment.ts` defines the environment
   keys the executor passes through to the agent, and the reserved Task keys.
 - `packages/protocol/src/daemon-artifact.ts` defines the daemon
-  release's bootstrap protocol and platforms. The API takes the executor digest
-  that a Runner claim returns from that release.
+  release's bootstrap protocol and platforms, and the platform of each machine
+  architecture a Docker engine reports. The API takes the executor digest that
+  a Runner claim returns from that release.
 - `packages/protocol/src/runner-callbacks.ts` defines what the Runner's
   claim, assignments and reconcile routes answer, and the claim's body: the
   CPUs and memory devboxes may use on the Runner's machine, the lower of what
   its Docker engine reports and the `--cpus` and `--memory` cap of
-  `devboxes runner listen`. Each schema is its route's `response`, which the API
+  `devboxes runner listen`, and the platform that engine runs. `listen`
+  refuses to start on an engine whose architecture has no platform, and the
+  API keeps the platform of each Runner's latest claim. Each schema is its route's `response`, which the API
   validates, and what `devboxes runner` parses. Every claim answer names the
   current executor for the Runner's platform, as the API last read the release
   channel, at most once every five minutes for all Runners, or null when that
@@ -44,7 +47,7 @@ boundaries, not compatibility guarantees for retired protocols.
   sizes of the Runner's live Tasks and that Task fit what the claim says it may
   use, and one Task to a Runner that runs none. It reads the live Tasks in the
   transaction that claims, so claims that arrive together can't overfill the
-  Runner. A claim with an empty body, which a CLI up to 0.10.0 sends, gets 403
+  Runner. A claim without the platform, which a CLI up to 0.11.0 sends, gets 403
   `RUNNER_OUTDATED`, which stops that listener and names the release to update
   to. A start that fails before the Task's container exists, the Runner reports
   to `/reconcile` as `start-failed` with its reason. The API then holds the

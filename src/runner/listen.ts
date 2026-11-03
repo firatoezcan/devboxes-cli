@@ -4,6 +4,7 @@ import { constants } from "node:fs";
 import { mkdir, open, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
+import { dockerArchitecturePlatforms } from "@devboxes/protocol/daemon-artifact";
 import type { JsonValue } from "@devboxes/protocol/json";
 import { machineSizeResources } from "@devboxes/protocol/project";
 import {
@@ -100,11 +101,18 @@ export const listen = async (options: {
     stateDirectory: directory,
   });
   const engine = await runtime.docker.info();
-  const capacity = {
+  const platform = dockerArchitecturePlatforms.get(engine.Architecture);
+  if (!platform)
+    throw new CommandError(
+      "PLATFORM_UNSUPPORTED",
+      `devboxes runs Tasks on 64-bit x86 or Arm Docker engines, and this one reports ${engine.Architecture}.`,
+    );
+  const machine = {
     cpus: Math.min(options.cpus ?? engine.NCPU, engine.NCPU),
     memoryBytes: Math.floor(
       Math.min((options.memoryGiB ?? Number.POSITIVE_INFINITY) * 1024 ** 3, engine.MemTotal),
     ),
+    platform,
   };
   const limits = Value.Parse(
     Type.Object({ MemoryLimit: Type.Boolean(), CpuCfsQuota: Type.Boolean() }),
@@ -252,8 +260,8 @@ export const listen = async (options: {
       const container = await runtime.create({
         ...task,
         resources: {
-          cpus: Math.min(size.cpus, capacity.cpus),
-          memoryBytes: Math.min(size.memoryBytes, capacity.memoryBytes),
+          cpus: Math.min(size.cpus, machine.cpus),
+          memoryBytes: Math.min(size.memoryBytes, machine.memoryBytes),
         },
         apiBaseUrl,
         token: await new SignJWT()
@@ -364,7 +372,7 @@ export const listen = async (options: {
         throw error;
       }
       if (starting.size === 0) {
-        const { task, executor } = await api("claim", capacity);
+        const { task, executor } = await api("claim", machine);
         if (executor && executor.sha256 !== prefetched) {
           prefetched = executor.sha256;
           runtime.stageExecutor(executor).catch((error: Error) => {
