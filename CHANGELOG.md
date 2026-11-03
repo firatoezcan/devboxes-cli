@@ -1,5 +1,11 @@
 # devboxes
 
+## 0.13.0
+
+### Minor Changes
+
+- 297054b: `devboxes runner listen` holds its Runner: another listener with the same key stops at once and says to stop the first one or when its hold lapses. Stopping `devboxes runner listen` lets go of the Runner unless a Task's container still runs on the machine, so moving a Runner is stop, then start on the other machine. The API refuses a `devboxes runner listen` from 0.12.0 or older with `RUNNER_OUTDATED`.
+
 ## 0.12.0
 
 ### Minor Changes
