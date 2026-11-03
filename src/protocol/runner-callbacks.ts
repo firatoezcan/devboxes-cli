@@ -76,9 +76,34 @@ export const RunnerAssignmentsSchema = Type.Object({ tasks: Type.Array(AssignedT
 /** `/reconcile`: the Run's status once the Runner's observation is recorded. */
 export const RunnerReconcileSchema = Type.Object({ status: Type.Enum(runStatuses) });
 
+/**
+ * `/release`: whether the calling listener let go of the Runner, and otherwise until when it holds
+ * the Runner, because a Task still has an executor on its machine.
+ */
+export const RunnerReleaseSchema = Type.Union([
+  Type.Object({ released: Type.Literal(true) }),
+  Type.Object({
+    released: Type.Literal(false),
+    heldUntil: Type.String({ format: "date-time" }),
+  }),
+]);
+
+/** `/identify`: the Runner a Runner credential belongs to. */
+export const RunnerIdentitySchema = Type.Object({ id: Type.String() });
+
 /** Each route's answer by its name under /internal/execution/runners. */
 export const runnerAnswers = {
   claim: RunnerClaimSchema,
   assignments: RunnerAssignmentsSchema,
   reconcile: RunnerReconcileSchema,
+  release: RunnerReleaseSchema,
+  identify: RunnerIdentitySchema,
 };
+
+/**
+ * The header in which `devboxes runner listen` names itself on `/claim`, `/assignments`,
+ * `/reconcile` and `/release`: a one-way digest, under its own label, of its Docker engine's ID and
+ * its relay key, so it is the same across restarts on one engine with one state directory and
+ * reveals nothing of the key. One listener holds a Runner at a time (DEC-one-listener-per-runner).
+ */
+export const runnerListenerHeader = "devboxes-listener";

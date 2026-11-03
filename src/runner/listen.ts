@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createSocket } from "node:dgram";
 import { constants } from "node:fs";
 import { mkdir, open, rm, stat, writeFile } from "node:fs/promises";
@@ -11,6 +11,7 @@ import {
   type RunnerAssignmentsSchema,
   type RunnerClaimSchema,
   runnerAnswers,
+  runnerListenerHeader,
 } from "../protocol/runner-callbacks";
 import { dockerSocketPath } from "./docker-socket";
 import { DockerOpencodeTaskRuntime } from "./docker-task-runtime";
@@ -32,6 +33,12 @@ const relayStateSchema = Type.Object({
  * Runs the Runner. Each executor reaches only this listener's relay, with a token that only the
  * relay accepts. The relay forwards the executor's Task callbacks to the API with the Runner
  * credential and names the token's Task in `devboxes-task`.
+ *
+ * One listener holds a Runner (DEC-one-listener-per-runner). This one names itself to the API by a
+ * one-way digest, under its own label, of its Docker engine's ID and its relay key: the same after a
+ * restart on this engine with this state directory, and another for a copy of the state directory
+ * on another engine. It ends when another listener holds the Runner. Stopped by a signal, it lets go of
+ * the Runner unless a Task's container still runs on this machine.
  */
 export const listen = async (options: {
   apiOrigin: string;
@@ -196,12 +203,18 @@ export const listen = async (options: {
       { mode: 0o600, flag: "wx" },
     );
   const apiBaseUrl = `http://host.docker.internal:${relay.port}/api`;
+  const listener = createHash("sha256")
+    .update("devboxes runner listener\0")
+    .update(Value.Parse(Type.Object({ ID: Type.String({ minLength: 1 }) }), engine).ID)
+    .update("\0")
+    .update(relayKey)
+    .digest("base64url");
   const api = async <Operation extends keyof typeof runnerAnswers>(
     operation: Operation,
     body: JsonValue,
   ): Promise<Static<(typeof runnerAnswers)[Operation]>> => {
     const { data } = await requestJson(
-      { origin: options.apiOrigin, token },
+      { origin: options.apiOrigin, token, headers: { [runnerListenerHeader]: listener } },
       `/api/internal/execution/runners/${operation}`,
       body,
     );
@@ -280,6 +293,7 @@ export const listen = async (options: {
   let failures = 0;
   const endsListener = ({ code, options: { status } }: CommandError) =>
     code === "DOCKER_ENGINE_UNSUPPORTED" ||
+    code === "RUNNER_LISTENING_ELSEWHERE" ||
     status === 401 ||
     status === 403 ||
     (!connected && (status === 404 || status === 422));
@@ -431,5 +445,15 @@ export const listen = async (options: {
     await relay.stop();
     process.removeListener("SIGINT", interrupt);
     process.removeListener("SIGTERM", interrupt);
+    if (stopping) {
+      const release = await api("release", {}).catch((error: Error) => {
+        console.error(`Letting go of the Runner failed: ${CommandError.from(error)}`);
+        return null;
+      });
+      if (release && !release.released)
+        console.info(
+          `Tasks still run on this machine, so the Runner stays held until ${release.heldUntil}. Run devboxes runner listen here again to finish them.`,
+        );
+    }
   }
 };
