@@ -344,6 +344,7 @@ describe("devboxes invoke", () => {
                 summary: "Start Sessions in the Project",
                 "x-devboxes": {
                   effect: "write",
+                  elevated: false,
                   roles: ["owner", "admin", "member", "reviewer", "viewer"],
                   authority: "Organization member",
                 },
@@ -368,6 +369,7 @@ describe("devboxes invoke", () => {
                 summary: "Create a token that acts for a member with limited access",
                 "x-devboxes": {
                   effect: "write",
+                  elevated: false,
                   roles: ["owner", "admin", "member", "reviewer", "viewer"],
                   authority: "Current account session",
                 },
@@ -596,8 +598,7 @@ describe("devboxes invoke", () => {
 describe("devboxes commands", () => {
   type Contract = {
     effect: "write";
-    elevated?: boolean;
-    elevation?: string;
+    elevated?: string | boolean;
     roles?: string[];
     authority: string;
   };
@@ -626,10 +627,10 @@ describe("devboxes commands", () => {
     });
   };
 
-  it("lists an elevated write, and one that leaves `elevated` out, ignoring fields a newer API adds", async () => {
+  it("lists an elevated write and a write that isn't", async () => {
     const contracts: Contract[] = [
-      { effect: "write", elevated: true, elevation: "money", roles: ["owner"], authority: "Owner" },
-      { effect: "write", roles: ["owner"], authority: "Organization owner" },
+      { effect: "write", elevated: "money", roles: ["owner"], authority: "Owner" },
+      { effect: "write", elevated: false, roles: ["owner"], authority: "Organization owner" },
     ];
     for (const contract of contracts) {
       const listed = await list(contract);
@@ -640,14 +641,16 @@ describe("devboxes commands", () => {
     }
   });
 
-  it("refuses a document whose write serves `elevated` as anything but true, or no roles, as an older API's", async () => {
+  it("refuses a document whose write serves `elevated` outside its classes, or no roles, and says to install the current CLI", async () => {
     const contracts: Contract[] = [
-      { effect: "write", elevated: false, roles: ["owner"], authority: "Organization owner" },
-      { effect: "write", authority: "Organization owner" },
+      { effect: "write", elevated: true, roles: ["owner"], authority: "Organization owner" },
+      { effect: "write", roles: ["owner"], authority: "Organization owner" },
+      { effect: "write", elevated: false, authority: "Organization owner" },
     ];
     for (const contract of contracts) {
       const listed = await list(contract);
-      expect(listed.stderr).toContain("This devboxes CLI needs a newer devboxes API.");
+      expect(listed.stderr).toContain("This devboxes CLI can't read the command list (");
+      expect(listed.stderr).toContain("Install the current CLI from https://devboxes.ai/install.");
       expect(listed.exitCode).not.toBe(0);
     }
   });
@@ -669,6 +672,7 @@ describe("devboxes invoke in a terminal", () => {
       summary: "Run the command",
       "x-devboxes": {
         effect: "write",
+        elevated: false,
         roles: ["owner", "admin", "member", "reviewer", "viewer"],
         authority: "Organization member",
       },
@@ -939,6 +943,7 @@ describe("devboxes connect", () => {
       summary: "Run the command",
       "x-devboxes": {
         effect: "write",
+        elevated: false,
         roles: ["owner", "admin"],
         authority: "Organization owner or admin",
       },
@@ -1086,7 +1091,7 @@ describe("devboxes connect", () => {
     cli.kill();
 
     expect(exitCode).toBe(1);
-    expect(cli.screen()).toContain("INVALID_RESPONSE");
+    expect(cli.screen()).toContain("INVALID_SIGN_IN_URL");
     expect(cli.screen()).not.toContain("file:");
     expect(await cli.opened()).toBe(false);
     expect(completions).toEqual([]);
@@ -1302,6 +1307,7 @@ describe("devboxes runner add", () => {
               {
                 operationId: "runners.add",
                 effect: "write",
+                elevated: false,
                 authority: "Organization owner or admin",
                 roles: registerRoles,
               },
@@ -1524,29 +1530,33 @@ describe("devboxes runner listen", () => {
     };
   };
 
-  it("retries a server error and a 404 after its first successful poll, names an invalid response, and stops without finishing its wait", async () => {
+  it("retries a server error and a 404 after its first successful poll, and stops without finishing its wait", async () => {
     const serve = (failure: {
       path: "assignments" | "claim";
       status: number;
       code: string;
       message: string;
     }) => {
-      let failed = false;
-      return Bun.serve({
-        hostname: "127.0.0.1",
-        port: 0,
-        fetch: (request) => {
-          const path = new URL(request.url).pathname.split("/").at(-1);
-          if (path === failure.path && !failed) {
-            failed = true;
-            const { status, code, message } = failure;
-            return Response.json({ error: { code, message } }, { status });
-          }
-          return path === "assignments"
-            ? Response.json({ tasks: [] })
-            : Response.json({ task: { id: "not-a-task" }, executor: absentExecutor(request) });
-        },
-      });
+      const polls = { failed: false, retried: false };
+      return {
+        polls,
+        server: Bun.serve({
+          hostname: "127.0.0.1",
+          port: 0,
+          fetch: (request) => {
+            const path = new URL(request.url).pathname.split("/").at(-1);
+            if (path === failure.path && !polls.failed) {
+              polls.failed = true;
+              const { status, code, message } = failure;
+              return Response.json({ error: { code, message } }, { status });
+            }
+            if (polls.failed) polls.retried = true;
+            return path === "assignments"
+              ? Response.json({ tasks: [] })
+              : Response.json({ task: null, executor: null });
+          },
+        }),
+      };
     };
     const serverErrorApi = serve({
       path: "assignments",
@@ -1561,15 +1571,13 @@ describe("devboxes runner listen", () => {
       message: "The Task is not assigned.",
     });
     try {
-      await using serverError = await spawnListener(serverErrorApi.url.origin);
-      await using lateNotFound = await spawnListener(lateNotFoundApi.url.origin);
+      await using serverError = await spawnListener(serverErrorApi.server.url.origin);
+      await using lateNotFound = await spawnListener(lateNotFoundApi.server.url.origin);
       const runners = [serverError, lateNotFound];
-      await until(() =>
-        runners.every(
-          (runner) =>
-            runner.output.stderr.split("Polling failed").length > 2 ||
-            runner.listener.exitCode !== null,
-        ),
+      await until(
+        () =>
+          (serverErrorApi.polls.retried && lateNotFoundApi.polls.retried) ||
+          runners.some((runner) => runner.listener.exitCode !== null),
       );
 
       expect(serverError.output.stderr).toContain(
@@ -1579,15 +1587,39 @@ describe("devboxes runner listen", () => {
         "TASK_NOT_FOUND (HTTP 404): The Task is not assigned.",
       );
       for (const runner of runners) {
-        expect(runner.output.stderr).toMatch(/claim response .*\/task/);
         const stopping = performance.now();
         runner.listener.kill("SIGTERM");
         expect(await runner.listener.exited).toBe(0);
         expect(performance.now() - stopping).toBeLessThan(2_000);
       }
     } finally {
-      await Promise.all([serverErrorApi.stop(true), lateNotFoundApi.stop(true)]);
+      await Promise.all([serverErrorApi.server.stop(true), lateNotFoundApi.server.stop(true)]);
     }
+  }, 30_000);
+
+  it("stops at an answer it can't read and says to install the current CLI", async () => {
+    let claims = 0;
+    using api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request) => {
+        if (new URL(request.url).pathname.endsWith("/assignments"))
+          return Response.json({ tasks: [] });
+        claims += 1;
+        return Response.json({ task: { id: "not-a-task" }, executor: null });
+      },
+    });
+    await using runner = await spawnListener(api.url.origin);
+    await until(
+      () =>
+        (runner.listener.exitCode !== null && runner.output.stderr.includes("devboxes.ai")) ||
+        claims > 1,
+    );
+
+    expect({ exitCode: runner.listener.exitCode, claims }).toEqual({ exitCode: 1, claims: 1 });
+    expect(runner.output.stderr).toMatch(
+      /This devboxes CLI can't read the claim response \(.*\/task.*\)\. Install the current CLI from https:\/\/devboxes\.ai\/install\./,
+    );
   }, 30_000);
 
   it("reports a start that failed before its container existed again after a server error, and drops the report the API refuses", async () => {
@@ -2513,7 +2545,7 @@ describe("devboxes after a refusal for an old sign-in", () => {
                 summary: "Change the Organization's settings",
                 "x-devboxes": {
                   effect: "write",
-                  elevated: true,
+                  elevated: "access",
                   roles: ["owner", "admin"],
                   authority: "Organization owner or admin",
                 },

@@ -36,25 +36,28 @@ boundaries, not compatibility guarantees for retired protocols.
   `devboxes runner listen`, and the platform that engine runs. `listen`
   refuses to start on an engine whose architecture has no platform, and the
   API keeps the platform of each Runner's latest claim. Each schema is its route's `response`, which the API
-  validates, and what `devboxes runner` parses. Every claim answer names the
-  current executor for the Runner's platform, as the API last read the release
-  channel, at most once every five minutes for all Runners, or null when that
-  read failed. `devboxes runner listen` downloads a new one into its cache
-  without waiting for it, so the first Task after a release finds it there.
+  validates, and what `devboxes runner` parses. An answer that the CLI can't
+  parse, here or from any other route, fails with `INVALID_RESPONSE`, which
+  says to install the current CLI from https://devboxes.ai/install, because
+  Production always runs the newest API, and `devboxes runner listen` stops
+  with it (DEC-unreadable-answer-installs-current-cli). Every claim answer
+  names the current executor for the Runner's platform, as the API last read
+  the release channel, at most once every five minutes for all Runners, or
+  null when that read failed. `devboxes runner listen` downloads a new one
+  into its cache without waiting for it, so the first Task after a release
+  finds it there.
 - `apps/firops-api/src/execution/runners.ts` owns
   `/api/internal/execution/runners` claims, assignments, stop reports, and
   Runner heartbeat expiry. A claim hands out another Task while the machine
   sizes of the Runner's live Tasks and that Task fit what the claim says it may
   use, and one Task to a Runner that runs none. It reads the live Tasks in the
   transaction that claims, so claims that arrive together can't overfill the
-  Runner. One listener holds a Runner (DEC-one-listener-per-runner): `listen`
-  names itself in `runnerListenerHeader` on `/claim`, `/assignments`,
+  Runner. One listener holds a Runner (DEC-one-listener-holds-each-runner):
+  `listen` names itself in `runnerListenerHeader` on `/claim`, `/assignments`,
   `/reconcile` and `/release`, another listener gets 409
   `RUNNER_LISTENING_ELSEWHERE` until the holder's heartbeat lapses, and
   `/release`, which `listen` calls when a signal stops it, lets go of the
-  Runner while no Task's container runs on its machine. A call without the
-  header, which a CLI up to 0.12.0 sends, gets 403 `RUNNER_OUTDATED`, which
-  stops that listener and names the release to update to. `/identify` answers
+  Runner while no Task's container runs on its machine. `/identify` answers
   which Runner a credential belongs to, for `devboxes runner add`, and holds
   nothing. A start that fails before the Task's container exists, the Runner reports
   to `/reconcile` as `start-failed` with its reason. The API then holds the
@@ -311,12 +314,11 @@ node before it saves the checkpoint. The node commits the uncommitted changes as
 `Pause at the <provider> usage limit: checkpoint of <Session title>` and pushes
 to `refs/devboxes/checkpoint/<Run>/<UUID>` instead of the push ref. With nothing
 to push, the node is skipped. The API publishes that ref to the Session's branch
-in the same way but opens no pull request. An API from before this contract
-refuses the ref, so nothing is published and the checkpoint keeps the work. A
-Run that starts from such a checkpoint owes the pull request until a Run after
-the paused one pushes, or records a pull request or GitHub's refusal of one:
-when its publish node succeeds without a push and the Session's branch is still
-at the checkpoint, the API records the branch's open pull request or opens one
+in the same way but opens no pull request. A Run that starts from such a
+checkpoint owes the pull request until a Run after the paused one pushes, or
+records a pull request or GitHub's refusal of one: when its publish node
+succeeds without a push and the Session's branch is still at the checkpoint,
+the API records the branch's open pull request or opens one
 with the Session's title. A failed request to GitHub there records nothing and
 does not fail the node, so the next such Run tries again.
 
@@ -332,12 +334,11 @@ null in every other Run. The executor of a taskbox Run uses no Git: it unpacks
 that gzip tar into a plain workspace directory, saves the directory the same way
 for its checkpoint, through the tool cache's safe pack and unpack, and sends a
 null `repositoryStartSha` in `/started`, which the API accepts only from a Run
-without a repository. Only an executor from before taskboxes asks
-`/repository` for a taskbox Run: a Runner's gets `EXECUTOR_OUTDATED`, and a
-managed one, which runs the API's own release, gets `EXECUTOR_RELEASE_MISMATCH`,
-alerts the devboxes team, and fails the Run on devboxes' side. The Git transport
-refuses one with `REPOSITORY_UNAVAILABLE`. Admission refuses such a Run a
-publish node and any `repositories` operation.
+without a repository. An executor that asks `/repository` for a taskbox Run
+runs another release than the API, so it gets `EXECUTOR_RELEASE_MISMATCH`, which
+alerts the devboxes team and fails the Run on devboxes' side. The Git transport
+refuses a taskbox Run with `REPOSITORY_UNAVAILABLE`. Admission refuses such a
+Run a publish node and any `repositories` operation.
 
 When the agent calls a `sessions.dispatch` capability, the executor first packs
 the workspace as its checkpoint does, a taskbox's archive or a repository's
