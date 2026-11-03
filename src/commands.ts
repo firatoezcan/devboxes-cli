@@ -76,9 +76,9 @@ const requestSchema = Type.Object({
 export const commandInputSchema = (operation: CatalogCommand): Field | undefined => {
   if (operation.requestBody === undefined) return undefined;
   if (!Value.Check(requestSchema, operation.requestBody))
-    throw new CommandError(
-      "INVALID_DISCOVERY",
-      `The input schema of ${operation.operationId} is invalid: ${describeErrors(requestSchema, operation.requestBody)}.`,
+    throw unreadableAnswer(
+      `the input schema of ${operation.operationId}`,
+      describeErrors(requestSchema, operation.requestBody),
     );
   return operation.requestBody.content["application/json"].schema;
 };
@@ -221,6 +221,17 @@ export const credentialSafeJson = (
   );
 };
 
+/**
+ * The refusal of an API answer that this CLI can't read, naming the `answer` and its `problems`.
+ * Production always runs the newest API, so the CLI is the one to update.
+ */
+const unreadableAnswer = (answer: string, problems: string, correlation?: RequestCorrelation) =>
+  new CommandError(
+    "INVALID_RESPONSE",
+    `This devboxes CLI can't read ${answer} (${problems}). Install the current CLI from https://devboxes.ai/install.`,
+    { correlation },
+  );
+
 /** The `endpoint` response as `schema` declares it, or a refusal that names every problem. */
 export const parseResponse = <Schema extends TSchema>(
   schema: Schema,
@@ -228,10 +239,7 @@ export const parseResponse = <Schema extends TSchema>(
   endpoint: string,
 ): Static<Schema> => {
   if (Value.Check(schema, data)) return data;
-  throw new CommandError(
-    "INVALID_RESPONSE",
-    `The ${endpoint} response is invalid: ${describeErrors(schema, data)}.`,
-  );
+  throw unreadableAnswer(`the ${endpoint} response`, describeErrors(schema, data));
 };
 
 export const requestJson = async (
@@ -276,9 +284,7 @@ export const requestJson = async (
   if (result) return result;
   const correlation = { traceId, requestId };
   if (!error)
-    throw new CommandError("INVALID_RESPONSE", "The API returned no command result.", {
-      correlation,
-    });
+    throw unreadableAnswer(`the ${path} response`, "it holds no command result", correlation);
   if (Value.Check(errorSchema, error)) {
     if (error.error.code === "SESSION_NOT_FRESH" && connection.signInAgain)
       return requestJson(
@@ -397,14 +403,10 @@ export const describeCommands = async (
 ): Promise<CommandDescription> => {
   const response = await requestJson(connection, "/api/openapi/json");
   const document = response.data;
-  const unreadable = (problem: string) =>
-    new CommandError("INVALID_DISCOVERY", "This devboxes CLI needs a newer devboxes API.", {
-      details: { problem },
-    });
   if (!Value.Check(commandDocumentSchema, document))
-    throw unreadable(describeErrors(commandDocumentSchema, document));
+    throw unreadableAnswer("the command list", describeErrors(commandDocumentSchema, document));
   const catalog = catalogCommands(document);
-  if ("problem" in catalog) throw unreadable(catalog.problem);
+  if ("problem" in catalog) throw unreadableAnswer("the command list", catalog.problem);
   return {
     openapi: document.openapi,
     commands: catalog.commands,

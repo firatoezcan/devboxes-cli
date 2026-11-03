@@ -104,6 +104,7 @@ export const runnerAnswers = {
  * The header in which `devboxes runner listen` names itself on `/claim`, `/assignments`,
  * `/reconcile` and `/release`: a one-way digest, under its own label, of its Docker engine's ID and
  * its relay key, so it is the same across restarts on one engine with one state directory and
- * reveals nothing of the key. One listener holds a Runner at a time (DEC-one-listener-per-runner).
+ * reveals nothing of the key. One listener holds a Runner at a time
+ * (DEC-one-listener-holds-each-runner).
  */
 export const runnerListenerHeader = "devboxes-listener";

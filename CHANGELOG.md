@@ -1,5 +1,11 @@
 # devboxes
 
+## 0.14.0
+
+### Minor Changes
+
+- 6928a46: The CLI reads each write's `elevated` as the API's contract states it: `false`, or the class of an elevated write. An API answer the CLI can't read, the command list included, fails with `INVALID_RESPONSE`, names what doesn't parse, and says to install the current CLI from https://devboxes.ai/install. `devboxes runner listen` stops at such an answer instead of retrying. `INVALID_DISCOVERY` is gone. `devboxes connect` refuses a sign-in URL that isn't HTTP with `INVALID_SIGN_IN_URL`.
+
 ## 0.13.0
 
 ### Minor Changes

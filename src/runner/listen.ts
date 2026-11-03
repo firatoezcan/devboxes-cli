@@ -34,11 +34,12 @@ const relayStateSchema = Type.Object({
  * relay accepts. The relay forwards the executor's Task callbacks to the API with the Runner
  * credential and names the token's Task in `devboxes-task`.
  *
- * One listener holds a Runner (DEC-one-listener-per-runner). This one names itself to the API by a
- * one-way digest, under its own label, of its Docker engine's ID and its relay key: the same after a
- * restart on this engine with this state directory, and another for a copy of the state directory
- * on another engine. It ends when another listener holds the Runner. Stopped by a signal, it lets go of
- * the Runner unless a Task's container still runs on this machine.
+ * One listener holds a Runner (DEC-one-listener-holds-each-runner). This one names itself to the
+ * API by a one-way digest, under its own label, of its Docker engine's ID and its relay key: the
+ * same after a restart on this engine with this state directory, and another for a copy of the
+ * state directory on another engine. It ends when another listener holds the Runner, and at an API
+ * answer it can't read, which only the current CLI can. Stopped by a signal, it lets go of the
+ * Runner unless a Task's container still runs on this machine.
  */
 export const listen = async (options: {
   apiOrigin: string;
@@ -294,6 +295,7 @@ export const listen = async (options: {
   const endsListener = ({ code, options: { status } }: CommandError) =>
     code === "DOCKER_ENGINE_UNSUPPORTED" ||
     code === "RUNNER_LISTENING_ELSEWHERE" ||
+    code === "INVALID_RESPONSE" ||
     status === 401 ||
     status === 403 ||
     (!connected && (status === 404 || status === 422));

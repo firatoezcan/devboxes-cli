@@ -299,8 +299,8 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
       const verificationUrl = httpUrl(started.verificationUrl);
       if (!verificationUrl)
         throw new CommandError(
-          "INVALID_RESPONSE",
-          "The model-accounts.connect-start response is invalid: /verificationUrl must be an HTTP URL.",
+          "INVALID_SIGN_IN_URL",
+          "The model-accounts.connect-start response's verificationUrl isn't an HTTP URL, so devboxes doesn't show or open it.",
         );
       process.stderr.write(
         `Open ${verificationUrl.href} to sign in.${started.userCode === null ? "" : ` Confirm that the page shows code ${started.userCode}.`}\n`,

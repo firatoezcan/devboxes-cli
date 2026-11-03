@@ -86,10 +86,9 @@ const elevationSchema = Type.Union([
  * `shipped`: the day and a one-line note on what it lets devboxes do. A Chat turn calls a command
  * under the Organization's Chat policy, and the roles bind the people the turn
  * answers only where the route names a `chatRequester` action. A read is never elevated. A write
- * states `elevated: false` too, so dropping the flag can't pass unseen; the document the API serves
- * leaves it out, as `servedDocument` says. An elevated write that Chat holds for approval names
- * the `approverRoles` whose members approve it, which law:chat-held-writes-name-approvers requires
- * of exactly those writes.
+ * states `elevated: false` too, so dropping the flag can't pass unseen. An elevated write that
+ * Chat holds for approval names the `approverRoles` whose members approve it, which
+ * law:chat-held-writes-name-approvers requires of exactly those writes.
  */
 export const commandContractSchema = Type.Union([
   Type.Object({ effect: Type.Literal("read"), ...contractFields }, { additionalProperties: false }),
@@ -111,18 +110,14 @@ export const commandContractSchema = Type.Union([
 export type CommandContract = Static<typeof commandContractSchema>;
 
 /**
- * The `x-devboxes` a client reads from the document an API serves, which may be newer than the
- * client: the contract's fields, any field a later API adds, and on an elevated write
- * `elevated: true`, which every released client reads.
+ * What a client checks of each `x-devboxes` in the served document: its `effect`, a write's
+ * `elevated`, its `roles` and the fields every contract shares. The API serves the contract
+ * without `does`.
  */
 const servedFields = { roles: Type.Array(Type.String()), ...sharedFields };
 const servedContractSchema = Type.Union([
   Type.Object({ effect: Type.Literal("read"), ...servedFields }),
-  Type.Object({
-    effect: Type.Literal("write"),
-    elevated: Type.Optional(Type.Literal(true)),
-    ...servedFields,
-  }),
+  Type.Object({ effect: Type.Literal("write"), elevated: elevationSchema, ...servedFields }),
 ]);
 
 const operationSchema = Type.Object({
@@ -136,10 +131,8 @@ const operationSchema = Type.Object({
 export type CatalogCommand = Static<typeof operationSchema> & { path: string; method: "POST" };
 
 /**
- * The document as the API serves it, in the shape every released client reads: a contract leaves
- * out `does`, which the operation's `summary` serves, an elevated write's contract says
- * `elevated: true` and names its class in `elevation`, which those clients ignore, and any other
- * write leaves both out.
+ * The document as the API serves it: each contract leaves out `does`, which the operation's
+ * `summary` serves.
  */
 export const servedDocument = (document: Static<typeof commandDocumentSchema>) => ({
   ...document,
@@ -149,11 +142,7 @@ export const servedDocument = (document: Static<typeof commandDocumentSchema>) =
       const contract = operation?.["x-devboxes"];
       if (!Value.Check(commandContractSchema, contract)) return [path, item];
       const { does: _does, ...served } = contract;
-      if (served.effect === "read")
-        return [path, { ...item, post: { ...operation, "x-devboxes": served } }];
-      const { elevated, ...write } = served;
-      const shown = elevated === false ? write : { ...write, elevated: true, elevation: elevated };
-      return [path, { ...item, post: { ...operation, "x-devboxes": shown } }];
+      return [path, { ...item, post: { ...operation, "x-devboxes": served } }];
     }),
   ),
 });
@@ -244,7 +233,10 @@ export type DelegationResource = Record<GrantLevel, string[]> & { elevated: stri
  */
 export const delegationResources = (
   operations: Iterable<
-    readonly [operationId: string, contract: { effect: "read" | "write"; elevated?: unknown }]
+    readonly [
+      operationId: string,
+      contract: { effect: "read" } | { effect: "write"; elevated: Static<typeof elevationSchema> },
+    ]
   >,
 ) => {
   const resources = new Map<string, DelegationResource>();
@@ -253,7 +245,7 @@ export const delegationResources = (
     const entry = resources.get(resource) ?? { read: [], write: [], elevated: [] };
     for (const level of ["read", "write"] as const)
       if (grants({ [resource]: level }, operationId, detail.effect)) entry[level].push(operationId);
-    if (detail.effect === "write" && detail.elevated) entry.elevated.push(operationId);
+    if (detail.effect === "write" && detail.elevated !== false) entry.elevated.push(operationId);
     resources.set(resource, entry);
   }
   return resources;
