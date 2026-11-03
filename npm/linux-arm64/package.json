@@ -1,6 +1,6 @@
 {
   "name": "@devboxes/cli-linux-arm64",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "devboxes CLI native binary for Linux arm64.",
   "license": "MIT",
   "repository": {

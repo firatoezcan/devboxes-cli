@@ -1,5 +1,11 @@
 # devboxes
 
+## 0.12.0
+
+### Minor Changes
+
+- 5424d95: `devboxes runner listen` tells devboxes the platform its Docker engine runs, linux/amd64 or linux/arm64, with every claim, so a Runner on a Mac with Apple silicon gets linux/arm64 work however it was registered. It refuses to start on an engine of any other architecture. `devboxes runner add` no longer sends a platform. devboxes refuses a claim from an older CLI and asks you to update.
+
 ## 0.11.0
 
 ### Minor Changes
