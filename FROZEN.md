@@ -226,7 +226,10 @@ the model's hosts. agent-vault doesn't store the model credential: it resolves
 it at each request from the sidecar's hook, a Unix socket only uid 1003 may
 connect to, and the hook reads the model account's current credential from
 `egress/model`, so the API's refresh of the account applies to the next request
-and a restarted sidecar keeps nothing stale. When the API refuses the `egress`
+and a restarted sidecar keeps nothing stale. agent-vault logs a JSON `egress`
+line with the target and outcome of each CONNECT it tunnels, and the sidecar
+reports each distinct target and outcome once to `egress/hosts`, which records
+the host for the Run's Project. When the API refuses the `egress`
 sidecar's configuration for the rest of the Task, or the devboxes API URL isn't
 HTTPS on port 443, the sidecar exits with code 78 and the reason as its
 termination message, and the Task ends with that reason before it starts,
