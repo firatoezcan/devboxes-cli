@@ -80,8 +80,8 @@ const elevationSchema = Type.Union([
  * person's session may call it, never a member delegation; `chat` when a Chat delegation may hold
  * it: `policy` when the Chat policy's resources grant it, and `always` when every Chat turn may
  * call it whatever its policy lists, which only the listings of Projects and work setups, reading a
- * tracker conversation's own issue, and opening and erasing the turn's own conversation log are
- * (DEC-memory-erasure-collaborative, DEC-chat-elevated-writes-need-approval); without it, the
+ * tracker conversation's own issue, and opening the turn's own conversation log are
+ * (DEC-chat-elevated-writes-need-approval); without it, the
  * command refuses a Chat token; who may call it, in words; and, once it is usable from Chat,
  * `shipped`: the day and a one-line note on what it lets devboxes do. A Chat turn calls a command
  * under the Organization's Chat policy, and the roles bind the people the turn

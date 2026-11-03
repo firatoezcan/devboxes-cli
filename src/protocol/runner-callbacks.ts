@@ -61,11 +61,13 @@ export const RunnerClaimSchema = Type.Object({
 
 /**
  * `/claim`'s body: the CPUs and memory devboxes may use on the Runner's machine, the lower of what
- * its Docker engine reports and the cap its owner set.
+ * its Docker engine reports and the cap its owner set, and the platform that engine runs, by
+ * `dockerArchitecturePlatforms`.
  */
-export const RunnerCapacitySchema = Type.Object({
+export const RunnerMachineSchema = Type.Object({
   cpus: Type.Number({ exclusiveMinimum: 0 }),
   memoryBytes: Type.Integer({ minimum: 1 }),
+  platform: Type.Enum(opencodeDaemonPlatforms),
 });
 
 /** `/assignments`: the Tasks this Runner holds an executor for, or must stop one of. */

@@ -1,6 +1,12 @@
 /** The regions where devboxes can place a managed Task. A deployment offers some of them. */
 export const managedRegions = ["de"] as const;
 
+/** Where each managed region's machines are, as a person reads it. */
+export const managedRegionNames = { de: "Germany" } as const satisfies Record<
+  (typeof managedRegions)[number],
+  string
+>;
+
 /** The machine size of a Project's Tasks, on managed capacity and on a Runner alike. */
 export const machineSizes = ["medium", "large", "xl"] as const;
 

@@ -178,13 +178,6 @@ export const addRunnerCommands = (program: Command) => {
       name?: string;
     }>();
     const tokenFile = savedTokenFile();
-    const platform =
-      process.arch === "x64" ? "linux/amd64" : process.arch === "arm64" ? "linux/arm64" : null;
-    if (!platform)
-      throw new CommandError(
-        "PLATFORM_UNSUPPORTED",
-        "devboxes runs work on 64-bit x86 and Arm machines.",
-      );
     const interactive = asksInTerminal(options.json);
     if (!interactive && options.organization === undefined)
       throw new CommandError(
@@ -256,7 +249,7 @@ export const addRunnerCommands = (program: Command) => {
           connection,
           {
             command: "runners.add",
-            input: { organizationId: organization.id, name: named.trim(), platform, cost: null },
+            input: { organizationId: organization.id, name: named.trim(), cost: null },
           },
           async () => description,
         )
