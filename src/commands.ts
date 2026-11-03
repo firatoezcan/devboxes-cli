@@ -3,10 +3,10 @@ import {
   type CatalogCommand,
   catalogCommands,
   commandDocumentSchema,
-} from "@devboxes/protocol/command-catalog";
-import { JsonValueSchema, type JsonValue } from "@devboxes/protocol/json";
-import { redactedSecret, secretRedactingReviver } from "@devboxes/protocol/secret-redaction";
-import { describeErrors } from "@devboxes/protocol/validation-errors";
+} from "./protocol/command-catalog";
+import { JsonValueSchema, type JsonValue } from "./protocol/json";
+import { redactedSecret, secretRedactingReviver } from "./security/secret-redaction";
+import { describeErrors } from "./values/validation-errors";
 import { defaultTextMapGetter, ROOT_CONTEXT, trace } from "@opentelemetry/api";
 import { W3CTraceContextPropagator } from "@opentelemetry/core";
 import Type, { type Static, type TObject, type TSchema } from "typebox";
