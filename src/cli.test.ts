@@ -1896,7 +1896,10 @@ describe("devboxes runner listen", () => {
     expect({
       reported: [...new Set(reported)],
       changed: containerChanges.filter((change) => change.includes(unknown)),
-      notices: runner.output.stderr.split(`Task ${unknown} has the Run status archived`).length - 1,
+      notices:
+        runner.output.stderr.split(
+          `Task ${unknown} has the Run status archived, which this devboxes CLI doesn't know, so it leaves the Task and its executor as they are. Install the current CLI from https://devboxes.ai/install.\n`,
+        ).length - 1,
       exitCode: runner.listener.exitCode,
     }).toEqual({ reported: [known], changed: [], notices: 1, exitCode: null });
   }, 30_000);

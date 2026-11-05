@@ -26,7 +26,13 @@ import { jwtVerify, SignJWT } from "jose";
 import Type, { type Static } from "typebox";
 import Value from "typebox/value";
 
-import { CommandError, parseResponse, requestJson, unreadableAnswer } from "../commands";
+import {
+  CommandError,
+  installCurrentCli,
+  parseResponse,
+  requestJson,
+  unreadableAnswer,
+} from "../commands";
 
 /**
  * What this CLI needs of a claimed Task to start it: a Run status, a machine size and a platform it
@@ -258,7 +264,7 @@ export const listen = async (options: {
   const leaveAlone = (taskId: string, unknown: string) => {
     if (leftAlone.get(taskId) !== unknown)
       console.error(
-        `Task ${taskId} has ${unknown}, which this devboxes CLI doesn't know, so it leaves the Task and its executor as they are. Install the current CLI from https://devboxes.ai/install to act on it.`,
+        `Task ${taskId} has ${unknown}, which this devboxes CLI doesn't know, so it leaves the Task and its executor as they are. ${installCurrentCli}`,
       );
     leftAlone.set(taskId, unknown);
   };
@@ -460,7 +466,7 @@ export const listen = async (options: {
               !(opencodeDaemonPlatforms as readonly string[]).includes(task.platform) &&
                 `the platform ${task.platform}`,
             ].filter(Boolean);
-            const reason = `This devboxes CLI can't start the Task, because it doesn't know ${unknown.join(" or ")}. Install the current CLI from https://devboxes.ai/install.`;
+            const reason = `This devboxes CLI can't start the Task, because it doesn't know ${unknown.join(" or ")}. ${installCurrentCli}`;
             console.error(`Task ${task.id}: ${reason}`);
             await reportStartFailure(task.id, reason);
           } else

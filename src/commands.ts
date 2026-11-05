@@ -224,9 +224,12 @@ export const credentialSafeJson = (
 };
 
 /**
- * The refusal of an API answer that this CLI can't read, naming the `answer` and its `problems`.
- * Production always runs the newest API, so the CLI is the one to update.
+ * What the CLI tells a person when it can't read or act on what the API answered. Production always
+ * runs the newest API, so the CLI is the one to update.
  */
+export const installCurrentCli = "Install the current CLI from https://devboxes.ai/install.";
+
+/** The refusal of an API answer that this CLI can't read, naming the `answer` and its `problems`. */
 export const unreadableAnswer = (
   answer: string,
   problems: string,
@@ -234,7 +237,7 @@ export const unreadableAnswer = (
 ) =>
   new CommandError(
     "INVALID_RESPONSE",
-    `This devboxes CLI can't read ${answer} (${problems}). Install the current CLI from https://devboxes.ai/install.`,
+    `This devboxes CLI can't read ${answer} (${problems}). ${installCurrentCli}`,
     { correlation },
   );
 
