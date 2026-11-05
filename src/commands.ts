@@ -110,6 +110,8 @@ export type CommandDescription = {
   openapi: string;
   commands: CatalogCommand[];
   components: NonNullable<Static<typeof commandDocumentSchema>["components"]>;
+  /** The commands whose contract this CLI can't read, each with what in it doesn't parse. */
+  unreadable: { operationId: string; problem: string }[];
 };
 type RequestCorrelation = { traceId: string | null; requestId: string | null };
 type CommandResponse = {
@@ -225,7 +227,11 @@ export const credentialSafeJson = (
  * The refusal of an API answer that this CLI can't read, naming the `answer` and its `problems`.
  * Production always runs the newest API, so the CLI is the one to update.
  */
-const unreadableAnswer = (answer: string, problems: string, correlation?: RequestCorrelation) =>
+export const unreadableAnswer = (
+  answer: string,
+  problems: string,
+  correlation?: RequestCorrelation,
+) =>
   new CommandError(
     "INVALID_RESPONSE",
     `This devboxes CLI can't read ${answer} (${problems}). Install the current CLI from https://devboxes.ai/install.`,
@@ -405,28 +411,31 @@ export const describeCommands = async (
   const document = response.data;
   if (!Value.Check(commandDocumentSchema, document))
     throw unreadableAnswer("the command list", describeErrors(commandDocumentSchema, document));
-  const catalog = catalogCommands(document);
-  if ("problem" in catalog) throw unreadableAnswer("the command list", catalog.problem);
   return {
     openapi: document.openapi,
-    commands: catalog.commands,
     components: document.components ?? {},
+    ...catalogCommands(document),
   };
 };
 
-/** The advertised commands narrowed to one, or a refusal of a command the API does not advertise. */
+/**
+ * The advertised commands narrowed to one, or a refusal of a command the API does not advertise or
+ * whose contract this CLI can't read.
+ */
 export const describeCommand = (
-  description: CommandDescription,
+  { openapi, commands, components, unreadable }: CommandDescription,
   command: string,
-): CommandDescription & { commands: [CatalogCommand] } => {
-  const operation = description.commands.find((candidate) => candidate.operationId === command);
+): Omit<CommandDescription, "unreadable"> & { commands: [CatalogCommand] } => {
+  const unread = unreadable.find((candidate) => candidate.operationId === command);
+  if (unread) throw unreadableAnswer(`the ${command} contract`, unread.problem);
+  const operation = commands.find((candidate) => candidate.operationId === command);
   if (!operation) {
     throw new CommandError(
       "UNKNOWN_COMMAND",
       "This operation is not advertised by the configured API. Use devboxes commands to discover available operations.",
     );
   }
-  return { ...description, commands: [operation] };
+  return { openapi, commands: [operation], components };
 };
 
 export const invokeCommand = async (
@@ -495,6 +504,12 @@ export const devboxesCommandTools = (
           effect: operation["x-devboxes"].effect,
           summary: operation.summary,
         })),
+        ...(description.unreadable.length > 0 && {
+          unreadable: description.unreadable.map(({ operationId, problem }) => ({
+            operationId,
+            notice: unreadableAnswer("this command's contract", problem).message,
+          })),
+        }),
       };
     },
   ),

@@ -110,22 +110,26 @@ export const commandContractSchema = Type.Union([
 export type CommandContract = Static<typeof commandContractSchema>;
 
 /**
- * What a client checks of each `x-devboxes` in the served document: its `effect`, a write's
- * `elevated`, its `roles` and the fields every contract shares. The API serves the contract
- * without `does`.
+ * Each `x-devboxes` of the served document, which the API serves without `does`. The dashboard,
+ * which ships with the API, reads it whole, and the laws prove that every served contract has it.
  */
 const servedFields = { roles: Type.Array(Type.String()), ...sharedFields };
-const servedContractSchema = Type.Union([
+export const servedContractSchema = Type.Union([
   Type.Object({ effect: Type.Literal("read"), ...servedFields }),
   Type.Object({ effect: Type.Literal("write"), elevated: elevationSchema, ...servedFields }),
 ]);
 
+/**
+ * What every client reads of a served command: its operationId, its summary and its `effect` as
+ * text. An installed CLI shows the rest of the contract as the API serves it and reads no more of
+ * it than the command it runs needs, so a contract change it doesn't use breaks nothing
+ * (DEC-clients-fail-only-on-what-they-use).
+ */
 const operationSchema = Type.Object({
   operationId: Type.String({ minLength: 1 }),
   summary: Type.String({ minLength: 1 }),
-  "x-devboxes": servedContractSchema,
+  "x-devboxes": Type.Object({ effect: Type.String() }),
   requestBody: Type.Optional(Type.Unknown()),
-  responses: Type.Record(Type.String(), Type.Unknown()),
 });
 
 export type CatalogCommand = Static<typeof operationSchema> & { path: string; method: "POST" };
@@ -148,33 +152,26 @@ export const servedDocument = (document: Static<typeof commandDocumentSchema>) =
 });
 
 /**
- * The commands of the API's OpenAPI document: every POST under `/api/commands/<resource>/<verb>`,
- * whose operationId is `<resource>.<verb>` and unique, or the problem with the first that is not.
+ * The commands of the API's OpenAPI document: every POST under `/api/commands/<resource>/<verb>`
+ * whose operation this module reads, with the operationId `<resource>.<verb>`. Each other command
+ * is `unreadable`, named by its path's operationId with what in it doesn't parse, so a client
+ * built before the API changed one operation still reads all the others.
  */
-export const catalogCommands = (
-  document: Static<typeof commandDocumentSchema>,
-): { commands: CatalogCommand[] } | { problem: string } => {
+export const catalogCommands = (document: Static<typeof commandDocumentSchema>) => {
   const commands: CatalogCommand[] = [];
-  const ids = new Set<string>();
+  const unreadable: { operationId: string; problem: string }[] = [];
   for (const [path, item] of Object.entries(document.paths)) {
     const route = /^\/api\/commands\/([A-Za-z0-9_-]+)\/([A-Za-z0-9_-]+)$/.exec(path);
     if (!route || item.post === undefined) continue;
+    const operationId = `${route[1]}.${route[2]}`;
     const operation = item.post;
-    if (!Value.Check(operationSchema, operation)) {
-      return {
-        problem: `A command route has an invalid operation contract: ${describeErrors(operationSchema, operation)}.`,
-      };
-    }
-    if (operation.operationId !== `${route[1]}.${route[2]}`) {
-      return {
-        problem: `A command route has an invalid operation contract: /operationId must be ${route[1]}.${route[2]}.`,
-      };
-    }
-    if (ids.has(operation.operationId)) return { problem: "Command operation IDs must be unique." };
-    ids.add(operation.operationId);
-    commands.push({ ...operation, path, method: "POST" });
+    if (!Value.Check(operationSchema, operation))
+      unreadable.push({ operationId, problem: describeErrors(operationSchema, operation) });
+    else if (operation.operationId !== operationId)
+      unreadable.push({ operationId, problem: `/operationId must be ${operationId}` });
+    else commands.push({ ...operation, path, method: "POST" });
   }
-  return { commands };
+  return { commands, unreadable };
 };
 
 /** The resource of an operation: the part of its operationId before the dot. */
@@ -249,4 +246,25 @@ export const delegationResources = (
     resources.set(resource, entry);
   }
   return resources;
+};
+
+/**
+ * The resources a delegation token can reach in `document`: the served commands without
+ * `delegable: false`. The dashboard ships with the API, so this reads every contract whole and
+ * fails on a command it can't read instead of leaving it out.
+ */
+export const tokenResources = (document: Static<typeof commandDocumentSchema>) => {
+  const { commands, unreadable } = catalogCommands(document);
+  if (unreadable.length > 0)
+    throw new Error(
+      `The command list holds commands the dashboard can't read: ${unreadable
+        .map(({ operationId, problem }) => `${operationId} (${problem})`)
+        .join(", ")}.`,
+    );
+  return delegationResources(
+    commands.flatMap(({ operationId, "x-devboxes": served }) => {
+      const contract = Value.Parse(servedContractSchema, served);
+      return contract.delegable === false ? [] : [[operationId, contract] as const];
+    }),
+  );
 };

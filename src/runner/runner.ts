@@ -2,10 +2,12 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 
 import { confirm, isCancel, select, text } from "@clack/prompts";
+import { describeErrors } from "../values/validation-errors";
 import { platformConfigHome } from "../connections/config";
 import { writeSecretFile } from "../secret-file";
 import { type Command, InvalidArgumentError } from "commander";
 import Type from "typebox";
+import Value from "typebox/value";
 
 import {
   apiOrigin,
@@ -17,6 +19,7 @@ import {
   invokeCommand,
   parseResponse,
   requestJson,
+  unreadableAnswer,
   writeOutput,
 } from "../commands";
 import { loadAccountContext, loadCommandConnection } from "../connection";
@@ -30,6 +33,8 @@ const organizationsSchema = Type.Object({
     Type.Object({ id: Type.String(), name: Type.String(), role: Type.String() }),
   ),
 });
+/** What `runner add` reads of runners.add's contract to offer Organizations: who may add a Runner. */
+const rolesSchema = Type.Object({ roles: Type.Array(Type.String()) });
 const registeredSchema = Type.Object({
   runner: Type.Object({ id: Type.String(), name: Type.String() }),
   token: Type.String({ minLength: 1 }),
@@ -212,20 +217,23 @@ export const addRunnerCommands = (program: Command) => {
       ).data,
       "organizations.list",
     );
-    const { roles } = describeCommand(description, "runners.add").commands[0]["x-devboxes"];
-    const managed = organizations.filter((entry) => roles.includes(entry.role));
-    if (options.organization === undefined && managed.length === 0)
-      throw new CommandError(
-        "ORGANIZATION_NOT_FOUND",
-        `devboxes can't find an Organization where you can add a Runner. Only an Organization's ${roles.join(" or ")} can add one.`,
-      );
-    const chosen =
-      options.organization ??
-      (await select({
+    let chosen: string | symbol | undefined = options.organization;
+    if (chosen === undefined) {
+      const contract = describeCommand(description, "runners.add").commands[0]["x-devboxes"];
+      if (!Value.Check(rolesSchema, contract))
+        throw unreadableAnswer("who may add a Runner", describeErrors(rolesSchema, contract));
+      const managed = organizations.filter((entry) => contract.roles.includes(entry.role));
+      if (managed.length === 0)
+        throw new CommandError(
+          "ORGANIZATION_NOT_FOUND",
+          `devboxes can't find an Organization where you can add a Runner. Only an Organization's ${contract.roles.join(" or ")} can add one.`,
+        );
+      chosen = await select({
         message: "Which Organization should run work on this Runner?",
         options: managed.map((entry) => ({ value: entry.id, label: entry.name })),
         output: process.stderr,
-      }));
+      });
+    }
     if (isCancel(chosen)) throw new CommandError("CANCELLED", "Command cancelled.");
     const organization = organizations.find((entry) => entry.id === chosen);
     if (!organization)

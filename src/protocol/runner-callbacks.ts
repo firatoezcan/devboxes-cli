@@ -1,22 +1,25 @@
 import Type from "typebox";
 
 import { opencodeDaemonPlatforms } from "./daemon-artifact";
-import { machineSizes } from "./project";
-import { runStatuses } from "./run-statuses";
 import { ClaudeCodeArtifactSchema } from "./task-runtime";
 
 /*
  * What each route under /internal/execution/runners answers the Runner that `devboxes runner`
  * runs. Each schema is its route's `response`, which the API validates, and what the CLI parses,
  * so neither side changes an answer alone. A `status` is the status of the Task's Run, which stays
- * queued after the claim until the agent starts.
+ * queued after the claim until the agent starts. The API answers one of `runStatuses`, which the
+ * `runs_status_check` constraint and the route handlers' `runs.status` type hold. A claimed Task's
+ * `machineSize` and `platform` are text too, one of the values that `projects_machine_size_check`
+ * and `runners_platform_check` hold. A Runner built before a value was added reads it as text: it
+ * leaves a Task it already runs alone, and reports a claimed Task it can't start as a start failure
+ * (DEC-clients-fail-only-on-what-they-use).
  */
 
 const AssignedTaskSchema = Type.Object({
   id: Type.String(),
   executorId: Type.Union([Type.String(), Type.Null()]),
   containerId: Type.Union([Type.String(), Type.Null()]),
-  status: Type.Enum(runStatuses),
+  status: Type.String(),
 });
 
 const ExecutorSchema = Type.Object({
@@ -35,8 +38,8 @@ export const RunnerClaimSchema = Type.Object({
     Type.Object({
       ...AssignedTaskSchema.properties,
       image: Type.String(),
-      platform: Type.Enum(opencodeDaemonPlatforms),
-      machineSize: Type.Enum(machineSizes),
+      platform: Type.String(),
+      machineSize: Type.String(),
       daemon: Type.Object({
         ...ExecutorSchema.properties,
         sha256ByArchitecture: Type.Optional(
@@ -74,7 +77,7 @@ export const RunnerMachineSchema = Type.Object({
 export const RunnerAssignmentsSchema = Type.Object({ tasks: Type.Array(AssignedTaskSchema) });
 
 /** `/reconcile`: the Run's status once the Runner's observation is recorded. */
-export const RunnerReconcileSchema = Type.Object({ status: Type.Enum(runStatuses) });
+export const RunnerReconcileSchema = Type.Object({ status: Type.String() });
 
 /**
  * `/release`: whether the calling listener let go of the Runner, and otherwise until when it holds
