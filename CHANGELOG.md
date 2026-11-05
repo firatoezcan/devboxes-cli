@@ -1,5 +1,11 @@
 # devboxes
 
+## 0.15.0
+
+### Minor Changes
+
+- 9dbf47e: The CLI keeps working when the API changes something it doesn't use. It reads each command's operation ID, summary and effect, and shows the rest of the contract as the API serves it, so a new effect, elevation class or field breaks no command. `devboxes commands` and `devboxes_describe` list a command whose contract the CLI can't read as unreadable, with the install link, and only invoking or describing it fails with `INVALID_RESPONSE`. `devboxes runner add --organization` no longer reads who may add a Runner. `devboxes runner listen` no longer stops at an answer it can't read: it says so once and keeps trying with backoff. It reports a claimed Task whose Run status, machine size or platform it doesn't know as a start failure with the install link, so the Run retries and then fails with that reason, and it leaves a running Task whose Run status it doesn't know, and its executor, as they are.
+
 ## 0.14.0
 
 ### Minor Changes
