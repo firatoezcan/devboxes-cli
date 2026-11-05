@@ -37,11 +37,16 @@ boundaries, not compatibility guarantees for retired protocols.
   `devboxes runner listen`, and the platform that engine runs. `listen`
   refuses to start on an engine whose architecture has no platform, and the
   API keeps the platform of each Runner's latest claim. Each schema is its route's `response`, which the API
-  validates, and what `devboxes runner` parses. An answer that the CLI can't
-  parse, here or from any other route, fails with `INVALID_RESPONSE`, which
-  says to install the current CLI from https://devboxes.ai/install, because
-  Production always runs the newest API, and `devboxes runner listen` stops
-  with it (DEC-unreadable-answer-installs-current-cli). Every claim answer
+  validates, and what `devboxes runner` parses. A Run's `status` and a claimed
+  Task's `machineSize` and `platform` are text there: `listen` reports a
+  claimed Task with a value it doesn't know as a start failure with the install
+  link, and leaves a Task it already runs, and its executor, as they are. An answer that
+  lacks or changes a field the CLI needs, here or from any other route, fails
+  with `INVALID_RESPONSE`, which says to install the current CLI from
+  https://devboxes.ai/install, because Production always runs the newest API.
+  `devboxes runner listen` logs it once and keeps polling with backoff, so it
+  carries on by itself once the answer reads again
+  (DEC-clients-fail-only-on-what-they-use). Every claim answer
   names the current executor for the Runner's platform, as the API last read
   the release channel, at most once every five minutes for all Runners, or
   null when that read failed. `devboxes runner listen` downloads a new one

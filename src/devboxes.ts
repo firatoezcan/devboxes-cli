@@ -14,6 +14,7 @@ import {
   openInBrowser,
   parseResponse,
   readCommandInput,
+  unreadableAnswer,
   writeOutput,
 } from "./commands";
 import { loadCommandConnection, type LogIn } from "./connection";
@@ -62,6 +63,10 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
           )}\n`,
         );
       }
+      for (const { operationId, problem } of description.unreadable)
+        await writeOutput(
+          `${operationId}\tunreadable\t${unreadableAnswer("this command's contract", problem).message}\n`,
+        );
     }
   });
 

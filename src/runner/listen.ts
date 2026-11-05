@@ -4,15 +4,20 @@ import { constants } from "node:fs";
 import { mkdir, open, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-import { dockerArchitecturePlatforms } from "@devboxes/protocol/daemon-artifact";
+import {
+  dockerArchitecturePlatforms,
+  opencodeDaemonPlatforms,
+} from "@devboxes/protocol/daemon-artifact";
 import type { JsonValue } from "@devboxes/protocol/json";
-import { machineSizeResources } from "@devboxes/protocol/project";
+import { machineSizeResources, machineSizes } from "@devboxes/protocol/project";
+import { runStatuses } from "@devboxes/protocol/run-statuses";
 import {
   type RunnerAssignmentsSchema,
   type RunnerClaimSchema,
   runnerAnswers,
   runnerListenerHeader,
 } from "@devboxes/protocol/runner-callbacks";
+import { describeErrors } from "@devboxes/protocol/validation-errors";
 import { dockerSocketPath } from "@firops/devbox/runner/docker-socket";
 import { DockerOpencodeTaskRuntime } from "@firops/devbox/runner/docker-task-runtime";
 import { stalledExecutorDownload } from "@firops/devbox/runner/executor-artifact";
@@ -21,7 +26,20 @@ import { jwtVerify, SignJWT } from "jose";
 import Type, { type Static } from "typebox";
 import Value from "typebox/value";
 
-import { CommandError, parseResponse, requestJson } from "../commands";
+import { CommandError, parseResponse, requestJson, unreadableAnswer } from "../commands";
+
+/**
+ * What this CLI needs of a claimed Task to start it: a Run status, a machine size and a platform it
+ * knows. It reports a Task with any other as a start failure (DEC-clients-fail-only-on-what-they-use).
+ */
+const runnableTaskSchema = Type.Object({
+  status: Type.Enum(runStatuses),
+  machineSize: Type.Enum(machineSizes),
+  platform: Type.Enum(opencodeDaemonPlatforms),
+});
+
+/** A claim answer whose Task's ID reads, so the Runner can report that Task even if the rest doesn't. */
+const claimedTaskSchema = Type.Object({ task: Type.Object({ id: Type.String({ minLength: 1 }) }) });
 
 /** The relay's signing key and port, kept so that running executors outlast a listener restart. */
 const relayStateSchema = Type.Object({
@@ -210,16 +228,45 @@ export const listen = async (options: {
     .update("\0")
     .update(relayKey)
     .digest("base64url");
+  const request = async (operation: keyof typeof runnerAnswers, body: JsonValue) =>
+    (
+      await requestJson(
+        { origin: options.apiOrigin, token, headers: { [runnerListenerHeader]: listener } },
+        `/api/internal/execution/runners/${operation}`,
+        body,
+      )
+    ).data;
   const api = async <Operation extends keyof typeof runnerAnswers>(
     operation: Operation,
     body: JsonValue,
-  ): Promise<Static<(typeof runnerAnswers)[Operation]>> => {
-    const { data } = await requestJson(
-      { origin: options.apiOrigin, token, headers: { [runnerListenerHeader]: listener } },
-      `/api/internal/execution/runners/${operation}`,
-      body,
-    );
-    return parseResponse(runnerAnswers[operation], data, operation);
+  ): Promise<Static<(typeof runnerAnswers)[Operation]>> =>
+    parseResponse(runnerAnswers[operation], await request(operation, body), operation);
+  /**
+   * Reports that Task `taskId` could not start, for `reason`, which the person sees once its retries
+   * are spent (DEC-runner-start-failures-retry). A refusal under 500 is logged and lets the poll go
+   * on.
+   */
+  const reportStartFailure = (taskId: string, reason: string) =>
+    api("reconcile", { taskId, observation: "start-failed", reason }).catch((refusal) => {
+      if (refusal instanceof CommandError && (refusal.options.status ?? 500) < 500)
+        return console.error(`The start failure of Task ${taskId} was refused: ${refusal}`);
+      throw refusal;
+    });
+  /** Each Task this CLI left alone, by what in it this CLI doesn't know, as it last logged it. */
+  const leftAlone = new Map<string, string>();
+  /** Leaves Task `taskId` and its executor as they are because of `unknown`, and logs it once. */
+  const leaveAlone = (taskId: string, unknown: string) => {
+    if (leftAlone.get(taskId) !== unknown)
+      console.error(
+        `Task ${taskId} has ${unknown}, which this devboxes CLI doesn't know, so it leaves the Task and its executor as they are. Install the current CLI from https://devboxes.ai/install to act on it.`,
+      );
+    leftAlone.set(taskId, unknown);
+  };
+  /** Whether `status` is a Run status this CLI knows; it leaves a Task in any other alone. */
+  const knows = (taskId: string, status: string) => {
+    if ((runStatuses as readonly string[]).includes(status)) return true;
+    leaveAlone(taskId, `the Run status ${status}`);
+    return false;
   };
   let stopping = false;
   const interrupt = () => {
@@ -242,6 +289,7 @@ export const listen = async (options: {
       containerId,
       observation: "created",
     });
+    if (!knows(task.id, result.status)) return;
     if (result.status !== "queued" && result.status !== "running")
       await container.remove({ v: true });
     else if (!stopping) {
@@ -267,7 +315,9 @@ export const listen = async (options: {
     reason: string;
     error: CommandError;
   } | null = null;
-  const startClaimed = async (task: NonNullable<Static<typeof RunnerClaimSchema>["task"]>) => {
+  const startClaimed = async (
+    task: NonNullable<Static<typeof RunnerClaimSchema>["task"]> & Static<typeof runnableTaskSchema>,
+  ) => {
     const existing = await runtime.inspect(task.executorId ?? `devboxes-task-${task.id}`);
     if (!existing) {
       const size = machineSizeResources[task.machineSize];
@@ -295,7 +345,6 @@ export const listen = async (options: {
   const endsListener = ({ code, options: { status } }: CommandError) =>
     code === "DOCKER_ENGINE_UNSUPPORTED" ||
     code === "RUNNER_LISTENING_ELSEWHERE" ||
-    code === "INVALID_RESPONSE" ||
     status === 401 ||
     status === 403 ||
     (!connected && (status === 404 || status === 422));
@@ -318,7 +367,7 @@ export const listen = async (options: {
       };
       for (const task of assignments.tasks) {
         if (stopping) break;
-        if (starting.has(task.id)) continue;
+        if (starting.has(task.id) || !knows(task.id, task.status)) continue;
         const executorId = task.executorId ?? `devboxes-task-${task.id}`;
         const executor = await runtime.inspect(task.containerId ?? executorId);
         if (!executor) {
@@ -356,7 +405,7 @@ export const listen = async (options: {
                 stoppedAt: executor.State.FinishedAt,
               }),
         }).catch(refusedReport(task.id));
-        if (result && !executor.State.Running) {
+        if (result && !executor.State.Running && knows(task.id, result.status)) {
           if (
             result.status === "succeeded" ||
             result.status === "cancelled" ||
@@ -376,19 +425,22 @@ export const listen = async (options: {
       if (stopping) return null;
       if (startFailure !== null) {
         const { taskId, executorId, reason, error } = startFailure;
-        if (!(await runtime.inspect(executorId)))
-          await api("reconcile", { taskId, observation: "start-failed", reason }).catch(
-            (refusal) => {
-              if (refusal instanceof CommandError && (refusal.options.status ?? 500) < 500)
-                return console.error(`The start failure of Task ${taskId} was refused: ${refusal}`);
-              throw refusal;
-            },
-          );
+        if (!(await runtime.inspect(executorId))) await reportStartFailure(taskId, reason);
         startFailure = null;
         throw error;
       }
       if (starting.size === 0) {
-        const { task, executor } = await api("claim", machine);
+        const claim = await request("claim", machine);
+        if (!Value.Check(runnerAnswers.claim, claim) && Value.Check(claimedTaskSchema, claim)) {
+          const reason = unreadableAnswer(
+            "the claim response",
+            describeErrors(runnerAnswers.claim, claim),
+          ).message;
+          console.error(`Task ${claim.task.id}: ${reason}`);
+          await reportStartFailure(claim.task.id, reason);
+          return null;
+        }
+        const { task, executor } = parseResponse(runnerAnswers.claim, claim, "claim");
         if (executor && executor.sha256 !== prefetched) {
           prefetched = executor.sha256;
           runtime.stageExecutor(executor).catch((error: Error) => {
@@ -398,32 +450,46 @@ export const listen = async (options: {
             );
           });
         }
-        if (task && !stopping && task.containerId === null)
-          starting.set(
-            task.id,
-            startClaimed(task)
-              .then(
-                () => {
-                  failures = 0;
-                },
-                (error) => {
-                  startFailure = {
-                    taskId: task.id,
-                    executorId: task.executorId ?? `devboxes-task-${task.id}`,
-                    reason:
-                      error instanceof Error
-                        ? error.name === "TimeoutError"
-                          ? stalledExecutorDownload(task.daemon.url, error.message)
-                          : error.message || error.name
-                        : CommandError.from(error).message,
-                    error: CommandError.from(error),
-                  };
-                },
-              )
-              .finally(() => {
-                starting.delete(task.id);
-              }),
-          );
+        if (task && !stopping && task.containerId === null) {
+          if (!Value.Check(runnableTaskSchema, task)) {
+            const unknown = [
+              !(runStatuses as readonly string[]).includes(task.status) &&
+                `the Run status ${task.status}`,
+              !(machineSizes as readonly string[]).includes(task.machineSize) &&
+                `the machine size ${task.machineSize}`,
+              !(opencodeDaemonPlatforms as readonly string[]).includes(task.platform) &&
+                `the platform ${task.platform}`,
+            ].filter(Boolean);
+            const reason = `This devboxes CLI can't start the Task, because it doesn't know ${unknown.join(" or ")}. Install the current CLI from https://devboxes.ai/install.`;
+            console.error(`Task ${task.id}: ${reason}`);
+            await reportStartFailure(task.id, reason);
+          } else
+            starting.set(
+              task.id,
+              startClaimed(task)
+                .then(
+                  () => {
+                    failures = 0;
+                  },
+                  (error) => {
+                    startFailure = {
+                      taskId: task.id,
+                      executorId: task.executorId ?? `devboxes-task-${task.id}`,
+                      reason:
+                        error instanceof Error
+                          ? error.name === "TimeoutError"
+                            ? stalledExecutorDownload(task.daemon.url, error.message)
+                            : error.message || error.name
+                          : CommandError.from(error).message,
+                      error: CommandError.from(error),
+                    };
+                  },
+                )
+                .finally(() => {
+                  starting.delete(task.id);
+                }),
+            );
+        }
       }
       return null;
     } catch (error) {
@@ -431,6 +497,11 @@ export const listen = async (options: {
       throw error;
     }
   };
+  /**
+   * The refusal of the last answer this CLI couldn't read, which it logged. It logs the same refusal
+   * once, and keeps polling with backoff, so it carries on by itself once the answer reads again.
+   */
+  let unreadable: string | null = null;
   try {
     while (!stopping) {
       const failure = await poll();
@@ -438,8 +509,9 @@ export const listen = async (options: {
       const delay = failure
         ? Math.min(60_000, 5_000 * 2 ** failures) * (0.5 + Math.random() / 2)
         : 5_000;
-      if (failure)
+      if (failure && failure.message !== unreadable)
         console.error(`Polling failed, retrying in ${Math.ceil(delay / 1_000)}s: ${failure}`);
+      unreadable = failure?.code === "INVALID_RESPONSE" ? failure.message : null;
       for (let waited = 0; waited < delay && !stopping; waited += 250) await Bun.sleep(250);
     }
   } finally {

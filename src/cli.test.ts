@@ -596,44 +596,73 @@ describe("devboxes invoke", () => {
 });
 
 describe("devboxes commands", () => {
-  type Contract = {
-    effect: "write";
-    elevated?: string | boolean;
-    roles?: string[];
-    authority: string;
+  /** A served operation, whose contract may hold values and fields this CLI doesn't know. */
+  type Operation = {
+    operationId: string;
+    summary: string;
+    "x-devboxes": {
+      effect: string;
+      elevated?: string | boolean;
+      roles?: string[];
+      authority: string;
+      approval?: { required: boolean };
+    };
+    responses: object;
   };
-  const document = (contract: Contract) => ({
-    openapi: "3.0.3",
-    paths: {
-      "/api/commands/billing/portal": {
-        post: {
-          operationId: "billing.portal",
-          summary: "Open the Stripe customer portal for the Organization's subscription",
-          "x-devboxes": contract,
-          responses: {},
-        },
-      },
+  const portal: Operation = {
+    operationId: "billing.portal",
+    summary: "Open the Stripe customer portal for the Organization's subscription",
+    "x-devboxes": {
+      effect: "write",
+      elevated: false,
+      roles: ["owner"],
+      authority: "Organization owner",
     },
-  });
-  const list = async (contract: Contract) => {
+    responses: {},
+  };
+  const inspect: Operation = {
+    operationId: "account.inspect",
+    summary: "Show the signed-in account",
+    "x-devboxes": { effect: "read", roles: [], authority: "Signed-in account" },
+    responses: {},
+  };
+  /**
+   * Serves `operations` at their command paths and answers every command call with the path it
+   * called, and runs the CLI with `args` against it.
+   */
+  const run = async (operations: Operation[], args: string[]) => {
     using api = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
-      fetch: () => Response.json(document(contract)),
+      fetch: (request) => {
+        const { pathname } = new URL(request.url);
+        if (pathname === "/api/openapi/json")
+          return Response.json({
+            openapi: "3.0.3",
+            paths: Object.fromEntries(
+              operations.map((operation) => [
+                `/api/commands/${operation.operationId.replace(".", "/")}`,
+                { post: operation },
+              ]),
+            ),
+          });
+        return Response.json({ called: pathname });
+      },
     });
-    return await runCli(["commands"], {
-      DEVBOXES_API_URL: api.url.origin,
-      DEVBOXES_TOKEN: "scoped",
-    });
+    return await runCli(
+      args,
+      { DEVBOXES_API_URL: api.url.origin, DEVBOXES_TOKEN: "scoped" },
+      undefined,
+      "{}",
+    );
   };
 
   it("lists an elevated write and a write that isn't", async () => {
-    const contracts: Contract[] = [
-      { effect: "write", elevated: "money", roles: ["owner"], authority: "Owner" },
-      { effect: "write", elevated: false, roles: ["owner"], authority: "Organization owner" },
-    ];
-    for (const contract of contracts) {
-      const listed = await list(contract);
+    for (const elevated of ["money", false]) {
+      const listed = await run(
+        [{ ...portal, "x-devboxes": { ...portal["x-devboxes"], elevated } }],
+        ["commands"],
+      );
       expect(listed.stdout).toBe(
         "billing.portal\twrite\tOpen the Stripe customer portal for the Organization's subscription\n",
       );
@@ -641,18 +670,50 @@ describe("devboxes commands", () => {
     }
   });
 
-  it("refuses a document whose write serves `elevated` outside its classes, or no roles, and says to install the current CLI", async () => {
-    const contracts: Contract[] = [
-      { effect: "write", elevated: true, roles: ["owner"], authority: "Organization owner" },
-      { effect: "write", roles: ["owner"], authority: "Organization owner" },
-      { effect: "write", elevated: false, authority: "Organization owner" },
+  it("lists and runs a command whose contract adds a field, an effect or an elevation class this CLI doesn't know", async () => {
+    const contracts: Operation["x-devboxes"][] = [
+      { ...portal["x-devboxes"], approval: { required: true } },
+      { ...portal["x-devboxes"], effect: "approve" },
+      { ...portal["x-devboxes"], elevated: "billing" },
+      { ...portal["x-devboxes"], elevated: true, roles: undefined },
     ];
     for (const contract of contracts) {
-      const listed = await list(contract);
-      expect(listed.stderr).toContain("This devboxes CLI can't read the command list (");
-      expect(listed.stderr).toContain("Install the current CLI from https://devboxes.ai/install.");
-      expect(listed.exitCode).not.toBe(0);
+      const operation = { ...portal, "x-devboxes": contract, "x-later": 1 };
+      const listed = await run([operation], ["commands"]);
+      const invoked = await run([operation], ["invoke", "billing.portal", "--input", "-"]);
+
+      expect({
+        listed: listed.stdout,
+        invoked: invoked.stdout,
+        exits: [listed, invoked].map(({ exitCode }) => exitCode),
+      }).toEqual({
+        listed: `billing.portal\t${contract.effect}\tOpen the Stripe customer portal for the Organization's subscription\n`,
+        invoked: expect.stringContaining('"called": "/api/commands/billing/portal"'),
+        exits: [0, 0],
+      });
     }
+  });
+
+  it("runs every other command when it can't read one command's contract, lists that one as unreadable, and refuses only that one, saying to install the current CLI", async () => {
+    const operations = [{ ...portal, summary: "" }, inspect];
+    const listed = await run(operations, ["commands"]);
+    const other = await run(operations, ["invoke", "account.inspect", "--input", "-"]);
+    const unread = await run(operations, ["invoke", "billing.portal", "--input", "-"]);
+
+    expect({
+      listed: listed.stdout,
+      other: other.stdout,
+      exits: [listed, other, unread].map(({ exitCode }) => exitCode !== 0),
+    }).toEqual({
+      listed: expect.stringMatching(
+        /^account\.inspect\tread\tShow the signed-in account\nbilling\.portal\tunreadable\tThis devboxes CLI can't read this command's contract \(\/summary .+\)\. Install the current CLI from https:\/\/devboxes\.ai\/install\.\n$/,
+      ),
+      other: expect.stringContaining('"called": "/api/commands/account/inspect"'),
+      exits: [false, false, true],
+    });
+    expect(unread.stderr).toMatch(
+      /This devboxes CLI can't read the billing\.portal contract \(\/summary .*\)\. Install the current CLI from https:\/\/devboxes\.ai\/install\./,
+    );
   });
 });
 
@@ -1287,7 +1348,7 @@ describe("devboxes runner add", () => {
   ];
   const registrations: unknown[] = [];
   const refusedKeys = new Set<string>();
-  let registerRoles = ["owner", "admin"];
+  let registerRoles: string[] | string = ["owner", "admin"];
   const api = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -1422,6 +1483,33 @@ describe("devboxes runner add", () => {
     ]);
   });
 
+  it("adds a Runner to a named Organization whatever roles runners.add serves, and refuses to offer Organizations by roles it can't read", async () => {
+    registerRoles = "owner or admin";
+    try {
+      const named = await runnerEnvironment();
+      const offered = await runnerEnvironment();
+      const added = await runCli(
+        ["--json", "runner", "add", "--organization", organizations[0]?.id ?? "", "--name", "CI"],
+        named.env,
+      );
+      const offering = await inTerminal(["runner", "add"], offered.env);
+      const refused = await offering.shows("This devboxes CLI can't read who may add a Runner (");
+      const exitCode = await offering.exited();
+      offering.kill();
+
+      expect({ added: added.exitCode, refused, exitCode }).toEqual({
+        added: 0,
+        refused: true,
+        exitCode: 1,
+      });
+      expect(offering.screen()).toContain(
+        "Install the current CLI from https://devboxes.ai/install.",
+      );
+    } finally {
+      registerRoles = ["owner", "admin"];
+    }
+  });
+
   it("adds the Runner again and replaces the saved key when the API refuses it", async () => {
     registrations.length = 0;
     const { tokenFile, env } = await runnerEnvironment();
@@ -1453,10 +1541,21 @@ describe("devboxes runner listen", () => {
   const runnerTokenFile = join(fixtureDirectory, "runner-token");
   const engine = { name: "Test Engine", gateway: "127.0.0.1" };
   const fixtureDocker = { DOCKER_HOST: `unix://${join(fixtureDirectory, "docker.sock")}` };
+  /** The executors on the fake engine, by name, as Docker inspects them. */
+  const containers = new Map<string, { Id: string; Image: string; State: object }>();
+  /** Every call the Runner made to change a container on the fake engine. */
+  const containerChanges: string[] = [];
   const docker = Bun.serve({
     unix: join(fixtureDirectory, "docker.sock"),
     fetch: (request) => {
       const { pathname } = new URL(request.url);
+      const inspected = /\/containers\/([^/]+)\/json$/.exec(pathname);
+      if (inspected && containers.has(inspected[1]!))
+        return Response.json(containers.get(inspected[1]!));
+      if (pathname.includes("/containers/") && !inspected) {
+        containerChanges.push(`${request.method} ${pathname.replace(/^\/v[\d.]+/, "")}`);
+        return new Response(null, { status: 204 });
+      }
       if (pathname.endsWith("/info"))
         return Response.json({
           ID: "test-engine",
@@ -1597,7 +1696,7 @@ describe("devboxes runner listen", () => {
     }
   }, 30_000);
 
-  it("stops at an answer it can't read and says to install the current CLI", async () => {
+  it("keeps polling with backoff at an answer it can't read, says so once with the install link, and recovers once the answer reads", async () => {
     let claims = 0;
     using api = Bun.serve({
       hostname: "127.0.0.1",
@@ -1606,21 +1705,23 @@ describe("devboxes runner listen", () => {
         if (new URL(request.url).pathname.endsWith("/assignments"))
           return Response.json({ tasks: [] });
         claims += 1;
-        return Response.json({ task: { id: "not-a-task" }, executor: null });
+        return claims <= 2
+          ? Response.json({ task: { id: 7 }, executor: null })
+          : Response.json({ task: null, executor: null });
       },
     });
     await using runner = await spawnListener(api.url.origin);
-    await until(
-      () =>
-        (runner.listener.exitCode !== null && runner.output.stderr.includes("devboxes.ai")) ||
-        claims > 1,
-    );
+    await until(() => claims >= 4 || runner.listener.exitCode !== null);
 
-    expect({ exitCode: runner.listener.exitCode, claims }).toEqual({ exitCode: 1, claims: 1 });
+    expect({
+      exitCode: runner.listener.exitCode,
+      notices: runner.output.stderr.match(/This devboxes CLI can't read the claim response/g)
+        ?.length,
+    }).toEqual({ exitCode: null, notices: 1 });
     expect(runner.output.stderr).toMatch(
       /This devboxes CLI can't read the claim response \(.*\/task.*\)\. Install the current CLI from https:\/\/devboxes\.ai\/install\./,
     );
-  }, 30_000);
+  }, 60_000);
 
   it("reports a start that failed before its container existed again after a server error, and drops the report the API refuses", async () => {
     const taskId = crypto.randomUUID();
@@ -1748,6 +1849,182 @@ describe("devboxes runner listen", () => {
         { taskId: accepted, observation: "absent" },
       ],
       refusal: true,
+    });
+  }, 60_000);
+
+  /** An executor that ran and stopped, or that exists without having started. */
+  const executor = (name: string, state: "exited" | "created") => ({
+    Id: name,
+    Image: `registry.devboxes.test/workspace@sha256:${"a".repeat(64)}`,
+    State: {
+      Status: state,
+      Running: false,
+      StartedAt: state === "exited" ? "2026-11-04T10:00:00Z" : "0001-01-01T00:00:00Z",
+      FinishedAt: state === "exited" ? "2026-11-04T10:05:00Z" : "0001-01-01T00:00:00Z",
+    },
+  });
+  const assigned = (id: string, status: string) => ({
+    id,
+    executorId: `devboxes-task-${id}`,
+    containerId: null,
+    status,
+  });
+
+  it("leaves a Task whose Run status it doesn't know, and its executor, as they are, and says so once", async () => {
+    const [unknown, known] = [crypto.randomUUID(), crypto.randomUUID()];
+    containers.set(`devboxes-task-${unknown}`, executor(`devboxes-task-${unknown}`, "exited"));
+    const reported: string[] = [];
+    using api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async (request) => {
+        const path = new URL(request.url).pathname.split("/").at(-1);
+        if (path === "assignments")
+          return Response.json({
+            tasks: [assigned(unknown, "archived"), assigned(known, "succeeded")],
+          });
+        if (path === "reconcile") {
+          reported.push(((await request.json()) as { taskId: string }).taskId);
+          return Response.json({ status: "succeeded" });
+        }
+        return Response.json({ task: null, executor: absentExecutor(request) });
+      },
+    });
+    await using runner = await spawnListener(api.url.origin);
+    await until(() => reported.length >= 2 || runner.listener.exitCode !== null);
+
+    expect({
+      reported: [...new Set(reported)],
+      changed: containerChanges.filter((change) => change.includes(unknown)),
+      notices: runner.output.stderr.split(`Task ${unknown} has the Run status archived`).length - 1,
+      exitCode: runner.listener.exitCode,
+    }).toEqual({ reported: [known], changed: [], notices: 1, exitCode: null });
+  }, 30_000);
+
+  it("keeps a stopped or created executor whose Run the API answers with a status it doesn't know", async () => {
+    const [stopped, created] = [crypto.randomUUID(), crypto.randomUUID()];
+    containers.set(`devboxes-task-${stopped}`, executor(`devboxes-task-${stopped}`, "exited"));
+    containers.set(`devboxes-task-${created}`, executor(`devboxes-task-${created}`, "created"));
+    const reports: { taskId: string; observation: string }[] = [];
+    using api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async (request) => {
+        const path = new URL(request.url).pathname.split("/").at(-1);
+        if (path === "assignments")
+          return Response.json({
+            tasks: [assigned(stopped, "running"), assigned(created, "queued")],
+          });
+        if (path === "reconcile") {
+          reports.push((await request.json()) as { taskId: string; observation: string });
+          return Response.json({ status: "archived" });
+        }
+        return Response.json({ task: null, executor: absentExecutor(request) });
+      },
+    });
+    await using runner = await spawnListener(api.url.origin);
+    await until(() => reports.length >= 4 || runner.listener.exitCode !== null);
+
+    expect({
+      reported: reports.slice(0, 2).map(({ taskId, observation }) => [taskId, observation]),
+      changed: containerChanges.filter(
+        (change) => change.includes(stopped) || change.includes(created),
+      ),
+      notices: [stopped, created].map(
+        (id) => runner.output.stderr.split(`Task ${id} has the Run status archived`).length - 1,
+      ),
+      exitCode: runner.listener.exitCode,
+    }).toEqual({
+      reported: [
+        [stopped, "stopped"],
+        [created, "created"],
+      ],
+      changed: [],
+      notices: [1, 1],
+      exitCode: null,
+    });
+  }, 30_000);
+
+  it("reports a claimed Task whose machine size, platform or Run status it doesn't know, or whose claim it can't read, as a start failure with the install link", async () => {
+    const [size, platform, status, unreadable] = [
+      crypto.randomUUID(),
+      crypto.randomUUID(),
+      crypto.randomUUID(),
+      crypto.randomUUID(),
+    ];
+    const claimable = [
+      { id: size, machineSize: "gpu", platform: "linux/amd64", status: "queued" },
+      { id: platform, machineSize: "medium", platform: "linux/riscv64", status: "queued" },
+      { id: status, machineSize: "medium", platform: "linux/amd64", status: "archived" },
+      { id: unreadable, machineSize: 5, platform: "linux/amd64", status: "queued" },
+    ];
+    const failures: { taskId: string; reason: string }[] = [];
+    let claims = 0;
+    using api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async (request) => {
+        const path = new URL(request.url).pathname.split("/").at(-1);
+        const executor = absentExecutor(request);
+        if (path === "assignments") return Response.json({ tasks: [] });
+        if (path === "reconcile") {
+          const report = (await request.json()) as {
+            taskId: string;
+            observation: string;
+            reason: string;
+          };
+          if (report.observation === "start-failed") failures.push(report);
+          return Response.json({ status: "queued" });
+        }
+        if (path !== "claim") return new Response(null, { status: 404 });
+        claims += 1;
+        const task = claimable.find(({ id }) => !failures.some(({ taskId }) => taskId === id));
+        return Response.json({
+          executor,
+          task: task && {
+            ...assigned(task.id, task.status),
+            image: `registry.devboxes.test/workspace@sha256:${"a".repeat(64)}`,
+            platform: task.platform,
+            machineSize: task.machineSize,
+            toolCache: { organizationId: "cli-test", paths: [] },
+            daemon: executor,
+            claudeCode: null,
+            traceparent: `00-${"1".repeat(32)}-${"2".repeat(16)}-01`,
+          },
+        });
+      },
+    });
+    await using runner = await spawnListener(api.url.origin);
+    await until(() => failures.length >= 4 || claims >= 6 || runner.listener.exitCode !== null);
+
+    const install = "Install the current CLI from https://devboxes.ai/install.";
+    expect({
+      failures: failures.map(({ taskId, reason }) => [taskId, reason]),
+      changed: containerChanges.filter((change) => claimable.some(({ id }) => change.includes(id))),
+      exitCode: runner.listener.exitCode,
+    }).toEqual({
+      failures: [
+        [
+          size,
+          `This devboxes CLI can't start the Task, because it doesn't know the machine size gpu. ${install}`,
+        ],
+        [
+          platform,
+          `This devboxes CLI can't start the Task, because it doesn't know the platform linux/riscv64. ${install}`,
+        ],
+        [
+          status,
+          `This devboxes CLI can't start the Task, because it doesn't know the Run status archived. ${install}`,
+        ],
+        [
+          unreadable,
+          expect.stringMatching(
+            /^This devboxes CLI can't read the claim response \(\/task\/machineSize .+\)\. Install the current CLI from https:\/\/devboxes\.ai\/install\.$/,
+          ),
+        ],
+      ],
+      changed: [],
+      exitCode: null,
     });
   }, 60_000);
 
@@ -2105,6 +2382,66 @@ describe("devboxes mcp", () => {
         data: { sessionId: "session-1" },
       });
       expect(invoked).toEqual(["/api/commands/sessions/inspect"]);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("lists a command whose contract it can't read as unreadable, with the install link", async () => {
+    using api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () =>
+        Response.json({
+          openapi: "3.0.3",
+          paths: {
+            "/api/commands/sessions/list": {
+              post: {
+                operationId: "sessions.list",
+                summary: "List the Organization's Sessions",
+                "x-devboxes": { effect: "read", roles: [], authority: "Organization member" },
+                responses: {},
+              },
+            },
+            "/api/commands/sessions/erase": {
+              post: { operationId: "sessions.erase", "x-devboxes": {}, responses: {} },
+            },
+          },
+        }),
+    });
+    const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
+    await client.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: ["src/cli.ts", "mcp"],
+        cwd: join(import.meta.dir, ".."),
+        env: {
+          PATH: process.env.PATH ?? "",
+          DEVBOXES_API_URL: api.url.origin,
+          DEVBOXES_TOKEN: "scoped",
+        },
+      }),
+    );
+    try {
+      const listed = await client.callTool({ name: "devboxes_describe", arguments: {} });
+
+      expect(listed.structuredContent).toEqual({
+        commands: [
+          {
+            operationId: "sessions.list",
+            effect: "read",
+            summary: "List the Organization's Sessions",
+          },
+        ],
+        unreadable: [
+          {
+            operationId: "sessions.erase",
+            notice: expect.stringMatching(
+              /^This devboxes CLI can't read this command's contract \(.+\)\. Install the current CLI from https:\/\/devboxes\.ai\/install\.$/,
+            ),
+          },
+        ],
+      });
     } finally {
       await client.close();
     }
