@@ -243,13 +243,15 @@ termination message, and the Task ends with that reason before it starts,
 without a retry.
 
 A host-bound secret's variable holds the stand-in `__devboxes_<KEY>__`. In an
-HTTPS request to one of the secret's hosts on port 443, the proxy swaps the
-stand-in for the value in the parts of the request the secret names, and swaps
-the value back in the response. The header of `deploy/images/agent-vault.patch`
-states what the swap and the swap-back cover. The proxy splices every other
-HTTPS connection to port 443 or 80 through without decrypting it, and it
-refuses any other port and private upstream addresses, so the agent reaches
-only public addresses on ports 443 and 80 through it. An
+HTTPS request to one of the secret's hosts, on 443 or on the port the host
+names, the proxy swaps the stand-in for the value in the parts of the request
+the secret names, and swaps the value back in the response. The header of
+`deploy/images/agent-vault.patch` states what the swap and the swap-back cover.
+The proxy splices every other HTTPS connection to port 443 or 80 through
+without decrypting it. Beyond those two ports it reaches only the `host:port`
+pairs in the sidecar's `DEVBOX_SECRET_TARGETS`, and it refuses private upstream
+addresses, so the agent reaches only public addresses on ports 443 and 80, and
+a secret's host on its own port, through it. An
 unprotected secret reaches the Task as its value. On a self-hosted Runner, a
 Task receives every secret's real value: a host-bound secret's value, and a
 database's stored URL, with the read-only login when the Run may only read.
