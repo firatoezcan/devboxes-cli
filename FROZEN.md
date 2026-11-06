@@ -146,8 +146,8 @@ boundaries, not compatibility guarantees for retired protocols.
   through it, and `apps/elysia-opencode/src/executor/execution.ts` reads its
   files. `apps/firops-api/src/execution/task-api.ts` is the sidecar's client
   of the API and its URL check.
-- The payload gives each of a Run's databases (PostgreSQL, ClickHouse and
-  Redis) a URL of the database proxy (`packages/database-proxy`) at
+- The payload gives each of a Run's databases (PostgreSQL, ClickHouse, MySQL
+  and Redis) a URL of the database proxy (`packages/database-proxy`) at
   `DEVBOX_DATABASE_PROXY_HOST`, whose password is a `database-client`-audience
   token naming that database's key. The proxy trades it at
   `/api/internal/execution/database-proxy/login`, which
