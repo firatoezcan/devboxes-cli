@@ -14,7 +14,7 @@ import {
   asksInTerminal,
   type CommandConnection,
   CommandError,
-  describeCommand,
+  advertisedCommand,
   describeCommands,
   invokeCommand,
   parseResponse,
@@ -219,7 +219,7 @@ export const addRunnerCommands = (program: Command) => {
     );
     let chosen: string | symbol | undefined = options.organization;
     if (chosen === undefined) {
-      const contract = describeCommand(description, "runners.add").commands[0]["x-devboxes"];
+      const contract = advertisedCommand(description, "runners.add")["x-devboxes"];
       if (!Value.Check(rolesSchema, contract))
         throw unreadableAnswer("who may add a Runner", describeErrors(rolesSchema, contract));
       const managed = organizations.filter((entry) => contract.roles.includes(entry.role));

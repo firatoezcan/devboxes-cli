@@ -106,6 +106,8 @@ const inputsBodySchema = Type.Object({
   inputs: Type.Optional(Type.Record(Type.String(), JsonValueSchema)),
 });
 const systemErrorSchema = Type.Object({ code: Type.String() });
+/** A section of a document's components by name, such as `schemas`. */
+const componentSectionSchema = Type.Record(Type.String(), JsonValueSchema);
 
 export type CommandDescription = {
   openapi: string;
@@ -423,13 +425,14 @@ export const describeCommands = async (
 };
 
 /**
- * The advertised commands narrowed to one, or a refusal of a command the API does not advertise or
- * whose contract this CLI can't read.
+ * The advertised command `command`, or a refusal of a command the API does not advertise or whose
+ * contract this CLI can't read. It reads no components, so invoking a command never fails on them
+ * (DEC-clients-fail-only-on-what-they-use).
  */
-export const describeCommand = (
-  { openapi, commands, components, unreadable }: CommandDescription,
+export const advertisedCommand = (
+  { commands, unreadable }: CommandDescription,
   command: string,
-): Omit<CommandDescription, "unreadable"> & { commands: [CatalogCommand] } => {
+) => {
   const unread = unreadable.find((candidate) => candidate.operationId === command);
   if (unread) throw unreadableAnswer(`the ${command} contract`, unread.problem);
   const operation = commands.find((candidate) => candidate.operationId === command);
@@ -439,7 +442,48 @@ export const describeCommand = (
       "This operation is not advertised by the configured API. Use devboxes commands to discover available operations.",
     );
   }
-  return { openapi, commands: [operation], components };
+  return operation;
+};
+
+/**
+ * The advertised command `command` with only the components its operation refers to, directly or
+ * through another component, or `advertisedCommand`'s refusal, or a refusal of a section of
+ * components that it refers to and this CLI can't read. A section that no reference reaches is
+ * never read (DEC-clients-fail-only-on-what-they-use).
+ */
+export const describeCommand = (
+  description: CommandDescription,
+  command: string,
+): Omit<CommandDescription, "unreadable"> & { commands: [CatalogCommand] } => {
+  const { openapi, components } = description;
+  const operation = advertisedCommand(description, command);
+  const references = (value: JsonValue | CatalogCommand) => {
+    const found: string[] = [];
+    JSON.stringify(value, (key, child: JsonValue) => {
+      if (key === "$ref" && Value.Check(Type.String(), child)) found.push(child);
+      return child;
+    });
+    return found;
+  };
+  const referred: Record<string, Static<typeof componentSectionSchema>> = {};
+  const pending = references(operation);
+  for (let reference = pending.pop(); reference !== undefined; reference = pending.pop()) {
+    const [section, name] = (/^#\/components\/([^/]+)\/([^/]+)$/.exec(reference) ?? [])
+      .slice(1)
+      .map((token) => token.replaceAll("~1", "/").replaceAll("~0", "~"));
+    if (!section || !name || referred[section]?.[name] !== undefined) continue;
+    const entries = components[section];
+    if (!Value.Check(componentSectionSchema, entries))
+      throw unreadableAnswer(
+        `the ${command} contract`,
+        describeErrors(componentSectionSchema, entries),
+      );
+    const target = entries[name];
+    if (target === undefined) continue;
+    referred[section] = { ...referred[section], [name]: target };
+    pending.push(...references(target));
+  }
+  return { openapi, commands: [operation], components: referred };
 };
 
 export const invokeCommand = async (
@@ -447,7 +491,7 @@ export const invokeCommand = async (
   invocation: { command: string; input: JsonValue },
   readCommands = describeCommands,
 ): Promise<CommandResponse> => {
-  const [operation] = describeCommand(await readCommands(connection), invocation.command).commands;
+  const operation = advertisedCommand(await readCommands(connection), invocation.command);
   let input = invocation.input;
   if (
     connection.organizationId &&

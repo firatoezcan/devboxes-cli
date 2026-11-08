@@ -2390,6 +2390,206 @@ describe("devboxes mcp", () => {
     }
   });
 
+  it("describes a command with only the components its operation refers to, through other components too", async () => {
+    const details = (field: string) => ({
+      type: "object",
+      properties: { [field]: { type: "string" } },
+    });
+    const components = {
+      schemas: {
+        CommandError: { type: "object", properties: { error: { type: "object" } } },
+        "CommandErrorDetails.PROJECT_BRANCH_MISSING": details("branch"),
+        "CommandErrorDetails.ELEVATION_REQUIRED": details("elevation"),
+      },
+      responses: {
+        CommandError: { content: { schema: { $ref: "#/components/schemas/CommandError" } } },
+        "CommandError.1": {
+          content: {
+            schema: {
+              allOf: [
+                { $ref: "#/components/schemas/CommandError" },
+                {
+                  properties: {
+                    error: {
+                      properties: {
+                        details: {
+                          anyOf: [
+                            {
+                              $ref: "#/components/schemas/CommandErrorDetails.PROJECT_BRANCH_MISSING",
+                            },
+                          ],
+                        },
+                      },
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    };
+    using api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () =>
+        Response.json({
+          openapi: "3.0.3",
+          paths: {
+            "/api/commands/sessions/dispatch": {
+              post: {
+                operationId: "sessions.dispatch",
+                summary: "Start work in a new Session",
+                "x-devboxes": { effect: "write", elevated: false, roles: [], authority: "Member" },
+                responses: { 409: { $ref: "#/components/responses/CommandError.1" } },
+              },
+            },
+          },
+          components,
+        }),
+    });
+    const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
+    await client.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: ["src/cli.ts", "mcp"],
+        cwd: join(import.meta.dir, ".."),
+        env: {
+          PATH: process.env.PATH ?? "",
+          DEVBOXES_API_URL: api.url.origin,
+          DEVBOXES_TOKEN: "scoped",
+        },
+      }),
+    );
+    try {
+      const described = await client.callTool({
+        name: "devboxes_describe",
+        arguments: { command: "sessions.dispatch" },
+      });
+
+      expect(described.structuredContent).toMatchObject({
+        commands: [{ operationId: "sessions.dispatch" }],
+      });
+      expect(Object(described.structuredContent).components).toEqual({
+        schemas: {
+          CommandError: components.schemas.CommandError,
+          "CommandErrorDetails.PROJECT_BRANCH_MISSING":
+            components.schemas["CommandErrorDetails.PROJECT_BRANCH_MISSING"],
+        },
+        responses: { "CommandError.1": components.responses["CommandError.1"] },
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("lists and describes commands whose document holds a components section that none of them refers to", async () => {
+    using api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () =>
+        Response.json({
+          openapi: "3.0.3",
+          paths: {
+            "/api/commands/projects/list": {
+              post: {
+                operationId: "projects.list",
+                summary: "List the Organization's Projects",
+                "x-devboxes": { effect: "read", roles: [], authority: "Member" },
+                responses: {},
+              },
+            },
+          },
+          components: { "x-release-note": "Components may carry an extension of any type." },
+        }),
+    });
+    const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
+    await client.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: ["src/cli.ts", "mcp"],
+        cwd: join(import.meta.dir, ".."),
+        env: {
+          PATH: process.env.PATH ?? "",
+          DEVBOXES_API_URL: api.url.origin,
+          DEVBOXES_TOKEN: "scoped",
+        },
+      }),
+    );
+    try {
+      const listed = await client.callTool({ name: "devboxes_describe", arguments: {} });
+      const described = await client.callTool({
+        name: "devboxes_describe",
+        arguments: { command: "projects.list" },
+      });
+
+      expect({ listed: listed.isError, described: described.isError }).toEqual({
+        listed: undefined,
+        described: undefined,
+      });
+      expect(described.structuredContent).toMatchObject({
+        commands: [{ operationId: "projects.list" }],
+      });
+      expect(Object(described.structuredContent).components).toEqual({});
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("invokes a command whose failure refers to a components section it can't read", async () => {
+    const invoked: string[] = [];
+    using api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request) => {
+        const { pathname } = new URL(request.url);
+        if (pathname === "/api/openapi/json")
+          return Response.json({
+            openapi: "3.0.3",
+            paths: {
+              "/api/commands/projects/list": {
+                post: {
+                  operationId: "projects.list",
+                  summary: "List the Organization's Projects",
+                  "x-devboxes": { effect: "read", roles: [], authority: "Member" },
+                  responses: { 400: { $ref: "#/components/responses/CommandError" } },
+                },
+              },
+            },
+            components: { responses: "Stated elsewhere." },
+          });
+        invoked.push(pathname);
+        return Response.json({ projects: [] });
+      },
+    });
+    const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
+    await client.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: ["src/cli.ts", "mcp"],
+        cwd: join(import.meta.dir, ".."),
+        env: {
+          PATH: process.env.PATH ?? "",
+          DEVBOXES_API_URL: api.url.origin,
+          DEVBOXES_TOKEN: "scoped",
+        },
+      }),
+    );
+    try {
+      const answered = await client.callTool({
+        name: "devboxes_invoke",
+        arguments: { command: "projects.list", input: {} },
+      });
+
+      expect({ error: answered.isError, invoked }).toEqual({
+        error: undefined,
+        invoked: ["/api/commands/projects/list"],
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
   it("lists a command whose contract it can't read as unreadable, with the install link", async () => {
     using api = Bun.serve({
       hostname: "127.0.0.1",

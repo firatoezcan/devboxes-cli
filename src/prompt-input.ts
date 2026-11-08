@@ -9,7 +9,7 @@ import {
   type CommandDescription,
   CommandError,
   commandInputSchema,
-  describeCommand,
+  advertisedCommand,
   type Field,
   invokeCommand,
 } from "./commands";
@@ -251,7 +251,7 @@ const promptObject = async (
  * API advertises for it. An Organization-bound token's Organization is not asked for.
  */
 export const promptCommandInput = async (context: PromptContext, operationId: string) => {
-  const [operation] = describeCommand(context.description, operationId).commands;
+  const operation = advertisedCommand(context.description, operationId);
   const schema = commandInputSchema(operation);
   if (schema === undefined) return {};
   if (types(schema)[0] !== "object" || !schema.properties)
