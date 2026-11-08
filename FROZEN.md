@@ -6,10 +6,9 @@ boundaries, not compatibility guarantees for retired protocols.
 
 ## Contract owners
 
-- `packages/protocol/src/launch-spec.ts` defines
-  `devboxes-native-launch` and the required Task environment: the Task
-  identity and the Run's `TRACEPARENT`, which the Runner claim returns and the
-  executor sends on every callback and Git request.
+- `packages/protocol/src/launch-spec.ts` defines the required Task
+  environment: the Task identity and the Run's `TRACEPARENT`, which the Runner
+  claim returns and the executor sends on every callback and Git request.
 - `packages/protocol/src/runner-payload.ts` defines the native Task
   payload, execution snapshot, inputs, and Review results.
 - `packages/protocol/src/execution-callbacks.ts` defines what each Task
