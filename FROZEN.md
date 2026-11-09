@@ -18,11 +18,12 @@ boundaries, not compatibility guarantees for retired protocols.
   every other callback to a declared answer.
 - `packages/protocol/src/task-runtime.ts` defines the Task container
   layout: the uids and gid, the home and workspace paths, the executor
-  environment, the executor drain time, and Runner heartbeat expiry. The public
-  CLI source carries it. `packages/protocol/src/managed-task-runtime.ts` defines
-  the managed Task's Pod beside it: the egress proxy, the database proxy's port
-  for each engine, and executor-bootstrap's executor path, variables and exit
-  code.
+  environment and the executor drain time. The public CLI source carries it.
+  `packages/protocol/src/managed-task-runtime.ts` defines the managed Task's
+  Pod beside it: the egress proxy, the database proxy's port for each engine,
+  and executor-bootstrap's executor path, variables and exit code.
+  `packages/protocol/src/runner-heartbeat.ts` defines the Runner heartbeat
+  expiry that the API and the executor share.
 - `packages/protocol/src/task-environment.ts` defines the environment
   keys the executor passes through to the agent, and the reserved Task keys.
 - `packages/protocol/src/daemon-artifact.ts` defines the daemon
