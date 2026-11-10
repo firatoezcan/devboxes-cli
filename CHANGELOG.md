@@ -1,5 +1,12 @@
 # devboxes
 
+## 0.16.1
+
+### Patch Changes
+
+- 8155ca2: `devboxes connect` says which app a provider's sign-in page names when devboxes signs in as another app: "The page names Codex CLI, which devboxes signs in as." for ChatGPT, and OpenCode for GitHub Copilot.
+- ff0f3b6: `devboxes connect` says "Your code is ABCD-1234." after the sign-in page's URL, instead of asking to confirm that the page shows the code. On GitHub's and OpenAI's pages the person types the code.
+
 ## 0.16.0
 
 ### Minor Changes
