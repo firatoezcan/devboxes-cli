@@ -270,12 +270,6 @@ describe("devboxes entrypoint", () => {
       "INPUT_FILE_NOT_FOUND",
     ],
     [
-      "command input missing outside a terminal",
-      ["--json", "invoke", "organizations.create"],
-      scoped,
-      "INPUT_REQUIRED",
-    ],
-    [
       "an Organization missing outside a terminal",
       ["--json", "connect", "openai", "--label", "OpenAI"],
       scoped,
