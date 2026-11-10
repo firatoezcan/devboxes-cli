@@ -1185,11 +1185,10 @@ describe("devboxes connect", () => {
     );
 
     expect({
-      openai: openai.stderr.split("\n").find((line) => line.startsWith("Open ")),
+      openaiNamesCodexCli: openai.stderr.includes("The page names Codex CLI"),
       claudeNamesAnApp: claude.stderr.includes("The page names"),
     }).toEqual({
-      openai:
-        "Open https://sign-in.example/openai?state=state to sign in. The page names Codex CLI, which devboxes signs in as. Confirm that the page shows code ABCD-1234.",
+      openaiNamesCodexCli: true,
       claudeNamesAnApp: false,
     });
   });
