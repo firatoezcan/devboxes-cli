@@ -74,16 +74,6 @@ export const opencodeMemoryHomeDirectories = [xdgHomes.XDG_CONFIG_HOME, xdgHomes
 );
 /** How long the executor has after SIGTERM to drain a started Run and record its result. */
 export const executorDrainSeconds = 120;
-/**
- * How long the API keeps the Runs of a self-hosted Runner that stopped heartbeating. The listener
- * heartbeats on every poll and caps its retry backoff far below this window. An executor retries
- * each callback to an unavailable API for this long before it fails its Run, so a self-hosted Run
- * fails for an outage only when the API would also end it for the Runner's silence. Nothing in the
- * API reads a managed executor's silence; the API ends managed Runs from Sandbox state. For managed
- * Runs the bound is therefore a policy choice that covers a rollout or a node restart, and it
- * shares this constant so one executor build retries the same way under either kind of Runner.
- */
-export const runnerHeartbeatExpiryMs = 10 * 60_000;
 
 /** The environment every Task executor receives, apart from its runtime's executor identity. */
 export const executorEnvironment = (task: {

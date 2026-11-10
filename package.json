@@ -1,6 +1,6 @@
 {
   "name": "devboxes",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "private": true,
   "description": "devboxes CLI: discover and invoke application commands, authenticate, run execution capacity, and serve stdio MCP.",
   "homepage": "https://github.com/firatoezcan/devboxes-cli#readme",
@@ -52,6 +52,7 @@
   },
   "patchedDependencies": {
     "better-auth@1.7.13": "patches/better-auth.patch",
-    "drizzle-kit@1.0.0-rc.5": "patches/drizzle-kit@1.0.0-rc.5.patch"
+    "drizzle-kit@1.0.0-rc.5": "patches/drizzle-kit@1.0.0-rc.5.patch",
+    "@voidzero-dev/vite-plus-core@1.3.0": "patches/@voidzero-dev__vite-plus-core@1.3.0.patch"
   }
 }

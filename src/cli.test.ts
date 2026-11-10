@@ -270,12 +270,6 @@ describe("devboxes entrypoint", () => {
       "INPUT_FILE_NOT_FOUND",
     ],
     [
-      "command input missing outside a terminal",
-      ["--json", "invoke", "organizations.create"],
-      scoped,
-      "INPUT_REQUIRED",
-    ],
-    [
       "an Organization missing outside a terminal",
       ["--json", "connect", "openai", "--label", "OpenAI"],
       scoped,
@@ -1442,6 +1436,51 @@ describe("devboxes runner add", () => {
     expect(cli.screen()).not.toContain(token);
   });
 
+  /** Waits until `file` exists, at most 10 seconds. */
+  const saved = async (file: string) => {
+    for (let waited = 0; !(await Bun.file(file).exists()) && waited < 10_000; waited += 50)
+      await Bun.sleep(50);
+  };
+
+  it("has devboxes runner listen ask for the key of a Runner registered in the dashboard, and save it where runner add does, for this user only", async () => {
+    const { tokenFile, env } = await runnerEnvironment();
+    const cli = await inTerminal(["--api", api.url.origin, "runner", "listen"], env);
+    await cli.answer("Paste the Runner key", "devboxes_runner_from_dashboard\r");
+    await saved(tokenFile);
+    cli.kill();
+
+    expect((await Bun.file(tokenFile).text()).trim()).toBe("devboxes_runner_from_dashboard");
+    expect((await stat(tokenFile)).mode & 0o777).toBe(0o600);
+    expect(cli.screen()).not.toContain("devboxes_runner_from_dashboard");
+  });
+
+  it("has devboxes runner listen save a Runner key piped to it", async () => {
+    const { tokenFile, env } = await runnerEnvironment();
+    await runCli(
+      ["--json", "--api", api.url.origin, "runner", "listen"],
+      env,
+      undefined,
+      "devboxes_runner_piped\n",
+    );
+
+    expect((await Bun.file(tokenFile).text()).trim()).toBe("devboxes_runner_piped");
+  });
+
+  it("has devboxes runner listen refuse a Runner key devboxes doesn't accept, and save nothing", async () => {
+    refusedKeys.add("devboxes_runner_revoked");
+    const { tokenFile, env } = await runnerEnvironment();
+    const result = await runCli(
+      ["--json", "--api", api.url.origin, "runner", "listen"],
+      env,
+      undefined,
+      "devboxes_runner_revoked\n",
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.stderr)).toMatchObject({ error: { code: "RUNNER_KEY_REFUSED" } });
+    expect(await Bun.file(tokenFile).exists()).toBe(false);
+  });
+
   it("offers no Organization whose role runners.add's served roles leave out", async () => {
     registerRoles = ["owner"];
     try {
@@ -1896,7 +1935,10 @@ describe("devboxes runner listen", () => {
     expect({
       reported: [...new Set(reported)],
       changed: containerChanges.filter((change) => change.includes(unknown)),
-      notices: runner.output.stderr.split(`Task ${unknown} has the Run status archived`).length - 1,
+      notices:
+        runner.output.stderr.split(
+          `Task ${unknown} has the Run status archived, which this devboxes CLI doesn't know, so it leaves the Task and its executor as they are. Install the current CLI from https://devboxes.ai/install.\n`,
+        ).length - 1,
       exitCode: runner.listener.exitCode,
     }).toEqual({ reported: [known], changed: [], notices: 1, exitCode: null });
   }, 30_000);
@@ -2382,6 +2424,206 @@ describe("devboxes mcp", () => {
         data: { sessionId: "session-1" },
       });
       expect(invoked).toEqual(["/api/commands/sessions/inspect"]);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("describes a command with only the components its operation refers to, through other components too", async () => {
+    const details = (field: string) => ({
+      type: "object",
+      properties: { [field]: { type: "string" } },
+    });
+    const components = {
+      schemas: {
+        CommandError: { type: "object", properties: { error: { type: "object" } } },
+        "CommandErrorDetails.PROJECT_BRANCH_MISSING": details("branch"),
+        "CommandErrorDetails.ELEVATION_REQUIRED": details("elevation"),
+      },
+      responses: {
+        CommandError: { content: { schema: { $ref: "#/components/schemas/CommandError" } } },
+        "CommandError.1": {
+          content: {
+            schema: {
+              allOf: [
+                { $ref: "#/components/schemas/CommandError" },
+                {
+                  properties: {
+                    error: {
+                      properties: {
+                        details: {
+                          anyOf: [
+                            {
+                              $ref: "#/components/schemas/CommandErrorDetails.PROJECT_BRANCH_MISSING",
+                            },
+                          ],
+                        },
+                      },
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    };
+    using api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () =>
+        Response.json({
+          openapi: "3.0.3",
+          paths: {
+            "/api/commands/sessions/dispatch": {
+              post: {
+                operationId: "sessions.dispatch",
+                summary: "Start work in a new Session",
+                "x-devboxes": { effect: "write", elevated: false, roles: [], authority: "Member" },
+                responses: { 409: { $ref: "#/components/responses/CommandError.1" } },
+              },
+            },
+          },
+          components,
+        }),
+    });
+    const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
+    await client.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: ["src/cli.ts", "mcp"],
+        cwd: join(import.meta.dir, ".."),
+        env: {
+          PATH: process.env.PATH ?? "",
+          DEVBOXES_API_URL: api.url.origin,
+          DEVBOXES_TOKEN: "scoped",
+        },
+      }),
+    );
+    try {
+      const described = await client.callTool({
+        name: "devboxes_describe",
+        arguments: { command: "sessions.dispatch" },
+      });
+
+      expect(described.structuredContent).toMatchObject({
+        commands: [{ operationId: "sessions.dispatch" }],
+      });
+      expect(Object(described.structuredContent).components).toEqual({
+        schemas: {
+          CommandError: components.schemas.CommandError,
+          "CommandErrorDetails.PROJECT_BRANCH_MISSING":
+            components.schemas["CommandErrorDetails.PROJECT_BRANCH_MISSING"],
+        },
+        responses: { "CommandError.1": components.responses["CommandError.1"] },
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("lists and describes commands whose document holds a components section that none of them refers to", async () => {
+    using api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () =>
+        Response.json({
+          openapi: "3.0.3",
+          paths: {
+            "/api/commands/projects/list": {
+              post: {
+                operationId: "projects.list",
+                summary: "List the Organization's Projects",
+                "x-devboxes": { effect: "read", roles: [], authority: "Member" },
+                responses: {},
+              },
+            },
+          },
+          components: { "x-release-note": "Components may carry an extension of any type." },
+        }),
+    });
+    const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
+    await client.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: ["src/cli.ts", "mcp"],
+        cwd: join(import.meta.dir, ".."),
+        env: {
+          PATH: process.env.PATH ?? "",
+          DEVBOXES_API_URL: api.url.origin,
+          DEVBOXES_TOKEN: "scoped",
+        },
+      }),
+    );
+    try {
+      const listed = await client.callTool({ name: "devboxes_describe", arguments: {} });
+      const described = await client.callTool({
+        name: "devboxes_describe",
+        arguments: { command: "projects.list" },
+      });
+
+      expect({ listed: listed.isError, described: described.isError }).toEqual({
+        listed: undefined,
+        described: undefined,
+      });
+      expect(described.structuredContent).toMatchObject({
+        commands: [{ operationId: "projects.list" }],
+      });
+      expect(Object(described.structuredContent).components).toEqual({});
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("invokes a command whose failure refers to a components section it can't read", async () => {
+    const invoked: string[] = [];
+    using api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request) => {
+        const { pathname } = new URL(request.url);
+        if (pathname === "/api/openapi/json")
+          return Response.json({
+            openapi: "3.0.3",
+            paths: {
+              "/api/commands/projects/list": {
+                post: {
+                  operationId: "projects.list",
+                  summary: "List the Organization's Projects",
+                  "x-devboxes": { effect: "read", roles: [], authority: "Member" },
+                  responses: { 400: { $ref: "#/components/responses/CommandError" } },
+                },
+              },
+            },
+            components: { responses: "Stated elsewhere." },
+          });
+        invoked.push(pathname);
+        return Response.json({ projects: [] });
+      },
+    });
+    const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
+    await client.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: ["src/cli.ts", "mcp"],
+        cwd: join(import.meta.dir, ".."),
+        env: {
+          PATH: process.env.PATH ?? "",
+          DEVBOXES_API_URL: api.url.origin,
+          DEVBOXES_TOKEN: "scoped",
+        },
+      }),
+    );
+    try {
+      const answered = await client.callTool({
+        name: "devboxes_invoke",
+        arguments: { command: "projects.list", input: {} },
+      });
+
+      expect({ error: answered.isError, invoked }).toEqual({
+        error: undefined,
+        invoked: ["/api/commands/projects/list"],
+      });
     } finally {
       await client.close();
     }

@@ -1,5 +1,6 @@
 import { betterFetch } from "@better-fetch/fetch";
 import {
+  approvedHeldWrite,
   type CatalogCommand,
   catalogCommands,
   commandDocumentSchema,
@@ -105,6 +106,8 @@ const inputsBodySchema = Type.Object({
   inputs: Type.Optional(Type.Record(Type.String(), JsonValueSchema)),
 });
 const systemErrorSchema = Type.Object({ code: Type.String() });
+/** A section of a document's components by name, such as `schemas`. */
+const componentSectionSchema = Type.Record(Type.String(), JsonValueSchema);
 
 export type CommandDescription = {
   openapi: string;
@@ -224,9 +227,12 @@ export const credentialSafeJson = (
 };
 
 /**
- * The refusal of an API answer that this CLI can't read, naming the `answer` and its `problems`.
- * Production always runs the newest API, so the CLI is the one to update.
+ * What the CLI tells a person when it can't read or act on what the API answered. Production always
+ * runs the newest API, so the CLI is the one to update.
  */
+export const installCurrentCli = "Install the current CLI from https://devboxes.ai/install.";
+
+/** The refusal of an API answer that this CLI can't read, naming the `answer` and its `problems`. */
 export const unreadableAnswer = (
   answer: string,
   problems: string,
@@ -234,7 +240,7 @@ export const unreadableAnswer = (
 ) =>
   new CommandError(
     "INVALID_RESPONSE",
-    `This devboxes CLI can't read ${answer} (${problems}). Install the current CLI from https://devboxes.ai/install.`,
+    `This devboxes CLI can't read ${answer} (${problems}). ${installCurrentCli}`,
     { correlation },
   );
 
@@ -419,13 +425,14 @@ export const describeCommands = async (
 };
 
 /**
- * The advertised commands narrowed to one, or a refusal of a command the API does not advertise or
- * whose contract this CLI can't read.
+ * The advertised command `command`, or a refusal of a command the API does not advertise or whose
+ * contract this CLI can't read. It reads no components, so invoking a command never fails on them
+ * (DEC-clients-fail-only-on-what-they-use).
  */
-export const describeCommand = (
-  { openapi, commands, components, unreadable }: CommandDescription,
+export const advertisedCommand = (
+  { commands, unreadable }: CommandDescription,
   command: string,
-): Omit<CommandDescription, "unreadable"> & { commands: [CatalogCommand] } => {
+) => {
   const unread = unreadable.find((candidate) => candidate.operationId === command);
   if (unread) throw unreadableAnswer(`the ${command} contract`, unread.problem);
   const operation = commands.find((candidate) => candidate.operationId === command);
@@ -435,7 +442,48 @@ export const describeCommand = (
       "This operation is not advertised by the configured API. Use devboxes commands to discover available operations.",
     );
   }
-  return { openapi, commands: [operation], components };
+  return operation;
+};
+
+/**
+ * The advertised command `command` with only the components its operation refers to, directly or
+ * through another component, or `advertisedCommand`'s refusal, or a refusal of a section of
+ * components that it refers to and this CLI can't read. A section that no reference reaches is
+ * never read (DEC-clients-fail-only-on-what-they-use).
+ */
+export const describeCommand = (
+  description: CommandDescription,
+  command: string,
+): Omit<CommandDescription, "unreadable"> & { commands: [CatalogCommand] } => {
+  const { openapi, components } = description;
+  const operation = advertisedCommand(description, command);
+  const references = (value: JsonValue | CatalogCommand) => {
+    const found: string[] = [];
+    JSON.stringify(value, (key, child: JsonValue) => {
+      if (key === "$ref" && Value.Check(Type.String(), child)) found.push(child);
+      return child;
+    });
+    return found;
+  };
+  const referred: Record<string, Static<typeof componentSectionSchema>> = {};
+  const pending = references(operation);
+  for (let reference = pending.pop(); reference !== undefined; reference = pending.pop()) {
+    const [section, name] = (/^#\/components\/([^/]+)\/([^/]+)$/.exec(reference) ?? [])
+      .slice(1)
+      .map((token) => token.replaceAll("~1", "/").replaceAll("~0", "~"));
+    if (!section || !name || referred[section]?.[name] !== undefined) continue;
+    const entries = components[section];
+    if (!Value.Check(componentSectionSchema, entries))
+      throw unreadableAnswer(
+        `the ${command} contract`,
+        describeErrors(componentSectionSchema, entries),
+      );
+    const target = entries[name];
+    if (target === undefined) continue;
+    referred[section] = { ...referred[section], [name]: target };
+    pending.push(...references(target));
+  }
+  return { openapi, commands: [operation], components: referred };
 };
 
 export const invokeCommand = async (
@@ -443,7 +491,7 @@ export const invokeCommand = async (
   invocation: { command: string; input: JsonValue },
   readCommands = describeCommands,
 ): Promise<CommandResponse> => {
-  const [operation] = describeCommand(await readCommands(connection), invocation.command).commands;
+  const operation = advertisedCommand(await readCommands(connection), invocation.command);
   let input = invocation.input;
   if (
     connection.organizationId &&
@@ -515,7 +563,9 @@ export const devboxesCommandTools = (
   ),
   invoke: commandTool(
     "devboxes_invoke",
-    "Run a devboxes application command. Pass `command`, its operation ID, and `input`, a JSON object written into the call itself, never a path to a local file; devboxes checks it against the command's schema. You get back the command's own response. When a command refuses, the answer looks like `{ error: { code, message, details, retryable }, status }`, for example with the code ROLE_REQUIRED, and the code and details tell you what went wrong.\n\nCommands that start work (sessions.dispatch, sessions.continue, sessions.input, review.request and schedules.run) answer as soon as the work is admitted, with what started, such as its `sessionUrl`. The result comes later, as finishedWork in a later turn or through sessions.inspect, so never report admitted work as done.\n\nFrom Chat, an elevated write doesn't run straight away. The call refuses with ELEVATION_REQUIRED, and `details.elevation` holds `{ requestId, approvalUrl }`. Tell the person the change is waiting for approval, say who can approve it (the roles in the command's approverRoles, which devboxes_describe shows) and link approvalUrl. Once a Member with one of those roles approves it (for a direct conversation, only that conversation's person can), the change runs by itself, so don't call the command again. If you learn that an approver refused it, tell the person who asked, in this conversation, that the change was refused and won't run, so nobody keeps waiting for it.\n\nDescribe a command with devboxes_describe before you first invoke it.",
+    "Run a devboxes application command. Pass `command`, its operation ID, and `input`, a JSON object written into the call itself, never a path to a local file; devboxes checks it against the command's schema. You get back the command's own response. When a command refuses, the answer looks like `{ error: { code, message, details, retryable }, status }`, for example with the code ROLE_REQUIRED, and the code and details tell you what went wrong.\n\nCommands that start work (sessions.dispatch, sessions.continue, sessions.input, review.request and schedules.run) answer as soon as the work is admitted, with what started, such as its `sessionUrl`. The result comes later, as finishedWork in a later turn or through sessions.inspect, so never report admitted work as done.\n\nFrom Chat, an elevated write doesn't run straight away. The call refuses with ELEVATION_REQUIRED, and `details.elevation` holds `{ requestId, approvalUrl }`. Tell the person the change is waiting for approval, say who can approve it (the roles in the command's approverRoles, which devboxes_describe shows) and link approvalUrl. Only a Member with one of those roles approves it (for a direct conversation, only that conversation's person). " +
+      approvedHeldWrite +
+      "\n\nDescribe a command with devboxes_describe before you first invoke it.",
     Type.Object({
       command: Type.String({ minLength: 1 }),
       // Tool arguments arrive as JSON, so the advertised schema accepts every value.

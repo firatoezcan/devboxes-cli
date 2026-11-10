@@ -23,7 +23,7 @@ import { extract, pack } from "tar-stream";
 
 import { claudeCodeArchive, stageExecutorArtifact } from "./executor-artifact";
 
-export type NativeTaskLaunch = {
+type NativeTaskLaunch = {
   id: string;
   /** The executor's API and its token: the Runner's relay and a token that only it accepts. */
   apiBaseUrl: string;

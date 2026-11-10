@@ -5,7 +5,9 @@ import Type from "typebox";
 import Value from "typebox/value";
 
 import {
+  advertisedCommand,
   asksInTerminal,
+  commandInputSchema,
   CommandError,
   describeCommand,
   describeCommands,
@@ -94,7 +96,7 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
   const invoke = program
     .command("invoke")
     .description(
-      "Run an application command, passing its input as JSON with --input. In a terminal, if you leave out --input, devboxes asks you for the input one field at a time. When the input names a Blueprint, as it does for commands that start or continue work such as sessions.dispatch, devboxes then also asks for that Blueprint's inputs, and for the issue if the Blueprint works on one.\n\nAn elevated write needs a recent sign-in: within the last 5 minutes for a change to access or credentials, and within the last hour for any other. If yours is older, the command refuses with SESSION_NOT_FRESH; sign in again with devboxes login.",
+      "Run an application command, passing its input as JSON with --input. In a terminal, if you leave out --input, devboxes asks you for the input one field at a time. Outside a terminal, or with --json, a command whose input requires no field runs with {}. When the input names a Blueprint, as it does for commands that start or continue work such as sessions.dispatch, devboxes then also asks for that Blueprint's inputs, and for the issue if the Blueprint works on one.\n\nAn elevated write needs a recent sign-in: within the last 5 minutes for a change to access or credentials, and within the last hour for any other. If yours is older, the command refuses with SESSION_NOT_FRESH; sign in again with devboxes login.",
     )
     .argument("<operationId>", "The command's ID as devboxes commands lists it.")
     .option(
@@ -138,9 +140,18 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
         async () => description,
       );
     } else {
-      throw new CommandError(
-        "INPUT_REQUIRED",
-        "Pass the input with --input @file or --input -, or run the command in a terminal to be asked for it.",
+      const description = await describeCommands(connection);
+      const operation = advertisedCommand(description, operationId);
+      const schema = commandInputSchema(operation);
+      if (schema && !Value.Check(schema, {}))
+        throw new CommandError(
+          "INPUT_REQUIRED",
+          "Pass the input with --input @file or --input -, or run the command in a terminal to be asked for it.",
+        );
+      result = await invokeCommand(
+        connection,
+        { command: operationId, input: {} },
+        async () => description,
       );
     }
     await writeOutput(`${JSON.stringify(result, null, options.json ? undefined : 2)}\n`);

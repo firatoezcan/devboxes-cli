@@ -1,7 +1,7 @@
 import { hostname } from "node:os";
 import { join } from "node:path";
 
-import { confirm, isCancel, select, text } from "@clack/prompts";
+import { confirm, isCancel, password, select, text } from "@clack/prompts";
 import { describeErrors } from "../values/validation-errors";
 import { platformConfigHome } from "../connections/config";
 import { writeSecretFile } from "../secret-file";
@@ -12,9 +12,8 @@ import Value from "typebox/value";
 import {
   apiOrigin,
   asksInTerminal,
-  type CommandConnection,
   CommandError,
-  describeCommand,
+  advertisedCommand,
   describeCommands,
   invokeCommand,
   parseResponse,
@@ -40,21 +39,46 @@ const registeredSchema = Type.Object({
   token: Type.String({ minLength: 1 }),
 });
 
-/** Whether the API still accepts the Runner key in `tokenFile`. */
-const keyWorks = async (connection: CommandConnection, tokenFile: string) => {
-  const token = (await Bun.file(tokenFile).text()).trim();
+/** Whether the API at `origin` accepts the Runner key `token`. */
+const keyWorks = async (origin: string, token: string) => {
   try {
-    await requestJson(
-      { origin: connection.origin, token },
-      "/api/internal/execution/runners/identify",
-      {},
-    );
+    await requestJson({ origin, token }, "/api/internal/execution/runners/identify", {});
     return true;
   } catch (error) {
     if (error instanceof CommandError && [401, 403].includes(error.options.status ?? 0))
       return false;
     throw error;
   }
+};
+
+/** The API a Runner listens to: `--api`, or the one the saved account names. */
+const listenOrigin = async (options: { api?: string; config?: string }) =>
+  options.api
+    ? apiOrigin(options.api)
+    : apiOrigin((await loadAccountContext(options)).config.apiBaseUrl);
+
+/**
+ * Saves the key of a Runner that the dashboard registered where `runner add` saves one, so
+ * `runner listen` finds it like any other. The person pastes it at a hidden prompt in a terminal, or
+ * pipes it in. devboxes must accept it.
+ */
+const saveRegisteredKey = async (origin: string, tokenFile: string) => {
+  const pasted = asksInTerminal(false)
+    ? await password({ message: "Paste the Runner key", output: process.stderr })
+    : await new Response(Bun.stdin.stream()).text();
+  if (isCancel(pasted)) throw new CommandError("CANCELLED", "Command cancelled.");
+  const token = pasted.trim();
+  if (token === "")
+    throw new CommandError(
+      "RUNNER_NOT_ADDED",
+      "This computer isn't a Runner yet. Register one in the dashboard and pipe its key to devboxes runner listen, or run devboxes runner add.",
+    );
+  if (!(await keyWorks(origin, token)))
+    throw new CommandError(
+      "RUNNER_KEY_REFUSED",
+      "devboxes doesn't accept this Runner key. Register the Runner again in the dashboard and paste its new key.",
+    );
+  await writeSecretFile({ path: tokenFile, contents: `${token}\n`, tmpPrefix: "token." });
 };
 
 /**
@@ -94,9 +118,7 @@ const runRunner = async (
     process.exit(await listener.exited);
   }
   await listen({
-    apiOrigin: options.api
-      ? apiOrigin(options.api)
-      : apiOrigin((await loadAccountContext(options)).config.apiBaseUrl),
+    apiOrigin: await listenOrigin(options),
     tokenFile: options.tokenFile,
     stateDirectory: options.stateDirectory,
     cpus: options.cpus,
@@ -117,16 +139,16 @@ export const addRunnerCommands = (program: Command) => {
   const runner = program
     .command("runner")
     .description(
-      "Run this computer as a Runner, a machine of your own that runs your Organization's work instead of devboxes' managed machines. Register it first with devboxes runner add, then start it with devboxes runner listen.",
+      "Run this computer as a Runner, a machine of your own that runs your Organization's work instead of devboxes' managed machines. Register it with devboxes runner add or in the dashboard, then start it with devboxes runner listen.",
     );
   const command = runner
     .command("listen")
     .description(
-      "Start this computer working as a Runner. It runs in the foreground until you stop it. Each piece of work the Runner claims runs in its own Docker container, and listen keeps telling devboxes how each one is doing: running, finished with its result, or gone.\n\nlisten doesn't restart a container that failed. It keeps the failed container so you can inspect it, and prints the command that removes it. Stopping listen doesn't stop the work: the containers keep running, and listen picks them up again the next time it starts.\n\nContainers send their callbacks to the relay, a local endpoint that listen runs. The relay forwards them to devboxes signed with the Runner's key, so the key never enters a container. For the same reason, listen won't start if the key file or the state files belong to another user, or if anyone else can read or write them.\n\nRegister the computer with devboxes runner add before you start it.",
+      "Start this computer working as a Runner. It runs in the foreground until you stop it. Each piece of work the Runner claims runs in its own Docker container, and listen keeps telling devboxes how each one is doing: running, finished with its result, or gone.\n\nlisten doesn't restart a container that failed. It keeps the failed container so you can inspect it, and prints the command that removes it. Stopping listen doesn't stop the work: the containers keep running, and listen picks them up again the next time it starts.\n\nContainers send their callbacks to the relay, a local endpoint that listen runs. The relay forwards them to devboxes signed with the Runner's key, so the key never enters a container. For the same reason, listen won't start if the key file or the state files belong to another user, or if anyone else can read or write them.\n\nRegister the computer with devboxes runner add, or in the dashboard and paste the key when listen asks for it.",
     )
     .option(
       "--token-file <path>",
-      "The Runner's key file. By default it's devboxes/runner/token in the config folder, where devboxes runner add saved it. It must belong to you and be readable by nobody else (mode 0600; on Windows, its access-control list decides).",
+      "The Runner's key file. By default it's devboxes/runner/token in the config folder, where devboxes runner add saves it. Without that file, listen asks for the key of a Runner registered in the dashboard, or reads it from stdin, checks it with devboxes and saves it there. The file must belong to you and be readable by nobody else (mode 0600; on Windows, its access-control list decides).",
     )
     .option(
       "--state-directory <path>",
@@ -154,10 +176,7 @@ export const addRunnerCommands = (program: Command) => {
     }>();
     const tokenFile = options.tokenFile ?? savedTokenFile();
     if (options.tokenFile === undefined && !(await Bun.file(tokenFile).exists()))
-      throw new CommandError(
-        "RUNNER_NOT_ADDED",
-        "This computer isn't a Runner yet. Run devboxes runner add first.",
-      );
+      await saveRegisteredKey(await listenOrigin(options), tokenFile);
     await runRunner(process.argv.slice(2), { ...options, tokenFile });
   });
 
@@ -196,7 +215,7 @@ export const addRunnerCommands = (program: Command) => {
       );
     const connection = await loadCommandConnection(options);
     if (await Bun.file(tokenFile).exists()) {
-      if (await keyWorks(connection, tokenFile))
+      if (await keyWorks(connection.origin, (await Bun.file(tokenFile).text()).trim()))
         throw new CommandError(
           "RUNNER_ALREADY_ADDED",
           `This computer is already a devboxes Runner. Its key is in ${tokenFile}. Run devboxes runner listen to start it.`,
@@ -219,7 +238,7 @@ export const addRunnerCommands = (program: Command) => {
     );
     let chosen: string | symbol | undefined = options.organization;
     if (chosen === undefined) {
-      const contract = describeCommand(description, "runners.add").commands[0]["x-devboxes"];
+      const contract = advertisedCommand(description, "runners.add")["x-devboxes"];
       if (!Value.Check(rolesSchema, contract))
         throw unreadableAnswer("who may add a Runner", describeErrors(rolesSchema, contract));
       const managed = organizations.filter((entry) => contract.roles.includes(entry.role));
