@@ -1442,6 +1442,51 @@ describe("devboxes runner add", () => {
     expect(cli.screen()).not.toContain(token);
   });
 
+  /** Waits until `file` exists, at most 10 seconds. */
+  const saved = async (file: string) => {
+    for (let waited = 0; !(await Bun.file(file).exists()) && waited < 10_000; waited += 50)
+      await Bun.sleep(50);
+  };
+
+  it("has devboxes runner listen ask for the key of a Runner registered in the dashboard, and save it where runner add does, for this user only", async () => {
+    const { tokenFile, env } = await runnerEnvironment();
+    const cli = await inTerminal(["--api", api.url.origin, "runner", "listen"], env);
+    await cli.answer("Paste the Runner key", "devboxes_runner_from_dashboard\r");
+    await saved(tokenFile);
+    cli.kill();
+
+    expect((await Bun.file(tokenFile).text()).trim()).toBe("devboxes_runner_from_dashboard");
+    expect((await stat(tokenFile)).mode & 0o777).toBe(0o600);
+    expect(cli.screen()).not.toContain("devboxes_runner_from_dashboard");
+  });
+
+  it("has devboxes runner listen save a Runner key piped to it", async () => {
+    const { tokenFile, env } = await runnerEnvironment();
+    await runCli(
+      ["--json", "--api", api.url.origin, "runner", "listen"],
+      env,
+      undefined,
+      "devboxes_runner_piped\n",
+    );
+
+    expect((await Bun.file(tokenFile).text()).trim()).toBe("devboxes_runner_piped");
+  });
+
+  it("has devboxes runner listen refuse a Runner key devboxes doesn't accept, and save nothing", async () => {
+    refusedKeys.add("devboxes_runner_revoked");
+    const { tokenFile, env } = await runnerEnvironment();
+    const result = await runCli(
+      ["--json", "--api", api.url.origin, "runner", "listen"],
+      env,
+      undefined,
+      "devboxes_runner_revoked\n",
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.stderr)).toMatchObject({ error: { code: "RUNNER_KEY_REFUSED" } });
+    expect(await Bun.file(tokenFile).exists()).toBe(false);
+  });
+
   it("offers no Organization whose role runners.add's served roles leave out", async () => {
     registerRoles = ["owner"];
     try {

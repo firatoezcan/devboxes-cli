@@ -64,7 +64,8 @@ boundaries, not compatibility guarantees for retired protocols.
   `RUNNER_LISTENING_ELSEWHERE` until the holder's heartbeat lapses, and
   `/release`, which `listen` calls when a signal stops it, lets go of the
   Runner while no Task's container runs on its machine. `/identify` answers
-  which Runner a credential belongs to, for `devboxes runner add`, and holds
+  which Runner a credential belongs to, for `devboxes runner add` and for
+  `devboxes runner listen` checking a key pasted from the dashboard, and holds
   nothing. A start that fails before the Task's container exists, the Runner reports
   to `/reconcile` as `start-failed` with its reason. The API then holds the
   Task from `/claim` for 1, 4 and then 15 minutes, as `nextRetry` schedules a
