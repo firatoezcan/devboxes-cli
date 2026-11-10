@@ -445,6 +445,14 @@ export const advertisedCommand = (
   return operation;
 };
 
+/** The section and name of the component that JSON pointer `reference` names, or null for another pointer. */
+export const componentReference = (reference: string) => {
+  const [section, name] = (/^#\/components\/([^/]+)\/([^/]+)$/.exec(reference) ?? [])
+    .slice(1)
+    .map((token) => token.replaceAll("~1", "/").replaceAll("~0", "~"));
+  return section && name ? { section, name } : null;
+};
+
 /**
  * The advertised command `command` with only the components its operation refers to, directly or
  * through another component, or `advertisedCommand`'s refusal, or a refusal of a section of
@@ -468,10 +476,10 @@ export const describeCommand = (
   const referred: Record<string, Static<typeof componentSectionSchema>> = {};
   const pending = references(operation);
   for (let reference = pending.pop(); reference !== undefined; reference = pending.pop()) {
-    const [section, name] = (/^#\/components\/([^/]+)\/([^/]+)$/.exec(reference) ?? [])
-      .slice(1)
-      .map((token) => token.replaceAll("~1", "/").replaceAll("~0", "~"));
-    if (!section || !name || referred[section]?.[name] !== undefined) continue;
+    const component = componentReference(reference);
+    if (!component) continue;
+    const { section, name } = component;
+    if (referred[section]?.[name] !== undefined) continue;
     const entries = components[section];
     if (!Value.Check(componentSectionSchema, entries))
       throw unreadableAnswer(
@@ -538,6 +546,7 @@ export const commandTool = <Input extends TObject, Result>(
 export const devboxesCommandTools = (
   connection: CommandConnection,
   readCommands = describeCommands,
+  describeOne = describeCommand,
 ) => ({
   describe: commandTool(
     "devboxes_describe",
@@ -545,7 +554,7 @@ export const devboxesCommandTools = (
     Type.Object({ command: Type.Optional(Type.String({ minLength: 1 })) }),
     async ({ command }) => {
       const description = await readCommands(connection);
-      if (command !== undefined) return describeCommand(description, command);
+      if (command !== undefined) return describeOne(description, command);
       return {
         commands: description.commands.map((operation) => ({
           operationId: operation.operationId,
