@@ -1,5 +1,16 @@
 # devboxes
 
+## 0.16.0
+
+### Minor Changes
+
+- 810a99d: `devboxes invoke` outside a terminal, or with `--json`, runs a command whose input requires no field, such as `organizations.list`, without `--input`. A command whose input requires a field still fails with `INPUT_REQUIRED` unless you pass `--input`.
+- 8f5281d: `devboxes runner listen` starts a Runner registered in the dashboard. When no key is saved, it asks for the Runner key at a hidden prompt, or reads it from stdin, checks it with devboxes, and saves it where `devboxes runner add` saves one, readable only by your user account. A key devboxes doesn't accept fails with `RUNNER_KEY_REFUSED` and is not saved.
+
+### Patch Changes
+
+- 6998fb4: `devboxes runner listen`'s notice about a running Task whose Run status it doesn't know ends with the same install line as every other notice: "Install the current CLI from https://devboxes.ai/install."
+
 ## 0.15.0
 
 ### Minor Changes
