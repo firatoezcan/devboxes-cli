@@ -74,6 +74,57 @@ const promptText = async (message: string) => {
   return entered.trim();
 };
 
+/**
+ * Signs out the account session `token` names at `origin`, and answers how that failed: with the
+ * HTTP `status` it returned, or with none when no answer came. A 401 is no failure: it means the
+ * server already ended that session.
+ */
+const signOut = async (origin: string, token: string) => {
+  try {
+    const { error } = await createAuthClient({
+      baseURL: origin,
+      disableDefaultFetchPlugins: true,
+      fetchOptions: {
+        auth: { type: "Bearer", token },
+        redirect: "error",
+        jsonParser: (text) => credentialSafeJson(text, [token]),
+      },
+    }).$fetch("/sign-out", { method: "POST", body: {} });
+    return error && error.status !== 401 ? { status: error.status } : undefined;
+  } catch (error) {
+    if (error instanceof TypeError && "code" in error) return { status: null };
+    throw error;
+  }
+};
+
+/** How a sign-out failed, in words that follow "signing it out" or "Sign-out". */
+const signOutFailure = ({ status }: { status: number | null }) =>
+  status === null ? "got no answer" : `returned HTTP ${status}`;
+
+/** The session a saved token names, whether it holds the raw token or its signed cookie value. */
+const sessionOf = (token: string) => decodeURIComponent(token).split(".")[0];
+
+/**
+ * Saves `token` as this computer's account session, or none, and then signs out the session it
+ * replaces, which no device holds any more. A sign-out that fails leaves the new sign-in saved and
+ * leaves the command's answer a warning naming the command that ends the earlier session.
+ */
+const replaceSession = async (context: AccountContext, token: string | undefined) => {
+  const replaced = context.config.sessionToken;
+  if (token) context.config.sessionToken = token;
+  else delete context.config.sessionToken;
+  await writeConfig(context);
+  if (!replaced || (token && sessionOf(replaced) === sessionOf(token))) return;
+  const failed = await signOut(apiOrigin(context.config.apiBaseUrl), replaced);
+  if (failed)
+    context.warning = `The earlier sign-in on this computer is still signed in, since signing it out ${signOutFailure(failed)}. End it with account.sign-out-device; account.devices lists it.`;
+};
+
+/** What a sign-in answers under --json: the account it signed in, or the second factor it needs. */
+type SignInAnswer =
+  | { user: unknown; signedIn: true }
+  | { signedIn: false; twoFactorRequired: true; twoFactorMethods: string[] };
+
 const authenticationResponse = async (
   context: AccountContext,
   path: string,
@@ -129,13 +180,11 @@ const authenticationResponse = async (
           }
         }
         const sessionToken = response.headers.get("set-auth-token");
-        if (sessionToken) {
-          context.config.sessionToken = sessionToken;
-          secrets.push(sessionToken);
-        }
+        if (sessionToken) secrets.push(sessionToken);
         if (setCookies.length || sessionToken) {
           context.config.cookieJar = JSON.stringify(cookies);
-          await writeConfig(context);
+          if (sessionToken) await replaceSession(context, sessionToken);
+          else await writeConfig(context);
         }
       },
       onSuccess: ({ data, response }) => {
@@ -246,15 +295,19 @@ export const addAuthenticationCommands = (program: Command) => {
             (entry.method === "password") === (action === "signup" || !!options.passwordStdin),
       );
       const context = await loadAccountContext(options);
-      const report = async (user: Static<typeof userSchema>) => {
+      /** Writes the sign-in's answer, as `json` or as `text`, with the warning a step left. */
+      const answer = async (json: SignInAnswer, text: string) => {
+        const { warning } = context;
         await writeOutput(
-          `${
-            options.json
-              ? JSON.stringify({ user: Value.Clean(userSchema, user), signedIn: true })
-              : `Signed in as ${user.email}.`
-          }\n`,
+          `${options.json ? JSON.stringify(warning ? { ...json, warning } : json) : text}\n`,
         );
+        if (!options.json && warning) process.stderr.write(`Warning: ${warning}\n`);
       };
+      const report = (user: Static<typeof userSchema>) =>
+        answer(
+          { user: Value.Clean(userSchema, user), signedIn: true },
+          `Signed in as ${user.email}.`,
+        );
       if (options.secondFactorStdin || options.emailSecondFactor) {
         if (!options.secondFactorStdin) {
           await requestAuthentication(context, "/two-factor/send-otp", {
@@ -391,8 +444,7 @@ export const addAuthenticationCommands = (program: Command) => {
           }
         }
         delete context.config.cookieJar;
-        context.config.sessionToken = accessToken;
-        await writeConfig(context);
+        await replaceSession(context, accessToken);
         const session = parseResponse(
           Type.Object({ user: userSchema }),
           (await requestAuthentication(context, "/get-session")).data,
@@ -486,19 +538,15 @@ export const addAuthenticationCommands = (program: Command) => {
             challenge,
           )
         ) {
-          delete context.config.sessionToken;
-          await writeConfig(context);
+          await replaceSession(context, undefined);
           if (!interactive) {
-            await writeOutput(
-              `${
-                options.json
-                  ? JSON.stringify({
-                      signedIn: false,
-                      twoFactorRequired: true,
-                      twoFactorMethods: challenge.twoFactorMethods,
-                    })
-                  : "Two-factor verification is required. Pipe an authenticator or backup code into devboxes login --second-factor-stdin. For a code by email, run devboxes login --email-second-factor, then pipe the code into devboxes login --email-second-factor --second-factor-stdin."
-              }\n`,
+            await answer(
+              {
+                signedIn: false,
+                twoFactorRequired: true,
+                twoFactorMethods: challenge.twoFactorMethods,
+              },
+              "Two-factor verification is required. Pipe an authenticator or backup code into devboxes login --second-factor-stdin. For a code by email, run devboxes login --email-second-factor, then pipe the code into devboxes login --email-second-factor --second-factor-stdin.",
             );
             return;
           }
@@ -583,22 +631,13 @@ export const addAuthenticationCommands = (program: Command) => {
     if (!token) {
       throw new CommandError("AUTHENTICATION_REQUIRED", "No saved account session to revoke.");
     }
-    const { error } = await createAuthClient({
-      baseURL: apiOrigin(context.config.apiBaseUrl),
-      disableDefaultFetchPlugins: true,
-      fetchOptions: {
-        auth: { type: "Bearer", token },
-        redirect: "error",
-        jsonParser: (text) => credentialSafeJson(text, [token]),
-      },
-    }).$fetch("/sign-out", { method: "POST", body: {} });
-    if (error && error.status !== 401) {
+    const failed = await signOut(apiOrigin(context.config.apiBaseUrl), token);
+    if (failed)
       throw new CommandError(
         "SIGN_OUT_FAILED",
-        `Sign-out returned HTTP ${error.status}. The saved credential was retained.`,
-        { status: error.status },
+        `Sign-out ${signOutFailure(failed)}. The saved credential was retained.`,
+        { status: failed.status ?? undefined },
       );
-    }
     delete context.config.cookieJar;
     delete context.config.sessionToken;
     await writeConfig(context);
