@@ -1056,6 +1056,7 @@ describe("devboxes connect", () => {
             body.providerId === "handler"
               ? "file:///Applications/Calculator.app"
               : `https://sign-in.example/${body.providerId}?state=state`,
+          signsInAs: body.providerId === "openai" ? "Codex CLI" : null,
           intervalSeconds: 0,
           expiresAt: null,
         });
@@ -1171,6 +1172,26 @@ describe("devboxes connect", () => {
     expect(refused.exitCode).toBe(1);
     expect(refused.stderr).toContain("MODEL_ACCOUNT_SIGN_IN_FAILED");
     expect(completions).toHaveLength(5);
+  });
+
+  it("says which app the sign-in page names when connect-start answers one, and names none when it answers null", async () => {
+    reset();
+    const openai = await runCli(connectTo("openai"), connection);
+    const claude = await runCli(
+      connectTo("claude-subscription"),
+      connection,
+      undefined,
+      `${code}\n`,
+    );
+
+    expect({
+      openai: openai.stderr.split("\n").find((line) => line.startsWith("Open ")),
+      claudeNamesAnApp: claude.stderr.includes("The page names"),
+    }).toEqual({
+      openai:
+        "Open https://sign-in.example/openai?state=state to sign in. The page names Codex CLI, which devboxes signs in as. Confirm that the page shows code ABCD-1234.",
+      claudeNamesAnApp: false,
+    });
   });
 
   it("connects an API key from stdin through model-accounts.add, also to a provider with a sign-in, replaces one with --account, and never prints it", async () => {
