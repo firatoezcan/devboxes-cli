@@ -1,6 +1,7 @@
 import Type, { type Static, type TSchema } from "typebox";
 import Value from "typebox/value";
 
+import type { JsonValue } from "./json";
 import { describeErrors } from "../values/validation-errors";
 
 /** The API's OpenAPI document, as `/api/openapi/json` serves it. */
@@ -166,6 +167,7 @@ const operationSchema = Type.Object({
   summary: Type.String({ minLength: 1 }),
   "x-devboxes": Type.Object({ effect: Type.String() }),
   requestBody: Type.Optional(Type.Unknown()),
+  responses: Type.Optional(Type.Unknown()),
 });
 
 export type CatalogCommand = Static<typeof operationSchema> & { path: string; method: "POST" };
@@ -391,6 +393,83 @@ export const catalogCommands = (document: Static<typeof commandDocumentSchema>) 
     else commands.push({ ...operation, path, method: "POST" });
   }
   return { commands, unreadable };
+};
+
+/** The section and name of the component that JSON pointer `reference` names, or null for another pointer. */
+const componentReference = (reference: string) => {
+  const [section, name] = (/^#\/components\/([^/]+)\/([^/]+)$/.exec(reference) ?? [])
+    .slice(1)
+    .map((token) => token.replaceAll("~1", "/").replaceAll("~0", "~"));
+  return section && name ? { section, name } : null;
+};
+
+/** Every `$ref` in `value`, at any depth. */
+const references = (value: JsonValue | CatalogCommand) => {
+  const found: string[] = [];
+  JSON.stringify(value, (key, child: JsonValue) => {
+    if (key === "$ref" && Value.Check(Type.String(), child)) found.push(child);
+    return child;
+  });
+  return found;
+};
+
+const describedResponseSchema = Type.Object({ description: Type.String() });
+const responseReferenceSchema = Type.Object({ $ref: Type.String() });
+
+/**
+ * The manual of `operationId`, a command that `document` serves, or null when it serves none by
+ * that name: its operation with only the components it refers to, directly or through another
+ * component. The short manual, everyone's default (DEC-one-short-manual), gives each distinct
+ * failure as one response, keyed by its statuses joined with "/", that holds only its description,
+ * which names the codes that carry details, so it carries no component that only failures refer
+ * to. A failed call answers with its own code, message and details. The `full` manual keeps every
+ * response as the document serves it.
+ */
+export const commandManual = (
+  document: Static<typeof commandDocumentSchema>,
+  operationId: string,
+  full: boolean,
+) => {
+  const served = catalogCommands(document).commands.find(
+    (command) => command.operationId === operationId,
+  );
+  if (!served) return null;
+  const components = document.components ?? {};
+  let operation = served;
+  if (!full) {
+    const failures = new Map<string, string[]>();
+    const responses: Record<string, JsonValue> = {};
+    const servedResponses: Record<string, JsonValue> = Object(served.responses);
+    for (const [status, response] of Object.entries(servedResponses)) {
+      const reference = Value.Check(responseReferenceSchema, response)
+        ? componentReference(response.$ref)
+        : null;
+      const failure =
+        reference?.section === "responses"
+          ? Object(components.responses)[reference.name]
+          : response;
+      if (status.startsWith("2") || !Value.Check(describedResponseSchema, failure)) {
+        responses[status] = response;
+        continue;
+      }
+      failures.set(failure.description, [...(failures.get(failure.description) ?? []), status]);
+    }
+    for (const [description, statuses] of failures) responses[statuses.join("/")] = { description };
+    operation = { ...served, responses };
+  }
+  const referred: Record<string, Record<string, JsonValue>> = {};
+  const pending = references(operation);
+  for (let reference = pending.pop(); reference !== undefined; reference = pending.pop()) {
+    const component = componentReference(reference);
+    if (!component) continue;
+    const { section, name } = component;
+    if (referred[section]?.[name] !== undefined) continue;
+    const target: JsonValue | undefined = Object(components[section])[name];
+    if (target === undefined) continue;
+    referred[section] = { ...referred[section], [name]: target };
+    pending.push(...references(target));
+  }
+  return { openapi: document.openapi, commands: [operation], components: referred };
 };
 
 /** The resource of an operation: the part of its operationId before the dot. */

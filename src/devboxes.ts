@@ -1,6 +1,6 @@
 import { isCancel, password, select, text } from "@clack/prompts";
 import type { JsonValue } from "./protocol/json";
-import type { Command } from "commander";
+import { Option, type Command } from "commander";
 import Type from "typebox";
 import Value from "typebox/value";
 
@@ -9,13 +9,14 @@ import {
   asksInTerminal,
   commandInputSchema,
   CommandError,
-  describeCommand,
+  commandList,
   describeCommands,
   invokeCommand,
   httpUrl,
   openInBrowser,
   parseResponse,
   readCommandInput,
+  readCommandManual,
   unreadableAnswer,
   writeOutput,
 } from "./commands";
@@ -27,6 +28,7 @@ const connectStartSchema = Type.Object({
   attemptId: Type.String(),
   userCode: Type.Union([Type.String(), Type.Null()]),
   verificationUrl: Type.String(),
+  signsInAs: Type.Union([Type.String(), Type.Null()]),
   intervalSeconds: Type.Number(),
 });
 const providersSchema = Type.Array(
@@ -56,7 +58,7 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
     const connection = await loadCommandConnection(options, logIn);
     const description = await describeCommands(connection);
     if (options.json) {
-      await writeOutput(`${JSON.stringify(description)}\n`);
+      await writeOutput(`${JSON.stringify(commandList(description))}\n`);
     } else {
       for (const operation of description.commands) {
         await writeOutput(
@@ -75,18 +77,28 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
   const describe = program
     .command("describe")
     .description(
-      "Show everything about one application command: its input schema, its response schema and its authority contract, which says who may call it and, for an elevated write, its elevation level.",
+      "Show one application command's manual: its input schema, its response schema, each way it can fail in one line, and its authority contract, which says who may call it and, for an elevated write, its elevation level.",
     )
     .argument(
       "<operationId>",
       "The command's ID as devboxes commands lists it, for example sessions.list.",
+    )
+    .addOption(
+      new Option("--detail <level>", "full also shows each failure's details schema.").choices([
+        "full",
+      ]),
     );
   describe.action(async (operationId: string) => {
-    const options = describe.optsWithGlobals<{ api?: string; config?: string; json?: boolean }>();
+    const options = describe.optsWithGlobals<{
+      api?: string;
+      config?: string;
+      json?: boolean;
+      detail?: "full";
+    }>();
     const connection = await loadCommandConnection(options, logIn);
     await writeOutput(
       `${JSON.stringify(
-        describeCommand(await describeCommands(connection), operationId),
+        await readCommandManual(connection, operationId, options.detail === "full"),
         null,
         options.json ? undefined : 2,
       )}\n`,
@@ -319,7 +331,7 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
           "The model-accounts.connect-start response's verificationUrl isn't an HTTP URL, so devboxes doesn't show or open it.",
         );
       process.stderr.write(
-        `Open ${verificationUrl.href} to sign in.${started.userCode === null ? "" : ` Confirm that the page shows code ${started.userCode}.`}\n`,
+        `Open ${verificationUrl.href} to sign in.${started.signsInAs === null ? "" : ` The page names ${started.signsInAs}, which devboxes signs in as.`}${started.userCode === null ? "" : ` Your code is ${started.userCode}.`}\n`,
       );
       if (interactive) openInBrowser(verificationUrl);
       const complete = async (code?: string) =>

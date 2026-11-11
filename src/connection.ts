@@ -31,6 +31,8 @@ const accountOf = async (connection: CommandConnection) => {
 
 export type AccountContext = DevboxesContext & {
   config: DevboxesContext["config"] & { apiBaseUrl: string };
+  /** What a step of the command warns its answer about, such as a sign-in it couldn't end. */
+  warning?: string;
 };
 
 export const loadAccountContext = async (

@@ -1,5 +1,26 @@
 # devboxes
 
+## 0.17.0
+
+### Minor Changes
+
+- 0fbbdc4: `devboxes describe` and `devboxes_describe` show the manual that the API serves for a command, short by default: each way the command can fail is one line that names the codes that carry details. `devboxes describe --detail full` and `devboxes_describe` with `detail: "full"` also give each failure's details schema. The CLI no longer refuses to describe a command whose contract it can't read, and a command the API doesn't serve fails with `UNKNOWN_COMMAND` from the API.
+
+  `devboxes commands --json` prints the list `devboxes_describe` gives without a command: each command's `operationId`, `effect` and `summary`, and `unreadable` for the commands this CLI can't read. It no longer prints each operation whole, nor `openapi` and `components`; `devboxes describe` gives a command's manual.
+
+## 0.16.2
+
+### Patch Changes
+
+- 20ea0eb: `devboxes login` and `devboxes signup` sign out the earlier sign-in they replace on this computer, which before stayed active with no device left to sign it out.
+
+## 0.16.1
+
+### Patch Changes
+
+- 8155ca2: `devboxes connect` says which app a provider's sign-in page names when devboxes signs in as another app: "The page names Codex CLI, which devboxes signs in as." for ChatGPT, and OpenCode for GitHub Copilot.
+- ff0f3b6: `devboxes connect` says "Your code is ABCD-1234." after the sign-in page's URL, instead of asking to confirm that the page shows the code. On GitHub's and OpenAI's pages the person types the code.
+
 ## 0.16.0
 
 ### Minor Changes

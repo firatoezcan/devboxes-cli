@@ -651,6 +651,53 @@ describe("devboxes commands", () => {
     );
   };
 
+  it("lists with --json what devboxes_describe lists without a command", async () => {
+    const listed = await run([{ ...portal, summary: "" }, inspect], ["--json", "commands"]);
+
+    expect(JSON.parse(listed.stdout)).toEqual({
+      commands: [
+        { operationId: "account.inspect", effect: "read", summary: "Show the signed-in account" },
+      ],
+      unreadable: [
+        {
+          operationId: "billing.portal",
+          notice: expect.stringContaining(
+            "Install the current CLI from https://devboxes.ai/install.",
+          ),
+        },
+      ],
+    });
+  });
+
+  it("describes a command with the manual the API serves, and the full one with --detail full", async () => {
+    const requested: string[] = [];
+    using api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request) => {
+        const url = new URL(request.url);
+        requested.push(`${url.pathname}${url.search}`);
+        return Response.json({ detail: url.searchParams.get("detail") });
+      },
+    });
+    const env = { DEVBOXES_API_URL: api.url.origin, DEVBOXES_TOKEN: "scoped" };
+    const short = await runCli(["--json", "describe", "sessions.dispatch"], env);
+    const full = await runCli(["--json", "describe", "sessions.dispatch", "--detail", "full"], env);
+
+    expect({
+      short: JSON.parse(short.stdout),
+      full: JSON.parse(full.stdout),
+      requested,
+    }).toEqual({
+      short: { detail: null },
+      full: { detail: "full" },
+      requested: [
+        "/api/openapi/json?command=sessions.dispatch",
+        "/api/openapi/json?command=sessions.dispatch&detail=full",
+      ],
+    });
+  });
+
   it("lists an elevated write and a write that isn't", async () => {
     for (const elevated of ["money", false]) {
       const listed = await run(
@@ -1056,6 +1103,7 @@ describe("devboxes connect", () => {
             body.providerId === "handler"
               ? "file:///Applications/Calculator.app"
               : `https://sign-in.example/${body.providerId}?state=state`,
+          signsInAs: body.providerId === "openai" ? "Codex CLI" : null,
           intervalSeconds: 0,
           expiresAt: null,
         });
@@ -1171,6 +1219,25 @@ describe("devboxes connect", () => {
     expect(refused.exitCode).toBe(1);
     expect(refused.stderr).toContain("MODEL_ACCOUNT_SIGN_IN_FAILED");
     expect(completions).toHaveLength(5);
+  });
+
+  it("says which app the sign-in page names when connect-start answers one, and names none when it answers null", async () => {
+    reset();
+    const openai = await runCli(connectTo("openai"), connection);
+    const claude = await runCli(
+      connectTo("claude-subscription"),
+      connection,
+      undefined,
+      `${code}\n`,
+    );
+
+    expect({
+      openaiNamesCodexCli: openai.stderr.includes("The page names Codex CLI"),
+      claudeNamesAnApp: claude.stderr.includes("The page names"),
+    }).toEqual({
+      openaiNamesCodexCli: true,
+      claudeNamesAnApp: false,
+    });
   });
 
   it("connects an API key from stdin through model-accounts.add, also to a provider with a sign-in, replaces one with --account, and never prints it", async () => {
@@ -2429,63 +2496,21 @@ describe("devboxes mcp", () => {
     }
   });
 
-  it("describes a command with only the components its operation refers to, through other components too", async () => {
-    const details = (field: string) => ({
-      type: "object",
-      properties: { [field]: { type: "string" } },
+  it("describes a command with the manual the API serves, short by default and full with detail full", async () => {
+    const manual = (detail: string | null) => ({
+      openapi: "3.1.0",
+      commands: [{ operationId: "sessions.dispatch", detail }],
+      components: { "x-any": "A manual passes through as the API serves it." },
     });
-    const components = {
-      schemas: {
-        CommandError: { type: "object", properties: { error: { type: "object" } } },
-        "CommandErrorDetails.PROJECT_BRANCH_MISSING": details("branch"),
-        "CommandErrorDetails.ELEVATION_REQUIRED": details("elevation"),
-      },
-      responses: {
-        CommandError: { content: { schema: { $ref: "#/components/schemas/CommandError" } } },
-        "CommandError.1": {
-          content: {
-            schema: {
-              allOf: [
-                { $ref: "#/components/schemas/CommandError" },
-                {
-                  properties: {
-                    error: {
-                      properties: {
-                        details: {
-                          anyOf: [
-                            {
-                              $ref: "#/components/schemas/CommandErrorDetails.PROJECT_BRANCH_MISSING",
-                            },
-                          ],
-                        },
-                      },
-                    },
-                  },
-                },
-              ],
-            },
-          },
-        },
-      },
-    };
+    const requested: string[] = [];
     using api = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
-      fetch: () =>
-        Response.json({
-          openapi: "3.0.3",
-          paths: {
-            "/api/commands/sessions/dispatch": {
-              post: {
-                operationId: "sessions.dispatch",
-                summary: "Start work in a new Session",
-                "x-devboxes": { effect: "write", elevated: false, roles: [], authority: "Member" },
-                responses: { 409: { $ref: "#/components/responses/CommandError.1" } },
-              },
-            },
-          },
-          components,
-        }),
+      fetch: (request) => {
+        const url = new URL(request.url);
+        requested.push(`${url.pathname}${url.search}`);
+        return Response.json(manual(url.searchParams.get("detail")));
+      },
     });
     const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
     await client.connect(
@@ -2501,75 +2526,33 @@ describe("devboxes mcp", () => {
       }),
     );
     try {
-      const described = await client.callTool({
+      const short = await client.callTool({
         name: "devboxes_describe",
         arguments: { command: "sessions.dispatch" },
       });
-
-      expect(described.structuredContent).toMatchObject({
-        commands: [{ operationId: "sessions.dispatch" }],
-      });
-      expect(Object(described.structuredContent).components).toEqual({
-        schemas: {
-          CommandError: components.schemas.CommandError,
-          "CommandErrorDetails.PROJECT_BRANCH_MISSING":
-            components.schemas["CommandErrorDetails.PROJECT_BRANCH_MISSING"],
-        },
-        responses: { "CommandError.1": components.responses["CommandError.1"] },
-      });
-    } finally {
-      await client.close();
-    }
-  });
-
-  it("lists and describes commands whose document holds a components section that none of them refers to", async () => {
-    using api = Bun.serve({
-      hostname: "127.0.0.1",
-      port: 0,
-      fetch: () =>
-        Response.json({
-          openapi: "3.0.3",
-          paths: {
-            "/api/commands/projects/list": {
-              post: {
-                operationId: "projects.list",
-                summary: "List the Organization's Projects",
-                "x-devboxes": { effect: "read", roles: [], authority: "Member" },
-                responses: {},
-              },
-            },
-          },
-          components: { "x-release-note": "Components may carry an extension of any type." },
-        }),
-    });
-    const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
-    await client.connect(
-      new StdioClientTransport({
-        command: process.execPath,
-        args: ["src/cli.ts", "mcp"],
-        cwd: join(import.meta.dir, ".."),
-        env: {
-          PATH: process.env.PATH ?? "",
-          DEVBOXES_API_URL: api.url.origin,
-          DEVBOXES_TOKEN: "scoped",
-        },
-      }),
-    );
-    try {
-      const listed = await client.callTool({ name: "devboxes_describe", arguments: {} });
-      const described = await client.callTool({
+      const full = await client.callTool({
         name: "devboxes_describe",
-        arguments: { command: "projects.list" },
+        arguments: { command: "sessions.dispatch", detail: "full" },
+      });
+      const stray = await client.callTool({
+        name: "devboxes_describe",
+        arguments: { detail: "full" },
       });
 
-      expect({ listed: listed.isError, described: described.isError }).toEqual({
-        listed: undefined,
-        described: undefined,
+      expect({
+        short: short.structuredContent,
+        full: full.structuredContent,
+        stray: { isError: stray.isError, code: Object(stray.structuredContent).error?.code },
+        requested,
+      }).toEqual({
+        short: manual(null),
+        full: manual("full"),
+        stray: { isError: true, code: "INVALID_INPUT" },
+        requested: [
+          "/api/openapi/json?command=sessions.dispatch",
+          "/api/openapi/json?command=sessions.dispatch&detail=full",
+        ],
       });
-      expect(described.structuredContent).toMatchObject({
-        commands: [{ operationId: "projects.list" }],
-      });
-      expect(Object(described.structuredContent).components).toEqual({});
     } finally {
       await client.close();
     }
@@ -2710,7 +2693,10 @@ describe("devboxes mcp", () => {
           description: expect.any(String),
           inputSchema: {
             type: "object",
-            properties: { command: { type: "string", minLength: 1 } },
+            properties: {
+              command: { type: "string", minLength: 1 },
+              detail: { type: "string", const: "full" },
+            },
           },
           annotations: { readOnlyHint: true, openWorldHint: true },
         },
