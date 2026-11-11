@@ -106,13 +106,8 @@ const inputsBodySchema = Type.Object({
   inputs: Type.Optional(Type.Record(Type.String(), JsonValueSchema)),
 });
 const systemErrorSchema = Type.Object({ code: Type.String() });
-/** A section of a document's components by name, such as `schemas`. */
-const componentSectionSchema = Type.Record(Type.String(), JsonValueSchema);
-
 export type CommandDescription = {
-  openapi: string;
   commands: CatalogCommand[];
-  components: NonNullable<Static<typeof commandDocumentSchema>["components"]>;
   /** The commands whose contract this CLI can't read, each with what in it doesn't parse. */
   unreadable: { operationId: string; problem: string }[];
 };
@@ -417,12 +412,46 @@ export const describeCommands = async (
   const document = response.data;
   if (!Value.Check(commandDocumentSchema, document))
     throw unreadableAnswer("the command list", describeErrors(commandDocumentSchema, document));
-  return {
-    openapi: document.openapi,
-    components: document.components ?? {},
-    ...catalogCommands(document),
-  };
+  return catalogCommands(document);
 };
+
+const manualSchema = Type.Record(Type.String(), JsonValueSchema);
+
+/**
+ * The manual of `command` as the API serves it, short unless `full` asks for every failure with its
+ * details schemas (DEC-one-short-manual). The CLI passes on any JSON object as it is.
+ */
+export const readCommandManual = async (
+  connection: CommandConnection,
+  command: string,
+  full: boolean,
+) => {
+  const query = new URLSearchParams({ command, ...(full && { detail: "full" }) });
+  const manual = (await requestJson(connection, `/api/openapi/json?${query}`)).data;
+  if (!Value.Check(manualSchema, manual))
+    throw unreadableAnswer(`the ${command} manual`, describeErrors(manualSchema, manual));
+  return manual;
+};
+
+/**
+ * The compact command list that `devboxes commands --json` and `devboxes_describe` without a
+ * command give: each command's operationId, effect and summary, and each command whose contract this
+ * CLI can't read, with the install link (DEC-mcp-compact-discovery). A command's manual gives the
+ * rest.
+ */
+export const commandList = ({ commands, unreadable }: CommandDescription) => ({
+  commands: commands.map((operation) => ({
+    operationId: operation.operationId,
+    effect: operation["x-devboxes"].effect,
+    summary: operation.summary,
+  })),
+  ...(unreadable.length > 0 && {
+    unreadable: unreadable.map(({ operationId, problem }) => ({
+      operationId,
+      notice: unreadableAnswer("this command's contract", problem).message,
+    })),
+  }),
+});
 
 /**
  * The advertised command `command`, or a refusal of a command the API does not advertise or whose
@@ -443,55 +472,6 @@ export const advertisedCommand = (
     );
   }
   return operation;
-};
-
-/** The section and name of the component that JSON pointer `reference` names, or null for another pointer. */
-export const componentReference = (reference: string) => {
-  const [section, name] = (/^#\/components\/([^/]+)\/([^/]+)$/.exec(reference) ?? [])
-    .slice(1)
-    .map((token) => token.replaceAll("~1", "/").replaceAll("~0", "~"));
-  return section && name ? { section, name } : null;
-};
-
-/**
- * The advertised command `command` with only the components its operation refers to, directly or
- * through another component, or `advertisedCommand`'s refusal, or a refusal of a section of
- * components that it refers to and this CLI can't read. A section that no reference reaches is
- * never read (DEC-clients-fail-only-on-what-they-use).
- */
-export const describeCommand = (
-  description: CommandDescription,
-  command: string,
-): Omit<CommandDescription, "unreadable"> & { commands: [CatalogCommand] } => {
-  const { openapi, components } = description;
-  const operation = advertisedCommand(description, command);
-  const references = (value: JsonValue | CatalogCommand) => {
-    const found: string[] = [];
-    JSON.stringify(value, (key, child: JsonValue) => {
-      if (key === "$ref" && Value.Check(Type.String(), child)) found.push(child);
-      return child;
-    });
-    return found;
-  };
-  const referred: Record<string, Static<typeof componentSectionSchema>> = {};
-  const pending = references(operation);
-  for (let reference = pending.pop(); reference !== undefined; reference = pending.pop()) {
-    const component = componentReference(reference);
-    if (!component) continue;
-    const { section, name } = component;
-    if (referred[section]?.[name] !== undefined) continue;
-    const entries = components[section];
-    if (!Value.Check(componentSectionSchema, entries))
-      throw unreadableAnswer(
-        `the ${command} contract`,
-        describeErrors(componentSectionSchema, entries),
-      );
-    const target = entries[name];
-    if (target === undefined) continue;
-    referred[section] = { ...referred[section], [name]: target };
-    pending.push(...references(target));
-  }
-  return { openapi, commands: [operation], components: referred };
 };
 
 export const invokeCommand = async (
@@ -540,34 +520,26 @@ export const commandTool = <Input extends TObject, Result>(
 
 /**
  * The devboxes command tools, describe and invoke, which `devboxes mcp` serves over stdio and the
- * Chat native host runs in its own process. Each call reads the advertised commands with
- * `readCommands`, which by default asks the API again.
+ * Chat native host runs in its own process. A listing or an invocation reads the advertised
+ * commands with `readCommands`, which by default asks the API again; a command's manual comes from
+ * the API on each call.
  */
 export const devboxesCommandTools = (
   connection: CommandConnection,
   readCommands = describeCommands,
-  describeOne = describeCommand,
 ) => ({
   describe: commandTool(
     "devboxes_describe",
-    "Look up devboxes application commands before you use one. Without `command`, it lists the commands you can call, each with its `operationId`, its `effect` (read or write) and a one-line `summary`. With an exact command ID, it returns that command's full contract: its input and response schemas, who may call it and, for an elevated write, its elevation level and `approverRoles`, the roles whose Members can approve it. Describe a command before you first call it with devboxes_invoke, because its description carries the rules for using it. Being listed doesn't promise a call will succeed: a command can still refuse you because of your role, the Chat policy or a stale sign-in.",
-    Type.Object({ command: Type.Optional(Type.String({ minLength: 1 })) }),
-    async ({ command }) => {
-      const description = await readCommands(connection);
-      if (command !== undefined) return describeOne(description, command);
-      return {
-        commands: description.commands.map((operation) => ({
-          operationId: operation.operationId,
-          effect: operation["x-devboxes"].effect,
-          summary: operation.summary,
-        })),
-        ...(description.unreadable.length > 0 && {
-          unreadable: description.unreadable.map(({ operationId, problem }) => ({
-            operationId,
-            notice: unreadableAnswer("this command's contract", problem).message,
-          })),
-        }),
-      };
+    "Look up devboxes application commands before you use one. Without `command`, it lists the commands you can call, each with its `operationId`, its `effect` (read or write) and a one-line `summary`. With an exact command ID, it returns that command's manual: its input and response schemas, each way it can fail in one line, who may call it and, for an elevated write, its elevation level and `approverRoles`, the roles whose Members can approve it. With `detail: \"full\"`, the manual also gives each failure's details schema. Describe a command before you first call it with devboxes_invoke, because its description carries the rules for using it. Being listed doesn't promise a call will succeed: a command can still refuse you because of your role, the Chat policy or a stale sign-in.",
+    Type.Object({
+      command: Type.Optional(Type.String({ minLength: 1 })),
+      detail: Type.Optional(Type.Literal("full")),
+    }),
+    async ({ command, detail }) => {
+      if (command !== undefined) return readCommandManual(connection, command, detail === "full");
+      if (detail !== undefined)
+        throw new CommandError("INVALID_INPUT", "detail goes only beside command.");
+      return commandList(await readCommands(connection));
     },
   ),
   invoke: commandTool(
