@@ -1,5 +1,11 @@
 # devboxes
 
+## 0.16.2
+
+### Patch Changes
+
+- 20ea0eb: `devboxes login` and `devboxes signup` sign out the earlier sign-in they replace on this computer, which before stayed active with no device left to sign it out.
+
 ## 0.16.1
 
 ### Patch Changes
