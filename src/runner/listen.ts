@@ -7,20 +7,20 @@ import { join, resolve } from "node:path";
 import {
   dockerArchitecturePlatforms,
   opencodeDaemonPlatforms,
-} from "@devboxes/protocol/daemon-artifact";
-import type { JsonValue } from "@devboxes/protocol/json";
-import { machineSizeResources, machineSizes } from "@devboxes/protocol/project";
-import { runStatuses } from "@devboxes/protocol/run-statuses";
+} from "../protocol/daemon-artifact";
+import type { JsonValue } from "../protocol/json";
+import { machineSizeResources, machineSizes } from "../protocol/project";
+import { runStatuses } from "../protocol/run-statuses";
 import {
   type RunnerAssignmentsSchema,
   type RunnerClaimSchema,
   runnerAnswers,
   runnerListenerHeader,
-} from "@devboxes/protocol/runner-callbacks";
-import { describeErrors } from "@devboxes/protocol/validation-errors";
-import { dockerSocketPath } from "@firops/devbox/runner/docker-socket";
-import { DockerOpencodeTaskRuntime } from "@firops/devbox/runner/docker-task-runtime";
-import { stalledExecutorDownload } from "@firops/devbox/runner/executor-artifact";
+} from "../protocol/runner-callbacks";
+import { describeErrors } from "../values/validation-errors";
+import { dockerSocketPath } from "./docker-socket";
+import { DockerOpencodeTaskRuntime } from "./docker-task-runtime";
+import { stalledExecutorDownload } from "./executor-artifact";
 import { proxy } from "hono/proxy";
 import { jwtVerify, SignJWT } from "jose";
 import Type, { type Static } from "typebox";

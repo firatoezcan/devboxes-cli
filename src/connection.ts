@@ -3,7 +3,7 @@ import {
   writeConfig,
   type DevboxesCliOptions,
   type DevboxesContext,
-} from "@firops/connections/local/config";
+} from "./connections/config";
 import Type from "typebox";
 
 import { defaultApiOrigin } from "./api";
