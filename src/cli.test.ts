@@ -1656,6 +1656,8 @@ describe("devboxes runner listen", () => {
   const containers = new Map<string, { Id: string; Image: string; State: object }>();
   /** Every call the Runner made to change a container on the fake engine. */
   const containerChanges: string[] = [];
+  /** How many image pulls the Runner asked the fake engine for. */
+  let imagePulls = 0;
   const docker = Bun.serve({
     unix: join(fixtureDirectory, "docker.sock"),
     fetch: (request) => {
@@ -1682,6 +1684,7 @@ describe("devboxes runner listen", () => {
         return Response.json({ IPAM: { Config: [{ Gateway: engine.gateway }] } });
       if (/\/containers\/[^/]+\/json$/.test(pathname))
         return Response.json({ message: "No such container" }, { status: 404 });
+      if (pathname.endsWith("/images/create")) imagePulls += 1;
       return Response.json({ message: `Unexpected ${pathname}` }, { status: 500 });
     },
   });
@@ -1893,7 +1896,12 @@ describe("devboxes runner listen", () => {
       });
       await using runner = await spawnListener(api.url.origin);
 
-      await until(() => claims >= 2 || runner.listener.exitCode !== null);
+      await until(
+        () =>
+          runner.output.stderr.includes(`The report about Task ${taskId} was refused`) ||
+          claims >= 2 ||
+          runner.listener.exitCode !== null,
+      );
 
       const report = {
         taskId,
@@ -2074,88 +2082,83 @@ describe("devboxes runner listen", () => {
     });
   }, 30_000);
 
-  it("reports a claimed Task whose machine size, platform or Run status it doesn't know, or whose claim it can't read, as a start failure with the install link", async () => {
-    const [size, platform, status, unreadable] = [
-      crypto.randomUUID(),
-      crypto.randomUUID(),
-      crypto.randomUUID(),
-      crypto.randomUUID(),
-    ];
-    const claimable = [
-      { id: size, machineSize: "gpu", platform: "linux/amd64", status: "queued" },
-      { id: platform, machineSize: "medium", platform: "linux/riscv64", status: "queued" },
-      { id: status, machineSize: "medium", platform: "linux/amd64", status: "archived" },
-      { id: unreadable, machineSize: 5, platform: "linux/amd64", status: "queued" },
-    ];
-    const failures: { taskId: string; reason: string }[] = [];
-    let claims = 0;
-    using api = Bun.serve({
-      hostname: "127.0.0.1",
-      port: 0,
-      fetch: async (request) => {
-        const path = new URL(request.url).pathname.split("/").at(-1);
-        const executor = absentExecutor(request);
-        if (path === "assignments") return Response.json({ tasks: [] });
-        if (path === "reconcile") {
-          const report = (await request.json()) as {
-            taskId: string;
-            observation: string;
-            reason: string;
-          };
-          if (report.observation === "start-failed") failures.push(report);
-          return Response.json({ status: "queued" });
-        }
-        if (path !== "claim") return new Response(null, { status: 404 });
-        claims += 1;
-        const task = claimable.find(({ id }) => !failures.some(({ taskId }) => taskId === id));
-        return Response.json({
-          executor,
-          task: task && {
-            ...assigned(task.id, task.status),
-            image: `registry.devboxes.test/workspace@sha256:${"a".repeat(64)}`,
-            platform: task.platform,
-            machineSize: task.machineSize,
-            toolCache: { organizationId: "cli-test", paths: [] },
-            daemon: executor,
-            claudeCode: null,
-            traceparent: `00-${"1".repeat(32)}-${"2".repeat(16)}-01`,
-          },
-        });
-      },
-    });
-    await using runner = await spawnListener(api.url.origin);
-    await until(() => failures.length >= 4 || claims >= 6 || runner.listener.exitCode !== null);
+  const installCurrentCli = "Install the current CLI from https://devboxes.ai/install.";
+  it.each([
+    {
+      part: "machine size it doesn't know",
+      task: { machineSize: "gpu", platform: "linux/amd64", status: "queued" },
+      reason: `This devboxes CLI can't start the Task, because it doesn't know the machine size gpu. ${installCurrentCli}`,
+    },
+    {
+      part: "platform it doesn't know",
+      task: { machineSize: "medium", platform: "linux/riscv64", status: "queued" },
+      reason: `This devboxes CLI can't start the Task, because it doesn't know the platform linux/riscv64. ${installCurrentCli}`,
+    },
+    {
+      part: "Run status it doesn't know",
+      task: { machineSize: "medium", platform: "linux/amd64", status: "archived" },
+      reason: `This devboxes CLI can't start the Task, because it doesn't know the Run status archived. ${installCurrentCli}`,
+    },
+    {
+      part: "claim it can't read",
+      task: { machineSize: 5, platform: "linux/amd64", status: "queued" },
+      reason: expect.stringMatching(
+        /^This devboxes CLI can't read the claim response \(\/task\/machineSize .+\)\. Install the current CLI from https:\/\/devboxes\.ai\/install\.$/,
+      ),
+    },
+  ])(
+    "reports a claimed Task whose $part as a start failure with the install link",
+    async ({ task, reason }) => {
+      const taskId = crypto.randomUUID();
+      const failures: { taskId: string; reason: string }[] = [];
+      let claims = 0;
+      using api = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: async (request) => {
+          const path = new URL(request.url).pathname.split("/").at(-1);
+          const executor = absentExecutor(request);
+          if (path === "assignments") return Response.json({ tasks: [] });
+          if (path === "reconcile") {
+            const report = (await request.json()) as {
+              taskId: string;
+              observation: string;
+              reason: string;
+            };
+            if (report.observation === "start-failed") failures.push(report);
+            return Response.json({ status: "queued" });
+          }
+          if (path !== "claim") return new Response(null, { status: 404 });
+          claims += 1;
+          return Response.json({
+            executor,
+            task:
+              failures.length === 0
+                ? {
+                    ...assigned(taskId, task.status),
+                    image: `registry.devboxes.test/workspace@sha256:${"a".repeat(64)}`,
+                    platform: task.platform,
+                    machineSize: task.machineSize,
+                    toolCache: { organizationId: "cli-test", paths: [] },
+                    daemon: executor,
+                    claudeCode: null,
+                    traceparent: `00-${"1".repeat(32)}-${"2".repeat(16)}-01`,
+                  }
+                : null,
+          });
+        },
+      });
+      await using runner = await spawnListener(api.url.origin);
+      await until(() => failures.length > 0 || claims >= 2 || runner.listener.exitCode !== null);
 
-    const install = "Install the current CLI from https://devboxes.ai/install.";
-    expect({
-      failures: failures.map(({ taskId, reason }) => [taskId, reason]),
-      changed: containerChanges.filter((change) => claimable.some(({ id }) => change.includes(id))),
-      exitCode: runner.listener.exitCode,
-    }).toEqual({
-      failures: [
-        [
-          size,
-          `This devboxes CLI can't start the Task, because it doesn't know the machine size gpu. ${install}`,
-        ],
-        [
-          platform,
-          `This devboxes CLI can't start the Task, because it doesn't know the platform linux/riscv64. ${install}`,
-        ],
-        [
-          status,
-          `This devboxes CLI can't start the Task, because it doesn't know the Run status archived. ${install}`,
-        ],
-        [
-          unreadable,
-          expect.stringMatching(
-            /^This devboxes CLI can't read the claim response \(\/task\/machineSize .+\)\. Install the current CLI from https:\/\/devboxes\.ai\/install\.$/,
-          ),
-        ],
-      ],
-      changed: [],
-      exitCode: null,
-    });
-  }, 60_000);
+      expect({
+        failures: failures.map((failure) => [failure.taskId, failure.reason]),
+        changed: containerChanges.filter((change) => change.includes(taskId)),
+        exitCode: runner.listener.exitCode,
+      }).toEqual({ failures: [[taskId, reason]], changed: [], exitCode: null });
+    },
+    60_000,
+  );
 
   it("downloads the current executor while idle, so the next Task's launch needs no download", async () => {
     const taskId = crypto.randomUUID();
@@ -2205,13 +2208,16 @@ describe("devboxes runner listen", () => {
         return new Response(null, { status: 404 });
       },
     });
+    const pulls = imagePulls;
     await using runner = await spawnListener(api.url.origin);
 
-    await until(() => reports.length > 0 || runner.listener.exitCode !== null);
+    await until(
+      () => imagePulls > pulls || reports.length > 0 || runner.listener.exitCode !== null,
+    );
 
-    expect({ executorRequests, reason: reports[0]?.reason }).toEqual({
+    expect({ executorRequests, pulled: imagePulls > pulls }).toEqual({
       executorRequests: 1,
-      reason: expect.stringContaining("/images/create"),
+      pulled: true,
     });
   }, 60_000);
 
@@ -2309,13 +2315,16 @@ describe("devboxes runner listen", () => {
         return new Response(null, { status: 404 });
       },
     });
+    const pulls = imagePulls;
     await using runner = await spawnListener(api.url.origin);
 
-    await until(() => reports.length > 0 || runner.listener.exitCode !== null);
+    await until(
+      () => imagePulls > pulls || reports.length > 0 || runner.listener.exitCode !== null,
+    );
 
-    expect({ executorRequests, reason: reports[0]?.reason }).toEqual({
+    expect({ executorRequests, pulled: imagePulls > pulls }).toEqual({
       executorRequests: 2,
-      reason: expect.stringContaining("/images/create"),
+      pulled: true,
     });
   }, 60_000);
 
