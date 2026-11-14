@@ -19,7 +19,7 @@ import {
 } from "@devboxes/protocol/runner-callbacks";
 import { describeErrors } from "@devboxes/protocol/validation-errors";
 import { dockerSocketPath } from "@firops/devbox/runner/docker-socket";
-import { DockerOpencodeTaskRuntime } from "@firops/devbox/runner/docker-task-runtime";
+import { DockerOpencodeTaskRuntime, executorName } from "@firops/devbox/runner/docker-task-runtime";
 import { stalledExecutorDownload } from "@firops/devbox/runner/executor-artifact";
 import { proxy } from "hono/proxy";
 import { jwtVerify, SignJWT } from "jose";
@@ -247,17 +247,6 @@ export const listen = async (options: {
     body: JsonValue,
   ): Promise<Static<(typeof runnerAnswers)[Operation]>> =>
     parseResponse(runnerAnswers[operation], await request(operation, body), operation);
-  /**
-   * Reports that Task `taskId` could not start, for `reason`, which the person sees once its retries
-   * are spent (DEC-runner-start-failures-retry). A refusal under 500 is logged and lets the poll go
-   * on.
-   */
-  const reportStartFailure = (taskId: string, reason: string) =>
-    api("reconcile", { taskId, observation: "start-failed", reason }).catch((refusal) => {
-      if (refusal instanceof CommandError && (refusal.options.status ?? 500) < 500)
-        return console.error(`The start failure of Task ${taskId} was refused: ${refusal}`);
-      throw refusal;
-    });
   /** Each Task this CLI left alone, by what in it this CLI doesn't know, as it last logged it. */
   const leftAlone = new Map<string, string>();
   /** Leaves Task `taskId` and its executor as they are because of `unknown`, and logs it once. */
@@ -287,7 +276,7 @@ export const listen = async (options: {
     task: Static<typeof RunnerAssignmentsSchema>["tasks"][number],
     containerId: string,
   ) => {
-    const executorId = task.executorId ?? `devboxes-task-${task.id}`;
+    const executorId = executorName(task.id);
     const container = runtime.docker.getContainer(containerId);
     const result = await api("reconcile", {
       taskId: task.id,
@@ -327,7 +316,7 @@ export const listen = async (options: {
   const startClaimed = async (
     task: NonNullable<Static<typeof RunnerClaimSchema>["task"]> & Static<typeof runnableTaskSchema>,
   ) => {
-    const existing = await runtime.inspect(task.executorId ?? `devboxes-task-${task.id}`);
+    const existing = await runtime.inspect(executorName(task.id));
     if (!existing) {
       const size = machineSizeResources[task.machineSize];
       const container = await runtime.create({
@@ -357,27 +346,33 @@ export const listen = async (options: {
     status === 401 ||
     status === 403 ||
     (!connected && (status === 404 || status === 422));
+  /**
+   * Logs the API's refusal of a report about Task `taskId` and lets the poll go on to the other
+   * Tasks. A refusal that ends the listener, and a server error, fail the poll.
+   */
+  const refusedReport = (taskId: string) => (refusal: Error) => {
+    if (
+      refusal instanceof CommandError &&
+      !endsListener(refusal) &&
+      (refusal.options.status ?? 500) < 500
+    )
+      return console.error(`The report about Task ${taskId} was refused: ${refusal}`);
+    throw refusal;
+  };
+  /**
+   * Reports that Task `taskId` could not start, for `reason`, which the person sees once its retries
+   * are spent (DEC-runner-start-failures-retry).
+   */
+  const reportStartFailure = (taskId: string, reason: string) =>
+    api("reconcile", { taskId, observation: "start-failed", reason }).catch(refusedReport(taskId));
   const poll = async () => {
     try {
       const assignments = await api("assignments", {});
       connected = true;
-      /**
-       * Logs the API's refusal of a report about Task `taskId` and lets the poll go on to the
-       * other Tasks. A refusal that ends the listener, and a server error, fail the poll.
-       */
-      const refusedReport = (taskId: string) => (refusal: Error) => {
-        if (
-          refusal instanceof CommandError &&
-          !endsListener(refusal) &&
-          (refusal.options.status ?? 500) < 500
-        )
-          return console.error(`The report about Task ${taskId} was refused: ${refusal}`);
-        throw refusal;
-      };
       for (const task of assignments.tasks) {
         if (stopping) break;
         if (starting.has(task.id) || !knows(task.id, task.status)) continue;
-        const executorId = task.executorId ?? `devboxes-task-${task.id}`;
+        const executorId = executorName(task.id);
         const executor = await runtime.inspect(task.containerId ?? executorId);
         if (!executor) {
           if (
@@ -483,7 +478,7 @@ export const listen = async (options: {
                   (error) => {
                     startFailure = {
                       taskId: task.id,
-                      executorId: task.executorId ?? `devboxes-task-${task.id}`,
+                      executorId: executorName(task.id),
                       reason:
                         error instanceof Error
                           ? error.name === "TimeoutError"

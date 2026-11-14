@@ -122,10 +122,26 @@ const replaceSession = async (context: AccountContext, token: string | undefined
     context.warning = `The earlier sign-in on this computer is still signed in, since signing it out ${signOutFailure(failed)}. End it with account.sign-out-device; account.devices lists it.`;
 };
 
-/** What a sign-in answers under --json: the account it signed in, or the second factor it needs. */
+/**
+ * What a sign-in answers under --json: the account it signed in, the second factor it needs, or that
+ * it emailed a code to pipe into the next command.
+ */
 type SignInAnswer =
   | { user: unknown; signedIn: true }
-  | { signedIn: false; twoFactorRequired: true; twoFactorMethods: string[] };
+  | { signedIn: false; twoFactorRequired: true; twoFactorMethods: string[] }
+  | { signedIn: false; codeSent: true };
+
+const deviceCodeSchema = Type.Object({
+  device_code: Type.String({ minLength: 1 }),
+  user_code: Type.String({ minLength: 1 }),
+  verification_uri_complete: Type.String(),
+  expires_in: Type.Number(),
+  interval: Type.Number(),
+});
+
+/** The endpoint that verifies a second-factor `code`: an authenticator's 6 digits, or else a backup code. */
+const secondFactorPath = (code: string) =>
+  /^\d{6}$/.test(code) ? "/two-factor/verify-totp" : "/two-factor/verify-backup-code";
 
 const authenticationResponse = async (
   context: AccountContext,
@@ -312,27 +328,20 @@ export const addAuthenticationCommands = (program: Command) => {
           { user: Value.Clean(userSchema, user), signedIn: true },
           `Signed in as ${user.email}.`,
         );
+      const codeSent = (text: string) => answer({ signedIn: false, codeSent: true }, text);
       if (options.secondFactorStdin || options.emailSecondFactor) {
         if (!options.secondFactorStdin) {
           await requestAuthentication(context, "/two-factor/send-otp", {
             method: "POST",
             body: {},
           });
-          await writeOutput(
-            `${
-              options.json
-                ? JSON.stringify({ signedIn: false, codeSent: true })
-                : "devboxes emailed you a code. Pipe it into devboxes login --email-second-factor --second-factor-stdin."
-            }\n`,
+          await codeSent(
+            "devboxes emailed you a code. Pipe it into devboxes login --email-second-factor --second-factor-stdin.",
           );
           return;
         }
         const code = (await Bun.stdin.text()).replace(/\s/g, "");
-        const path = options.emailSecondFactor
-          ? "/two-factor/verify-otp"
-          : /^\d{6}$/.test(code)
-            ? "/two-factor/verify-totp"
-            : "/two-factor/verify-backup-code";
+        const path = options.emailSecondFactor ? "/two-factor/verify-otp" : secondFactorPath(code);
         const verified = await requestAuthentication(context, path, {
           method: "POST",
           body: { code },
@@ -364,13 +373,6 @@ export const addAuthenticationCommands = (program: Command) => {
             body: { client_id: deviceClientId },
           })
         ).data;
-        const deviceCodeSchema = Type.Object({
-          device_code: Type.String({ minLength: 1 }),
-          user_code: Type.String({ minLength: 1 }),
-          verification_uri_complete: Type.String(),
-          expires_in: Type.Number(),
-          interval: Type.Number(),
-        });
         if (!Value.Check(deviceCodeSchema, device)) {
           throw new CommandError(
             "INVALID_AUTH_RESPONSE",
@@ -488,6 +490,8 @@ export const addAuthenticationCommands = (program: Command) => {
           throw new CommandError("PASSWORD_INPUT_REQUIRED", "The password must not be empty.");
         return password;
       };
+      const emailedCode = async () =>
+        options.codeStdin ? (await Bun.stdin.text()).trim() : promptText(`Code sent to ${email}`);
       if (action === "signup") {
         if (!options.codeStdin) {
           await requestAuthentication(context, "/sign-up/email", {
@@ -495,22 +499,15 @@ export const addAuthenticationCommands = (program: Command) => {
             body: { email, password: await readPassword(), name: "" },
           });
           if (!interactive) {
-            await writeOutput(
-              `${
-                options.json
-                  ? JSON.stringify({ signedIn: false, codeSent: true })
-                  : `devboxes sent a code to ${email}. Pipe it into devboxes signup --email ${email} --code-stdin to finish creating your account.`
-              }\n`,
+            await codeSent(
+              `devboxes sent a code to ${email}. Pipe it into devboxes signup --email ${email} --code-stdin to finish creating your account.`,
             );
             return;
           }
         }
-        const code = options.codeStdin
-          ? (await Bun.stdin.text()).trim()
-          : await promptText(`Code sent to ${email}`);
         const verified = await requestAuthentication(context, "/email-otp/verify-email", {
           method: "POST",
-          body: { email, otp: code },
+          body: { email, otp: await emailedCode() },
         });
         await report(
           parseResponse(authenticationSchema, verified.data, "/email-otp/verify-email").user,
@@ -571,15 +568,14 @@ export const addAuthenticationCommands = (program: Command) => {
             });
             response = await requestAuthentication(context, "/two-factor/verify-otp", {
               method: "POST",
-              body: { code: await promptText(`Code sent to ${email}`) },
+              body: { code: await emailedCode() },
             });
           } else {
             const code = (await promptText("Authenticator code or backup code")).replace(/\s/g, "");
-            response = await requestAuthentication(
-              context,
-              /^\d{6}$/.test(code) ? "/two-factor/verify-totp" : "/two-factor/verify-backup-code",
-              { method: "POST", body: { code } },
-            );
+            response = await requestAuthentication(context, secondFactorPath(code), {
+              method: "POST",
+              body: { code },
+            });
           }
         }
         await report(parseResponse(authenticationSchema, response.data, "/sign-in/email").user);
@@ -591,25 +587,18 @@ export const addAuthenticationCommands = (program: Command) => {
           body: { email, type: "sign-in" },
         });
         if (!interactive) {
-          await writeOutput(
-            `${
-              options.json
-                ? JSON.stringify({ signedIn: false, codeSent: true })
-                : `If ${email} has a devboxes account, devboxes sent it a sign-in code. Pipe it into the same command with --code-stdin. To create an account, run devboxes signup.`
-            }\n`,
+          await codeSent(
+            `If ${email} has a devboxes account, devboxes sent it a sign-in code. Pipe it into the same command with --code-stdin. To create an account, run devboxes signup.`,
           );
           return;
         }
       }
-      const code = options.codeStdin
-        ? (await Bun.stdin.text()).trim()
-        : await promptText(`Code sent to ${email}`);
       const authenticated = parseResponse(
         authenticationSchema,
         (
           await requestAuthentication(context, "/sign-in/email-otp", {
             method: "POST",
-            body: { email, otp: code },
+            body: { email, otp: await emailedCode() },
           })
         ).data,
         "/sign-in/email-otp",

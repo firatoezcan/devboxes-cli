@@ -103,6 +103,23 @@ const catalog = <Operation extends { operationId: string }>(...operations: Opera
 });
 
 /**
+ * An MCP client of `devboxes mcp`, run with `args` before `mcp` and with `env` beside PATH. Disposing
+ * of it ends the server.
+ */
+const mcpClient = async (env: Record<string, string>, args: string[] = []) => {
+  const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
+  await client.connect(
+    new StdioClientTransport({
+      command: process.execPath,
+      args: ["src/cli.ts", ...args, "mcp"],
+      cwd: join(import.meta.dir, ".."),
+      env: { PATH: process.env.PATH ?? "", ...env },
+    }),
+  );
+  return Object.assign(client, { [Symbol.asyncDispose]: () => client.close() });
+};
+
+/**
  * Runs the CLI in a pseudo-terminal, with an `open` and an `xdg-open` on PATH that only record
  * their calls. TERM names a color terminal, so clack colors its prompts as it does under CI.
  */
@@ -1040,7 +1057,26 @@ describe("devboxes connect", () => {
           ),
         );
       if (pathname === "/api/commands/organizations/list")
-        return Response.json({ organizations: [{ id: organizationId, name: "Acme" }] });
+        return request.headers.get("authorization") === "Bearer connect-session"
+          ? Response.json({
+              organizations: [
+                { id: organizationId, name: "Acme", role: "owner" },
+                {
+                  id: "0198a0b0-0000-7000-8000-000000000002",
+                  name: "Client workspace",
+                  role: "member",
+                },
+              ],
+            })
+          : Response.json(
+              {
+                error: {
+                  code: "AUTHENTICATION_REQUIRED",
+                  message: "A current account session is required.",
+                },
+              },
+              { status: 401 },
+            );
       if (pathname === "/api/commands/model-accounts/providers") {
         const unavailable = manages ? null : managersOnly;
         return Response.json([
@@ -1322,9 +1358,15 @@ describe("devboxes connect", () => {
     expect(await cli.opened()).toBe(false);
   });
 
-  it("asks for the Organization and the model account's name when they are missing", async () => {
+  it("asks for the Organization among those where the person may connect a model account, and for the model account's name, when they are missing", async () => {
     reset();
-    const cli = await inTerminal(["connect", "anthropic"], connection);
+    const config = join(fixtureDirectory, "connect-session.json");
+    await writeFile(
+      config,
+      JSON.stringify({ apiBaseUrl: `${api.url.origin}/api`, sessionToken: "connect-session" }),
+    );
+    await chmod(config, 0o600);
+    const cli = await inTerminal(["--config", config, "connect", "anthropic"], {});
 
     await cli.answer("Acme", "\r");
     await cli.answer("Name of the model account", " key\r");
@@ -1333,6 +1375,7 @@ describe("devboxes connect", () => {
     cli.kill();
 
     expect(exitCode).toBe(0);
+    expect(cli.screen()).not.toContain("Client workspace");
     expect(accountWrites).toEqual([
       {
         operation: "/api/commands/model-accounts/add",
@@ -1344,6 +1387,18 @@ describe("devboxes connect", () => {
         },
       },
     ]);
+  });
+
+  it("has a delegation token name the Organization with --organization, since only an account session lists them", async () => {
+    reset();
+    const cli = await inTerminal(["connect", "anthropic"], connection);
+    const exitCode = await cli.exited();
+    cli.kill();
+
+    expect(exitCode).toBe(1);
+    expect(cli.screen()).toContain(
+      "ORGANIZATION_REQUIRED: devboxes can't list your Organizations with a delegation token. Name the Organization with --organization <id>.",
+    );
   });
 
   it("won't connect a greyed-out option that Enter chose", async () => {
@@ -1391,6 +1446,7 @@ describe("devboxes runner add", () => {
                 elevated: false,
                 authority: "Organization owner or admin",
                 roles: registerRoles,
+                delegable: false,
               },
             },
           ),
@@ -1778,66 +1834,81 @@ describe("devboxes runner listen", () => {
     );
   }, 60_000);
 
-  it("reports a start that failed before its container existed again after a server error, and drops the report the API refuses", async () => {
-    const taskId = crypto.randomUUID();
-    const reports: unknown[] = [];
-    let claims = 0;
-    using api = Bun.serve({
-      hostname: "127.0.0.1",
-      port: 0,
-      fetch: async (request) => {
-        const path = new URL(request.url).pathname.split("/").at(-1);
-        if (path === "assignments") return Response.json({ tasks: [] });
-        if (path === "claim") {
-          claims += 1;
-          const executor = absentExecutor(request);
-          if (claims > 1) return Response.json({ task: null, executor });
-          return Response.json({
-            executor,
-            task: {
-              id: taskId,
-              executorId: null,
-              containerId: null,
-              status: "queued",
-              image: `registry.devboxes.test/workspace@sha256:${"a".repeat(64)}`,
-              platform: "linux/amd64",
-              machineSize: "medium",
-              toolCache: { organizationId: "cli-test", paths: [] },
-              daemon: executor,
-              claudeCode: null,
-              traceparent: `00-${"1".repeat(32)}-${"2".repeat(16)}-01`,
-            },
-          });
-        }
-        if (path === "reconcile") {
-          reports.push(await request.json());
-          return reports.length === 1
-            ? Response.json(
-                { error: { code: "SERVICE_UNAVAILABLE", message: "The API is restarting." } },
-                { status: 503 },
-              )
-            : Response.json(
-                { error: { code: "TASK_NOT_FOUND", message: "The Task does not exist." } },
-                { status: 404 },
-              );
-        }
-        return new Response(null, { status: 404 });
-      },
-    });
-    await using runner = await spawnListener(api.url.origin);
+  it.each([
+    {
+      refusal: { status: 404, code: "TASK_NOT_FOUND", message: "The Task does not exist." },
+      outcome: { exitCode: null, logged: 1 },
+    },
+    {
+      refusal: { status: 401, code: "UNAUTHORIZED", message: "The Runner key was revoked." },
+      outcome: { exitCode: 1, logged: 0 },
+    },
+  ])(
+    "reports a start that failed before its container existed again after a server error, and logs a refusal of the report with HTTP $refusal.status only if the refusal leaves the listener running",
+    async ({ refusal, outcome }) => {
+      const taskId = crypto.randomUUID();
+      const reports: unknown[] = [];
+      let claims = 0;
+      using api = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: async (request) => {
+          const path = new URL(request.url).pathname.split("/").at(-1);
+          if (path === "assignments") return Response.json({ tasks: [] });
+          if (path === "claim") {
+            claims += 1;
+            const executor = absentExecutor(request);
+            if (claims > 1) return Response.json({ task: null, executor });
+            return Response.json({
+              executor,
+              task: {
+                id: taskId,
+                executorId: null,
+                containerId: null,
+                status: "queued",
+                image: `registry.devboxes.test/workspace@sha256:${"a".repeat(64)}`,
+                platform: "linux/amd64",
+                machineSize: "medium",
+                toolCache: { organizationId: "cli-test", paths: [] },
+                daemon: executor,
+                claudeCode: null,
+                traceparent: `00-${"1".repeat(32)}-${"2".repeat(16)}-01`,
+              },
+            });
+          }
+          if (path === "reconcile") {
+            reports.push(await request.json());
+            return reports.length === 1
+              ? Response.json(
+                  { error: { code: "SERVICE_UNAVAILABLE", message: "The API is restarting." } },
+                  { status: 503 },
+                )
+              : Response.json(
+                  { error: { code: refusal.code, message: refusal.message } },
+                  { status: refusal.status },
+                );
+          }
+          return new Response(null, { status: 404 });
+        },
+      });
+      await using runner = await spawnListener(api.url.origin);
 
-    await until(() => claims >= 2 || runner.listener.exitCode !== null);
+      await until(() => claims >= 2 || runner.listener.exitCode !== null);
 
-    const report = {
-      taskId,
-      observation: "start-failed",
-      reason: "The private executor artifact answered 404.",
-    };
-    expect(reports).toEqual([report, report]);
-    expect(
-      runner.output.stderr.split(`The start failure of Task ${taskId} was refused`),
-    ).toHaveLength(2);
-  }, 60_000);
+      const report = {
+        taskId,
+        observation: "start-failed",
+        reason: "The private executor artifact answered 404.",
+      };
+      expect({
+        reports,
+        exitCode: runner.listener.exitCode,
+        logged:
+          runner.output.stderr.split(`The report about Task ${taskId} was refused`).length - 1,
+      }).toEqual({ reports: [report, report], ...outcome });
+    },
+    60_000,
+  );
 
   it("reports each Task's executor on its own, so a report the API refuses holds up no other Task", async () => {
     const [refused, accepted] = [crypto.randomUUID(), crypto.randomUUID()];
@@ -2396,45 +2467,32 @@ describe("devboxes mcp", () => {
         return Response.json({ sessionId: "session-1" });
       },
     });
-    const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
-    await client.connect(
-      new StdioClientTransport({
-        command: process.execPath,
-        args: ["src/cli.ts", "mcp"],
-        cwd: join(import.meta.dir, ".."),
-        env: {
-          PATH: process.env.PATH ?? "",
-          DEVBOXES_API_URL: api.url.origin,
-          DEVBOXES_TOKEN: "scoped",
-        },
-      }),
-    );
-    try {
-      const listed = await client.callTool({ name: "devboxes_describe", arguments: {} });
-      operations.push(operation("sessions.inspect"));
-      const inspected = await client.callTool({
-        name: "devboxes_invoke",
-        arguments: { command: "sessions.inspect", input: {} },
-      });
+    await using client = await mcpClient({
+      DEVBOXES_API_URL: api.url.origin,
+      DEVBOXES_TOKEN: "scoped",
+    });
+    const listed = await client.callTool({ name: "devboxes_describe", arguments: {} });
+    operations.push(operation("sessions.inspect"));
+    const inspected = await client.callTool({
+      name: "devboxes_invoke",
+      arguments: { command: "sessions.inspect", input: {} },
+    });
 
-      expect(listed.structuredContent).toEqual({
-        commands: [
-          {
-            operationId: "sessions.list",
-            effect: "read",
-            summary: "List the Organization's Sessions",
-          },
-        ],
-      });
-      expect(inspected.isError).toBeUndefined();
-      expect(inspected.structuredContent).toMatchObject({
-        status: 200,
-        data: { sessionId: "session-1" },
-      });
-      expect(invoked).toEqual(["/api/commands/sessions/inspect"]);
-    } finally {
-      await client.close();
-    }
+    expect(listed.structuredContent).toEqual({
+      commands: [
+        {
+          operationId: "sessions.list",
+          effect: "read",
+          summary: "List the Organization's Sessions",
+        },
+      ],
+    });
+    expect(inspected.isError).toBeUndefined();
+    expect(inspected.structuredContent).toMatchObject({
+      status: 200,
+      data: { sessionId: "session-1" },
+    });
+    expect(invoked).toEqual(["/api/commands/sessions/inspect"]);
   });
 
   it("describes a command with the manual the API serves, short by default and full with detail full", async () => {
@@ -2453,50 +2511,37 @@ describe("devboxes mcp", () => {
         return Response.json(manual(url.searchParams.get("detail")));
       },
     });
-    const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
-    await client.connect(
-      new StdioClientTransport({
-        command: process.execPath,
-        args: ["src/cli.ts", "mcp"],
-        cwd: join(import.meta.dir, ".."),
-        env: {
-          PATH: process.env.PATH ?? "",
-          DEVBOXES_API_URL: api.url.origin,
-          DEVBOXES_TOKEN: "scoped",
-        },
-      }),
-    );
-    try {
-      const short = await client.callTool({
-        name: "devboxes_describe",
-        arguments: { command: "sessions.dispatch" },
-      });
-      const full = await client.callTool({
-        name: "devboxes_describe",
-        arguments: { command: "sessions.dispatch", detail: "full" },
-      });
-      const stray = await client.callTool({
-        name: "devboxes_describe",
-        arguments: { detail: "full" },
-      });
+    await using client = await mcpClient({
+      DEVBOXES_API_URL: api.url.origin,
+      DEVBOXES_TOKEN: "scoped",
+    });
+    const short = await client.callTool({
+      name: "devboxes_describe",
+      arguments: { command: "sessions.dispatch" },
+    });
+    const full = await client.callTool({
+      name: "devboxes_describe",
+      arguments: { command: "sessions.dispatch", detail: "full" },
+    });
+    const stray = await client.callTool({
+      name: "devboxes_describe",
+      arguments: { detail: "full" },
+    });
 
-      expect({
-        short: short.structuredContent,
-        full: full.structuredContent,
-        stray: { isError: stray.isError, code: Object(stray.structuredContent).error?.code },
-        requested,
-      }).toEqual({
-        short: manual(null),
-        full: manual("full"),
-        stray: { isError: true, code: "INVALID_INPUT" },
-        requested: [
-          "/api/openapi/json?command=sessions.dispatch",
-          "/api/openapi/json?command=sessions.dispatch&detail=full",
-        ],
-      });
-    } finally {
-      await client.close();
-    }
+    expect({
+      short: short.structuredContent,
+      full: full.structuredContent,
+      stray: { isError: stray.isError, code: Object(stray.structuredContent).error?.code },
+      requested,
+    }).toEqual({
+      short: manual(null),
+      full: manual("full"),
+      stray: { isError: true, code: "INVALID_INPUT" },
+      requested: [
+        "/api/openapi/json?command=sessions.dispatch",
+        "/api/openapi/json?command=sessions.dispatch&detail=full",
+      ],
+    });
   });
 
   it("invokes a command whose failure refers to a components section it can't read", async () => {
@@ -2520,32 +2565,19 @@ describe("devboxes mcp", () => {
         return Response.json({ projects: [] });
       },
     });
-    const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
-    await client.connect(
-      new StdioClientTransport({
-        command: process.execPath,
-        args: ["src/cli.ts", "mcp"],
-        cwd: join(import.meta.dir, ".."),
-        env: {
-          PATH: process.env.PATH ?? "",
-          DEVBOXES_API_URL: api.url.origin,
-          DEVBOXES_TOKEN: "scoped",
-        },
-      }),
-    );
-    try {
-      const answered = await client.callTool({
-        name: "devboxes_invoke",
-        arguments: { command: "projects.list", input: {} },
-      });
+    await using client = await mcpClient({
+      DEVBOXES_API_URL: api.url.origin,
+      DEVBOXES_TOKEN: "scoped",
+    });
+    const answered = await client.callTool({
+      name: "devboxes_invoke",
+      arguments: { command: "projects.list", input: {} },
+    });
 
-      expect({ error: answered.isError, invoked }).toEqual({
-        error: undefined,
-        invoked: ["/api/commands/projects/list"],
-      });
-    } finally {
-      await client.close();
-    }
+    expect({ error: answered.isError, invoked }).toEqual({
+      error: undefined,
+      invoked: ["/api/commands/projects/list"],
+    });
   });
 
   it("lists a command whose contract it can't read as unreadable, with the install link", async () => {
@@ -2564,103 +2596,77 @@ describe("devboxes mcp", () => {
           ),
         ),
     });
-    const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
-    await client.connect(
-      new StdioClientTransport({
-        command: process.execPath,
-        args: ["src/cli.ts", "mcp"],
-        cwd: join(import.meta.dir, ".."),
-        env: {
-          PATH: process.env.PATH ?? "",
-          DEVBOXES_API_URL: api.url.origin,
-          DEVBOXES_TOKEN: "scoped",
-        },
-      }),
-    );
-    try {
-      const listed = await client.callTool({ name: "devboxes_describe", arguments: {} });
+    await using client = await mcpClient({
+      DEVBOXES_API_URL: api.url.origin,
+      DEVBOXES_TOKEN: "scoped",
+    });
+    const listed = await client.callTool({ name: "devboxes_describe", arguments: {} });
 
-      expect(listed.structuredContent).toEqual({
-        commands: [
-          {
-            operationId: "sessions.list",
-            effect: "read",
-            summary: "List the Organization's Sessions",
-          },
-        ],
-        unreadable: [
-          {
-            operationId: "sessions.erase",
-            notice: expect.stringMatching(
-              /^This devboxes CLI can't read this command's contract \(.+\)\. Install the current CLI from https:\/\/devboxes\.ai\/install\.$/,
-            ),
-          },
-        ],
-      });
-    } finally {
-      await client.close();
-    }
+    expect(listed.structuredContent).toEqual({
+      commands: [
+        {
+          operationId: "sessions.list",
+          effect: "read",
+          summary: "List the Organization's Sessions",
+        },
+      ],
+      unreadable: [
+        {
+          operationId: "sessions.erase",
+          notice: expect.stringMatching(
+            /^This devboxes CLI can't read this command's contract \(.+\)\. Install the current CLI from https:\/\/devboxes\.ai\/install\.$/,
+          ),
+        },
+      ],
+    });
   });
 
   it("lists its tools, refuses invalid arguments with every problem, and rejects an unknown tool", async () => {
-    const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
-    await client.connect(
-      new StdioClientTransport({
-        command: process.execPath,
-        args: ["src/cli.ts", "mcp"],
-        cwd: join(import.meta.dir, ".."),
-        env: {
-          PATH: process.env.PATH ?? "",
-          DEVBOXES_API_URL: "http://127.0.0.1:9",
-          DEVBOXES_TOKEN: "scoped",
-        },
-      }),
-    );
-    try {
-      expect((await client.listTools()).tools).toEqual([
-        {
-          name: "devboxes_describe",
-          description: expect.any(String),
-          inputSchema: {
-            type: "object",
-            properties: {
-              command: { type: "string", minLength: 1 },
-              detail: { type: "string", const: "full" },
-            },
-          },
-          annotations: { readOnlyHint: true, openWorldHint: true },
-        },
-        {
-          name: "devboxes_invoke",
-          description: expect.any(String),
-          inputSchema: {
-            type: "object",
-            required: ["command", "input"],
-            properties: { command: { type: "string", minLength: 1 }, input: {} },
-          },
-          annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
-        },
-      ]);
-      expect(
-        await client.callTool({ name: "devboxes_invoke", arguments: { command: "" } }),
-      ).toMatchObject({
-        isError: true,
-        structuredContent: {
-          error: {
-            code: "INVALID_INPUT",
-            message:
-              "The devboxes_invoke input is invalid: / must have required properties input; /command must not have fewer than 1 characters.",
+    await using client = await mcpClient({
+      DEVBOXES_API_URL: "http://127.0.0.1:9",
+      DEVBOXES_TOKEN: "scoped",
+    });
+    expect((await client.listTools()).tools).toEqual([
+      {
+        name: "devboxes_describe",
+        description: expect.any(String),
+        inputSchema: {
+          type: "object",
+          properties: {
+            command: { type: "string", minLength: 1 },
+            detail: { type: "string", const: "full" },
           },
         },
-      });
-      await expect(
-        client.callTool({ name: "devboxes_unknown", arguments: {} }),
-      ).rejects.toMatchObject({
-        code: -32602,
-      });
-    } finally {
-      await client.close();
-    }
+        annotations: { readOnlyHint: true, openWorldHint: true },
+      },
+      {
+        name: "devboxes_invoke",
+        description: expect.any(String),
+        inputSchema: {
+          type: "object",
+          required: ["command", "input"],
+          properties: { command: { type: "string", minLength: 1 }, input: {} },
+        },
+        annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+      },
+    ]);
+    expect(
+      await client.callTool({ name: "devboxes_invoke", arguments: { command: "" } }),
+    ).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: "INVALID_INPUT",
+          message:
+            "The devboxes_invoke input is invalid: / must have required properties input; /command must not have fewer than 1 characters.",
+        },
+      },
+    });
+    await expect(
+      client.callTool({ name: "devboxes_unknown", arguments: {} }),
+    ).rejects.toMatchObject({
+      code: -32602,
+    });
   });
 });
 
@@ -3188,15 +3194,7 @@ describe("devboxes after a refusal for an old sign-in", () => {
   it("serves an MCP call with the session a later devboxes login saved", async () => {
     requests.length = 0;
     const config = await staleAccount("stale-mcp.json");
-    const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
-    await client.connect(
-      new StdioClientTransport({
-        command: process.execPath,
-        args: ["src/cli.ts", "--config", config, "mcp"],
-        cwd: join(import.meta.dir, ".."),
-        env: { PATH: process.env.PATH ?? "" },
-      }),
-    );
+    await using client = await mcpClient({}, ["--config", config]);
     const update = () =>
       client.callTool({
         name: "devboxes_invoke",
@@ -3205,23 +3203,19 @@ describe("devboxes after a refusal for an old sign-in", () => {
           input: { organizationId: "organization", name: "Renamed" },
         },
       });
-    try {
-      const refused = await update();
-      await writeFile(
-        config,
-        JSON.stringify({ apiBaseUrl: `${api.url.origin}/api`, sessionToken: "fresh-session" }),
-      );
-      const renamed = await update();
+    const refused = await update();
+    await writeFile(
+      config,
+      JSON.stringify({ apiBaseUrl: `${api.url.origin}/api`, sessionToken: "fresh-session" }),
+    );
+    const renamed = await update();
 
-      expect(refused.structuredContent).toMatchObject({ error: { code: "SESSION_NOT_FRESH" } });
-      expect(renamed.isError).toBeUndefined();
-      expect(requests).toEqual([
-        "/api/commands/organizations/update Bearer stale-session",
-        "/api/commands/organizations/update Bearer fresh-session",
-      ]);
-    } finally {
-      await client.close();
-    }
+    expect(refused.structuredContent).toMatchObject({ error: { code: "SESSION_NOT_FRESH" } });
+    expect(renamed.isError).toBeUndefined();
+    expect(requests).toEqual([
+      "/api/commands/organizations/update Bearer stale-session",
+      "/api/commands/organizations/update Bearer fresh-session",
+    ]);
   });
 });
 

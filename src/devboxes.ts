@@ -22,7 +22,13 @@ import {
 } from "./commands";
 import { loadCommandConnection, type LogIn } from "./connection";
 import { runDevboxesMcpServer } from "./mcp";
-import { answered, promptCommandInput, promptField } from "./prompt-input";
+import {
+  answered,
+  chooseOrganization,
+  promptCommandInput,
+  promptField,
+  requireOrganization,
+} from "./prompt-input";
 
 const connectStartSchema = Type.Object({
   attemptId: Type.String(),
@@ -205,11 +211,7 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
     }>();
     const connection = await loadCommandConnection(options, logIn);
     const interactive = asksInTerminal(options.json);
-    if (!interactive && options.organization === undefined)
-      throw new CommandError(
-        "ORGANIZATION_REQUIRED",
-        "Name the Organization with --organization <id>, or run the command in a terminal to choose one.",
-      );
+    requireOrganization(interactive, options.organization);
     if (!interactive && options.label === undefined)
       throw new CommandError(
         "LABEL_REQUIRED",
@@ -217,16 +219,16 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
       );
     const organizationId =
       options.organization ??
-      parseResponse(
-        Type.String(),
-        await promptField(
+      (
+        await chooseOrganization(
           { connection, description: await describeCommands(connection) },
-          "organizationId",
-          { type: "string", description: "The Organization that gets the model account." },
-          {},
-        ),
-        "organizations.list",
-      );
+          "model-accounts.add",
+          {
+            question: "Which Organization gets the model account?",
+            deed: "connect a model account",
+          },
+        )
+      ).id;
     const providers = parseResponse(
       providersSchema,
       (

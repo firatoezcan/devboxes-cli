@@ -1,40 +1,29 @@
 import { hostname } from "node:os";
 import { join } from "node:path";
 
-import { confirm, password, select, text } from "@clack/prompts";
-import { describeErrors } from "@devboxes/protocol/validation-errors";
+import { confirm, password, text } from "@clack/prompts";
 import { platformConfigHome } from "@firops/connections/local/config";
 import { writeSecretFile } from "@firops/connections/local/secret-file";
 import { type Command, InvalidArgumentError } from "commander";
 import Type from "typebox";
-import Value from "typebox/value";
 
 import {
   apiOrigin,
   asksInTerminal,
   CommandError,
-  advertisedCommand,
   describeCommands,
   invokeCommand,
   parseResponse,
   requestJson,
-  unreadableAnswer,
   writeOutput,
 } from "../commands";
 import { loadAccountContext, loadCommandConnection } from "../connection";
-import { answered } from "../prompt-input";
+import { answered, chooseOrganization, requireOrganization } from "../prompt-input";
 import { listen } from "./listen";
 
 const runnerDirectory = () => join(platformConfigHome(), "devboxes", "runner");
 const savedTokenFile = () => join(runnerDirectory(), "token");
 
-const organizationsSchema = Type.Object({
-  organizations: Type.Array(
-    Type.Object({ id: Type.String(), name: Type.String(), role: Type.String() }),
-  ),
-});
-/** What `runner add` reads of runners.add's contract to offer Organizations: who may add a Runner. */
-const rolesSchema = Type.Object({ roles: Type.Array(Type.String()) });
 const registeredSchema = Type.Object({
   runner: Type.Object({ id: Type.String(), name: Type.String() }),
   token: Type.String({ minLength: 1 }),
@@ -204,11 +193,7 @@ export const addRunnerCommands = (program: Command) => {
     }>();
     const tokenFile = savedTokenFile();
     const interactive = asksInTerminal(options.json);
-    if (!interactive && options.organization === undefined)
-      throw new CommandError(
-        "ORGANIZATION_REQUIRED",
-        "Name the Organization with --organization <id>, or run the command in a terminal to choose one.",
-      );
+    requireOrganization(interactive, options.organization);
     if (!interactive && options.name === undefined)
       throw new CommandError(
         "NAME_REQUIRED",
@@ -226,42 +211,12 @@ export const addRunnerCommands = (program: Command) => {
       );
     }
     const description = await describeCommands(connection);
-    const { organizations } = parseResponse(
-      organizationsSchema,
-      (
-        await invokeCommand(
-          connection,
-          { command: "organizations.list", input: {} },
-          async () => description,
-        )
-      ).data,
-      "organizations.list",
+    const organization = await chooseOrganization(
+      { connection, description },
+      "runners.add",
+      { question: "Which Organization should run work on this Runner?", deed: "add a Runner" },
+      options.organization,
     );
-    let chosen = options.organization;
-    if (chosen === undefined) {
-      const contract = advertisedCommand(description, "runners.add")["x-devboxes"];
-      if (!Value.Check(rolesSchema, contract))
-        throw unreadableAnswer("who may add a Runner", describeErrors(rolesSchema, contract));
-      const managed = organizations.filter((entry) => contract.roles.includes(entry.role));
-      if (managed.length === 0)
-        throw new CommandError(
-          "ORGANIZATION_NOT_FOUND",
-          `devboxes can't find an Organization where you can add a Runner. Only an Organization's ${contract.roles.join(" or ")} can add one.`,
-        );
-      chosen = await answered(
-        select({
-          message: "Which Organization should run work on this Runner?",
-          options: managed.map((entry) => ({ value: entry.id, label: entry.name })),
-          output: process.stderr,
-        }),
-      );
-    }
-    const organization = organizations.find((entry) => entry.id === chosen);
-    if (!organization)
-      throw new CommandError(
-        "ORGANIZATION_NOT_FOUND",
-        `devboxes can't find an Organization with the ID ${chosen} that you belong to.`,
-      );
     const named =
       options.name ??
       (await answered(
