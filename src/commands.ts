@@ -117,6 +117,16 @@ type CommandResponse = {
   data: JsonValue;
 } & RequestCorrelation;
 
+const namedAccount = Type.Object({ accountId: Type.String(), label: Type.String() });
+/**
+ * What a MODEL_ACCOUNT_PAUSED refusal's details name for a person at a terminal: the paused
+ * `account`, and the other `accounts` that run the same model now. Its message names none.
+ */
+const pausedAccounts = Type.Object({
+  account: Type.Optional(namedAccount),
+  accounts: Type.Optional(Type.Array(namedAccount)),
+});
+
 export class CommandError extends Error {
   constructor(
     readonly code: string,
@@ -164,7 +174,18 @@ export class CommandError extends Error {
       ...(this.options.status === undefined ? [] : [`HTTP ${this.options.status}`]),
       ...(this.retryable ? ["retryable"] : []),
     ];
-    return `${this.code}${qualifiers.length ? ` (${qualifiers.join(", ")})` : ""}: ${this.message}`;
+    const lines = [
+      `${this.code}${qualifiers.length ? ` (${qualifiers.join(", ")})` : ""}: ${this.message}`,
+    ];
+    const { details } = this.options;
+    if (this.code === "MODEL_ACCOUNT_PAUSED" && Value.Check(pausedAccounts, details)) {
+      const named = ({ accountId, label }: Static<typeof namedAccount>) =>
+        `${label} (${accountId})`;
+      if (details.account) lines.push(`Paused account: ${named(details.account)}`);
+      if (details.accounts?.length)
+        lines.push(`Other accounts for this model: ${details.accounts.map(named).join(", ")}`);
+    }
+    return lines.join("\n");
   }
 }
 
