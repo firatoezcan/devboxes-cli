@@ -1,7 +1,7 @@
 import { hostname } from "node:os";
 import { join } from "node:path";
 
-import { confirm, isCancel, password, select, text } from "@clack/prompts";
+import { confirm, password, select, text } from "@clack/prompts";
 import { describeErrors } from "@devboxes/protocol/validation-errors";
 import { platformConfigHome } from "@firops/connections/local/config";
 import { writeSecretFile } from "@firops/connections/local/secret-file";
@@ -22,6 +22,7 @@ import {
   writeOutput,
 } from "../commands";
 import { loadAccountContext, loadCommandConnection } from "../connection";
+import { answered } from "../prompt-input";
 import { listen } from "./listen";
 
 const runnerDirectory = () => join(platformConfigHome(), "devboxes", "runner");
@@ -64,9 +65,8 @@ const listenOrigin = async (options: { api?: string; config?: string }) =>
  */
 const saveRegisteredKey = async (origin: string, tokenFile: string) => {
   const pasted = asksInTerminal(false)
-    ? await password({ message: "Paste the Runner key", output: process.stderr })
+    ? await answered(password({ message: "Paste the Runner key", output: process.stderr }))
     : await new Response(Bun.stdin.stream()).text();
-  if (isCancel(pasted)) throw new CommandError("CANCELLED", "Command cancelled.");
   const token = pasted.trim();
   if (token === "")
     throw new CommandError(
@@ -83,7 +83,11 @@ const saveRegisteredKey = async (origin: string, tokenFile: string) => {
 
 /**
  * Runs the Runner. Bun uploads its crash reports on macOS and Windows unless DO_NOT_TRACK is set
- * when the process starts, so there the CLI starts again as `devboxes <args>` with it.
+ * when the process starts, so there the CLI starts again as `devboxes <args>` with it. Windows has
+ * no execve, and its console sends Ctrl+C to the listener too. A forwarded signal would end the
+ * listener before it drains, so the first process ignores SIGINT and only outlives the listener.
+ * Once listen returns, it has waited for every Task start, and only a download of the next executor
+ * can still run, so the process exits.
  */
 const runRunner = async (
   args: string[],
@@ -111,8 +115,6 @@ const runRunner = async (
       if (!process.execve) throw new Error("The Runner needs process.execve on macOS.");
       process.execve(process.execPath, argv, env);
     }
-    // Windows has no execve. Its console sends Ctrl+C to the listener too, and a forwarded signal
-    // would terminate the listener before it drains, so this process only outlives it.
     const listener = Bun.spawn(argv, { env, stdio: ["inherit", "inherit", "inherit"] });
     process.on("SIGINT", () => {});
     process.exit(await listener.exited);
@@ -124,7 +126,6 @@ const runRunner = async (
     cpus: options.cpus,
     memoryGiB: options.memory,
   });
-  // listen waits for every Task start; only a download of the next executor may still run.
   process.exit(0);
 };
 
@@ -236,7 +237,7 @@ export const addRunnerCommands = (program: Command) => {
       ).data,
       "organizations.list",
     );
-    let chosen: string | symbol | undefined = options.organization;
+    let chosen = options.organization;
     if (chosen === undefined) {
       const contract = advertisedCommand(description, "runners.add")["x-devboxes"];
       if (!Value.Check(rolesSchema, contract))
@@ -247,13 +248,14 @@ export const addRunnerCommands = (program: Command) => {
           "ORGANIZATION_NOT_FOUND",
           `devboxes can't find an Organization where you can add a Runner. Only an Organization's ${contract.roles.join(" or ")} can add one.`,
         );
-      chosen = await select({
-        message: "Which Organization should run work on this Runner?",
-        options: managed.map((entry) => ({ value: entry.id, label: entry.name })),
-        output: process.stderr,
-      });
+      chosen = await answered(
+        select({
+          message: "Which Organization should run work on this Runner?",
+          options: managed.map((entry) => ({ value: entry.id, label: entry.name })),
+          output: process.stderr,
+        }),
+      );
     }
-    if (isCancel(chosen)) throw new CommandError("CANCELLED", "Command cancelled.");
     const organization = organizations.find((entry) => entry.id === chosen);
     if (!organization)
       throw new CommandError(
@@ -262,13 +264,14 @@ export const addRunnerCommands = (program: Command) => {
       );
     const named =
       options.name ??
-      (await text({
-        message: "Name this Runner",
-        initialValue: hostname(),
-        validate: (value) => (value?.trim() ? undefined : "Enter a name."),
-        output: process.stderr,
-      }));
-    if (isCancel(named)) throw new CommandError("CANCELLED", "Command cancelled.");
+      (await answered(
+        text({
+          message: "Name this Runner",
+          initialValue: hostname(),
+          validate: (value) => (value?.trim() ? undefined : "Enter a name."),
+          output: process.stderr,
+        }),
+      ));
     const { runner: added, token } = parseResponse(
       registeredSchema,
       (

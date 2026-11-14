@@ -312,8 +312,11 @@ export const listen = async (options: {
       console.info(`Started Task ${task.id} in ${executorId}.`);
     }
   };
-  // Image pulls and executor downloads can outlast the API's heartbeat window, so
-  // one start runs beside the poll loop and its failure surfaces on the next cycle.
+  /**
+   * The Task starts in progress, by Task ID. An image pull or an executor download can outlast the
+   * API's heartbeat window, so a start runs beside the poll loop, and its failure surfaces on the
+   * next cycle.
+   */
   const starting = new Map<string, Promise<void>>();
   let startFailure: {
     taskId: string;

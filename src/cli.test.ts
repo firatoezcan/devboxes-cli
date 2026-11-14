@@ -86,6 +86,21 @@ await symlink(
 const scoped = { DEVBOXES_API_URL: "https://api.example.com", DEVBOXES_TOKEN: "scoped" };
 const unusedOrigin = "http://127.0.0.1:9";
 const listen = ["--json", "--api", "https://api.example.com", "runner", "listen"];
+const everyRole = ["owner", "admin", "member", "reviewer", "viewer"];
+
+/**
+ * A command catalog as the API serves it at /api/openapi/json: each of `operations` is the POST at
+ * its command path. An operation that names no summary or responses gets "Run the command" and none.
+ */
+const catalog = <Operation extends { operationId: string }>(...operations: Operation[]) => ({
+  openapi: "3.0.3",
+  paths: Object.fromEntries(
+    operations.map((operation) => [
+      `/api/commands/${operation.operationId.replace(".", "/")}`,
+      { post: { summary: "Run the command", responses: {}, ...operation } },
+    ]),
+  ),
+});
 
 /**
  * Runs the CLI in a pseudo-terminal, with an `open` and an `xdg-open` on PATH that only record
@@ -329,73 +344,45 @@ describe("devboxes invoke", () => {
       traceparents.push(request.headers.get("traceparent"));
       authorizations.push(request.headers.get("authorization"));
       if (pathname === "/api/openapi/json")
-        return Response.json({
-          openapi: "3.0.3",
-          paths: {
-            "/api/commands/sessions/dispatch": {
-              post: {
-                operationId: "sessions.dispatch",
-                summary: "Start Sessions in the Project",
-                "x-devboxes": {
-                  effect: "write",
-                  elevated: false,
-                  roles: ["owner", "admin", "member", "reviewer", "viewer"],
-                  authority: "Organization member",
-                },
-                responses: {},
+        return Response.json(
+          catalog(
+            {
+              operationId: "sessions.dispatch",
+              summary: "Start Sessions in the Project",
+              "x-devboxes": {
+                effect: "write",
+                elevated: false,
+                roles: everyRole,
+                authority: "Organization member",
               },
             },
-            "/api/commands/sessions/list": {
-              post: {
-                operationId: "sessions.list",
-                summary: "List the Organization's Sessions",
-                "x-devboxes": {
-                  effect: "read",
-                  roles: ["owner", "admin", "member", "reviewer", "viewer"],
-                  authority: "Organization member",
-                },
-                responses: {},
+            {
+              operationId: "sessions.list",
+              summary: "List the Organization's Sessions",
+              "x-devboxes": { effect: "read", roles: everyRole, authority: "Organization member" },
+            },
+            {
+              operationId: "delegations.create",
+              summary: "Create a token that acts for a member with limited access",
+              "x-devboxes": {
+                effect: "write",
+                elevated: false,
+                roles: everyRole,
+                authority: "Current account session",
               },
             },
-            "/api/commands/delegations/create": {
-              post: {
-                operationId: "delegations.create",
-                summary: "Create a token that acts for a member with limited access",
-                "x-devboxes": {
-                  effect: "write",
-                  elevated: false,
-                  roles: ["owner", "admin", "member", "reviewer", "viewer"],
-                  authority: "Current account session",
-                },
-                responses: {},
-              },
+            {
+              operationId: "sessions.events",
+              summary: "Read a Session's agent log",
+              "x-devboxes": { effect: "read", roles: everyRole, authority: "Organization member" },
             },
-            "/api/commands/sessions/events": {
-              post: {
-                operationId: "sessions.events",
-                summary: "Read a Session's agent log",
-                "x-devboxes": {
-                  effect: "read",
-                  roles: ["owner", "admin", "member", "reviewer", "viewer"],
-                  authority: "Organization member",
-                },
-                responses: {},
-              },
+            {
+              operationId: "sessions.inspect",
+              summary: "Read Sessions and their results",
+              "x-devboxes": { effect: "read", roles: everyRole, authority: "Organization member" },
             },
-            "/api/commands/sessions/inspect": {
-              post: {
-                operationId: "sessions.inspect",
-                summary: "Read Sessions and their results",
-                "x-devboxes": {
-                  effect: "read",
-                  roles: ["owner", "admin", "member", "reviewer", "viewer"],
-                  authority: "Organization member",
-                },
-                responses: {},
-              },
-            },
-          },
-        });
+          ),
+        );
       if (pathname === "/api/commands/sessions/inspect") {
         const token = request.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
         return Response.json({
@@ -630,16 +617,7 @@ describe("devboxes commands", () => {
       port: 0,
       fetch: (request) => {
         const { pathname } = new URL(request.url);
-        if (pathname === "/api/openapi/json")
-          return Response.json({
-            openapi: "3.0.3",
-            paths: Object.fromEntries(
-              operations.map((operation) => [
-                `/api/commands/${operation.operationId.replace(".", "/")}`,
-                { post: operation },
-              ]),
-            ),
-          });
+        if (pathname === "/api/openapi/json") return Response.json(catalog(...operations));
         return Response.json({ called: pathname });
       },
     });
@@ -769,18 +747,14 @@ describe("devboxes invoke in a terminal", () => {
   ];
   const uuid = { type: "string", pattern: "^[0-9a-f-]{36}$" };
   const operation = (operationId: string, schema: JsonValue) => ({
-    post: {
-      operationId,
-      summary: "Run the command",
-      "x-devboxes": {
-        effect: "write",
-        elevated: false,
-        roles: ["owner", "admin", "member", "reviewer", "viewer"],
-        authority: "Organization member",
-      },
-      requestBody: { content: { "application/json": { schema } } },
-      responses: {},
+    operationId,
+    "x-devboxes": {
+      effect: "write",
+      elevated: false,
+      roles: everyRole,
+      authority: "Organization member",
     },
+    requestBody: { content: { "application/json": { schema } } },
   });
   const requests: { path: string; body: unknown }[] = [];
   let projectsRefused = false;
@@ -791,19 +765,18 @@ describe("devboxes invoke in a terminal", () => {
     fetch: async (request) => {
       const { pathname } = new URL(request.url);
       if (pathname === "/api/openapi/json")
-        return Response.json({
-          openapi: "3.0.3",
-          paths: {
-            "/api/commands/organizations/list": operation("organizations.list", {
+        return Response.json(
+          catalog(
+            operation("organizations.list", {
               type: "object",
               properties: {},
             }),
-            "/api/commands/projects/list": operation("projects.list", {
+            operation("projects.list", {
               type: "object",
               properties: { organizationId: uuid },
               required: ["organizationId"],
             }),
-            "/api/commands/sessions/dispatch": operation("sessions.dispatch", {
+            operation("sessions.dispatch", {
               type: "object",
               properties: {
                 organizationId: uuid,
@@ -819,7 +792,7 @@ describe("devboxes invoke in a terminal", () => {
               },
               required: ["organizationId", "projectId", "title", "instruction"],
             }),
-            "/api/commands/model-accounts/add": operation("model-accounts.add", {
+            operation("model-accounts.add", {
               type: "object",
               properties: {
                 organizationId: uuid,
@@ -856,8 +829,8 @@ describe("devboxes invoke in a terminal", () => {
               },
               required: ["organizationId", "label", "limit", "auth", "scopes", "tier"],
             }),
-          },
-        });
+          ),
+        );
       const body = await request.json();
       requests.push({ path: pathname, body });
       if (pathname === "/api/commands/organizations/list") return Response.json({ organizations });
@@ -1040,16 +1013,12 @@ describe("devboxes connect", () => {
   const completions: unknown[] = [];
   const accountWrites: { operation: string; body: unknown }[] = [];
   const operation = (operationId: string) => ({
-    post: {
-      operationId,
-      summary: "Run the command",
-      "x-devboxes": {
-        effect: "write",
-        elevated: false,
-        roles: ["owner", "admin"],
-        authority: "Organization owner or admin",
-      },
-      responses: {},
+    operationId,
+    "x-devboxes": {
+      effect: "write",
+      elevated: false,
+      roles: ["owner", "admin"],
+      authority: "Organization owner or admin",
     },
   });
   const api = Bun.serve({
@@ -1058,22 +1027,18 @@ describe("devboxes connect", () => {
     fetch: async (request) => {
       const { pathname } = new URL(request.url);
       if (pathname === "/api/openapi/json")
-        return Response.json({
-          openapi: "3.0.3",
-          paths: Object.fromEntries(
-            [
+        return Response.json(
+          catalog(
+            ...[
               "model-accounts.providers",
               "model-accounts.connect-start",
               "model-accounts.connect-complete",
               "model-accounts.add",
               "model-accounts.update",
               "organizations.list",
-            ].map((operationId) => [
-              `/api/commands/${operationId.replace(".", "/")}`,
-              operation(operationId),
-            ]),
+            ].map(operation),
           ),
-        });
+        );
       if (pathname === "/api/commands/organizations/list")
         return Response.json({ organizations: [{ id: organizationId, name: "Acme" }] });
       if (pathname === "/api/commands/model-accounts/providers") {
@@ -1413,36 +1378,23 @@ describe("devboxes runner add", () => {
     fetch: async (request) => {
       const { pathname } = new URL(request.url);
       if (pathname === "/api/openapi/json")
-        return Response.json({
-          openapi: "3.0.3",
-          paths: Object.fromEntries(
-            [
-              {
-                operationId: "organizations.list",
-                effect: "read",
-                roles: [],
-                authority: "Current account session",
-              },
-              {
-                operationId: "runners.add",
+        return Response.json(
+          catalog(
+            {
+              operationId: "organizations.list",
+              "x-devboxes": { effect: "read", roles: [], authority: "Current account session" },
+            },
+            {
+              operationId: "runners.add",
+              "x-devboxes": {
                 effect: "write",
                 elevated: false,
                 authority: "Organization owner or admin",
                 roles: registerRoles,
               },
-            ].map(({ operationId, ...contract }) => [
-              `/api/commands/${operationId.replace(".", "/")}`,
-              {
-                post: {
-                  operationId,
-                  summary: "Run the command",
-                  "x-devboxes": contract,
-                  responses: {},
-                },
-              },
-            ]),
+            },
           ),
-        });
+        );
       if (pathname === "/api/commands/organizations/list") return Response.json({ organizations });
       if (pathname === "/api/internal/execution/runners/identify")
         return refusedKeys.has(request.headers.get("authorization")?.replace("Bearer ", "") ?? "")
@@ -2428,26 +2380,18 @@ describe("devboxes runner listen", () => {
 describe("devboxes mcp", () => {
   it("invokes an operation the API starts advertising after the server's first discovery", async () => {
     const operation = (operationId: string) => ({
-      post: {
-        operationId,
-        summary: "List the Organization's Sessions",
-        "x-devboxes": {
-          effect: "read",
-          roles: ["owner", "admin", "member", "reviewer", "viewer"],
-          authority: "Organization member",
-        },
-        responses: {},
-      },
+      operationId,
+      summary: "List the Organization's Sessions",
+      "x-devboxes": { effect: "read", roles: everyRole, authority: "Organization member" },
     });
-    const paths = new Map([["/api/commands/sessions/list", operation("sessions.list")]]);
+    const operations = [operation("sessions.list")];
     const invoked: string[] = [];
     using api = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
       fetch: (request) => {
         const { pathname } = new URL(request.url);
-        if (pathname === "/api/openapi/json")
-          return Response.json({ openapi: "3.0.3", paths: Object.fromEntries(paths) });
+        if (pathname === "/api/openapi/json") return Response.json(catalog(...operations));
         invoked.push(pathname);
         return Response.json({ sessionId: "session-1" });
       },
@@ -2467,7 +2411,7 @@ describe("devboxes mcp", () => {
     );
     try {
       const listed = await client.callTool({ name: "devboxes_describe", arguments: {} });
-      paths.set("/api/commands/sessions/inspect", operation("sessions.inspect"));
+      operations.push(operation("sessions.inspect"));
       const inspected = await client.callTool({
         name: "devboxes_invoke",
         arguments: { command: "sessions.inspect", input: {} },
@@ -2564,17 +2508,12 @@ describe("devboxes mcp", () => {
         const { pathname } = new URL(request.url);
         if (pathname === "/api/openapi/json")
           return Response.json({
-            openapi: "3.0.3",
-            paths: {
-              "/api/commands/projects/list": {
-                post: {
-                  operationId: "projects.list",
-                  summary: "List the Organization's Projects",
-                  "x-devboxes": { effect: "read", roles: [], authority: "Member" },
-                  responses: { 400: { $ref: "#/components/responses/CommandError" } },
-                },
-              },
-            },
+            ...catalog({
+              operationId: "projects.list",
+              summary: "List the Organization's Projects",
+              "x-devboxes": { effect: "read", roles: [], authority: "Member" },
+              responses: { 400: { $ref: "#/components/responses/CommandError" } },
+            }),
             components: { responses: "Stated elsewhere." },
           });
         invoked.push(pathname);
@@ -2614,22 +2553,16 @@ describe("devboxes mcp", () => {
       hostname: "127.0.0.1",
       port: 0,
       fetch: () =>
-        Response.json({
-          openapi: "3.0.3",
-          paths: {
-            "/api/commands/sessions/list": {
-              post: {
-                operationId: "sessions.list",
-                summary: "List the Organization's Sessions",
-                "x-devboxes": { effect: "read", roles: [], authority: "Organization member" },
-                responses: {},
-              },
+        Response.json(
+          catalog(
+            {
+              operationId: "sessions.list",
+              summary: "List the Organization's Sessions",
+              "x-devboxes": { effect: "read", roles: [], authority: "Organization member" },
             },
-            "/api/commands/sessions/erase": {
-              post: { operationId: "sessions.erase", "x-devboxes": {}, responses: {} },
-            },
-          },
-        }),
+            { operationId: "sessions.erase", "x-devboxes": {} },
+          ),
+        ),
     });
     const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
     await client.connect(
@@ -3098,38 +3031,32 @@ describe("devboxes after a refusal for an old sign-in", () => {
     fetch: async (request) => {
       const { pathname } = new URL(request.url);
       if (pathname === "/api/openapi/json")
-        return Response.json({
-          openapi: "3.0.3",
-          paths: {
-            "/api/commands/organizations/update": {
-              post: {
-                operationId: "organizations.update",
-                summary: "Change the Organization's settings",
-                "x-devboxes": {
-                  effect: "write",
-                  elevated: "access",
-                  roles: ["owner", "admin"],
-                  authority: "Organization owner or admin",
-                },
-                requestBody: {
-                  content: {
-                    "application/json": {
-                      schema: {
-                        type: "object",
-                        properties: {
-                          organizationId: { type: "string" },
-                          name: { type: "string" },
-                        },
-                        required: ["organizationId", "name"],
-                      },
+        return Response.json(
+          catalog({
+            operationId: "organizations.update",
+            summary: "Change the Organization's settings",
+            "x-devboxes": {
+              effect: "write",
+              elevated: "access",
+              roles: ["owner", "admin"],
+              authority: "Organization owner or admin",
+            },
+            requestBody: {
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      organizationId: { type: "string" },
+                      name: { type: "string" },
                     },
+                    required: ["organizationId", "name"],
                   },
                 },
-                responses: {},
               },
             },
-          },
-        });
+          }),
+        );
       const authorization = request.headers.get("authorization");
       requests.push(`${pathname} ${authorization}`);
       if (pathname === "/api/auth/email-otp/send-verification-otp")
@@ -3216,6 +3143,25 @@ describe("devboxes after a refusal for an old sign-in", () => {
 
     expect(exitCode).toBe(1);
     expect(cli.screen()).toContain("ACCOUNT_CHANGED");
+    expect(requests.filter((sent) => sent.includes("organizations/update"))).toEqual([
+      "/api/commands/organizations/update Bearer stale-session",
+    ]);
+  });
+
+  it("ends a cancelled sign-in like any cancelled prompt, without sending the change again", async () => {
+    requests.length = 0;
+    const config = await staleAccount("stale-cancel.json");
+    const cli = await inTerminal(
+      ["--config", config, "invoke", "organizations.update", "--input", `@${rename}`],
+      {},
+    );
+
+    await cli.answer("Sign in with", "\x03");
+    const exitCode = await cli.exited();
+    cli.kill();
+
+    expect(exitCode).toBe(1);
+    expect(cli.screen()).toContain("Command cancelled.");
     expect(requests.filter((sent) => sent.includes("organizations/update"))).toEqual([
       "/api/commands/organizations/update Bearer stale-session",
     ]);

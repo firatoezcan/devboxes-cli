@@ -1,7 +1,7 @@
 import { URLPattern } from "node:url";
 
 import type { BetterFetchOption } from "@better-fetch/fetch";
-import { isCancel, password as passwordPrompt, select, text } from "@clack/prompts";
+import { password as passwordPrompt, select, text } from "@clack/prompts";
 import { displayDeviceCode } from "@devboxes/protocol/device-code";
 import type { JsonValue } from "@devboxes/protocol/json";
 import { describeErrors } from "@devboxes/protocol/validation-errors";
@@ -26,6 +26,7 @@ import {
   writeOutput,
 } from "./commands";
 import { loadAccountContext, type AccountContext } from "./connection";
+import { answered } from "./prompt-input";
 
 const userSchema = Type.Object({
   id: Type.String(),
@@ -65,12 +66,13 @@ type AccountOptions = {
 };
 
 const promptText = async (message: string) => {
-  const entered = await text({
-    message,
-    output: process.stderr,
-    validate: (value) => (value?.trim() ? undefined : `${message} is required.`),
-  });
-  if (isCancel(entered)) throw new CommandError("CANCELLED", "Authentication cancelled.");
+  const entered = await answered(
+    text({
+      message,
+      output: process.stderr,
+      validate: (value) => (value?.trim() ? undefined : `${message} is required.`),
+    }),
+  );
   return entered.trim();
 };
 
@@ -143,6 +145,10 @@ const authenticationResponse = async (
   const cookies = context.config.cookieJar
     ? CookieJar.deserializeSync(context.config.cookieJar)
     : new CookieJar();
+  /**
+   * The values redacted from an answer: session tokens, HttpOnly cookies, and a refused request's
+   * strings. A page reads the other cookies, such as the last sign-in method, so they are no secret.
+   */
   const secrets = [context.config.sessionToken];
   let result: { status: number; data: JsonValue } | undefined;
   const client = createAuthClient({
@@ -167,8 +173,6 @@ const authenticationResponse = async (
       onResponse: async ({ response, request }) => {
         const setCookies = response.headers.getSetCookie();
         for (const header of setCookies) cookies.setCookieSync(header, String(request.url));
-        // Only an HttpOnly cookie carries a credential. A page reads the others, such as the last
-        // sign-in method, so they are no secret.
         secrets.push(
           ...cookies
             .getCookiesSync(String(request.url))
@@ -344,13 +348,13 @@ export const addAuthenticationCommands = (program: Command) => {
             { details: { methods: methods.map(({ method, flag }) => ({ method, flag })) } },
           );
         }
-        const selected = await select({
-          message: action === "signup" ? "Create your account with" : "Sign in with",
-          options: methods.map((entry) => ({ value: entry, label: entry.label })),
-          output: process.stderr,
-        });
-        if (isCancel(selected)) throw new CommandError("CANCELLED", "Authentication cancelled.");
-        choice = selected;
+        choice = await answered(
+          select({
+            message: action === "signup" ? "Create your account with" : "Sign in with",
+            options: methods.map((entry) => ({ value: entry, label: entry.label })),
+            output: process.stderr,
+          }),
+        );
       }
 
       if (choice.method === "github" || choice.method === "google") {
@@ -476,9 +480,9 @@ export const addAuthenticationCommands = (program: Command) => {
           }
           password = (await Bun.stdin.text()).replace(/\r?\n$/, "");
         } else {
-          const entered = await passwordPrompt({ message: "Password", output: process.stderr });
-          if (isCancel(entered)) throw new CommandError("CANCELLED", "Authentication cancelled.");
-          password = entered;
+          password = await answered(
+            passwordPrompt({ message: "Password", output: process.stderr }),
+          );
         }
         if (!password)
           throw new CommandError("PASSWORD_INPUT_REQUIRED", "The password must not be empty.");
@@ -550,15 +554,16 @@ export const addAuthenticationCommands = (program: Command) => {
             );
             return;
           }
-          const emailed = await select({
-            message: "Second factor",
-            options: [
-              { value: false, label: "Authenticator app or backup code" },
-              { value: true, label: `Email a code to ${email}` },
-            ],
-            output: process.stderr,
-          });
-          if (isCancel(emailed)) throw new CommandError("CANCELLED", "Authentication cancelled.");
+          const emailed = await answered(
+            select({
+              message: "Second factor",
+              options: [
+                { value: false, label: "Authenticator app or backup code" },
+                { value: true, label: `Email a code to ${email}` },
+              ],
+              output: process.stderr,
+            }),
+          );
           if (emailed) {
             await requestAuthentication(context, "/two-factor/send-otp", {
               method: "POST",

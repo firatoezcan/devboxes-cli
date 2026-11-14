@@ -26,15 +26,18 @@ const listedSchema = Type.Array(
 
 type PromptContext = { connection: CommandConnection; description: CommandDescription };
 
-const answered = async <Answer>(prompt: Promise<Answer>) => {
+/** The answer to `prompt`, or CANCELLED when the person cancels it. */
+export const answered = async <Answer>(prompt: Promise<Answer>) => {
   const answer = await prompt;
   if (isCancel(answer)) throw new CommandError("CANCELLED", "Command cancelled.");
   return answer as Exclude<Answer, symbol>;
 };
 
+const summary = (field: Field) => field.description?.split(/(?<=\.)\s/)[0];
+
 const question = (path: string, field: Field) => {
-  const [summary] = field.description?.split(/(?<=\.)\s/) ?? [];
-  return summary ? `${path}: ${summary}` : path;
+  const first = summary(field);
+  return first ? `${path}: ${first}` : path;
 };
 
 const types = (field: Field) =>
@@ -234,7 +237,7 @@ const promptObject = async (
       options: optional.map(([name, property]) => ({
         value: name,
         label: name,
-        hint: property.description?.split(/(?<=\.)\s/)[0],
+        hint: summary(property),
       })),
       required: false,
       output: process.stderr,

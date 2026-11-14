@@ -1,4 +1,4 @@
-import { isCancel, password, select, text } from "@clack/prompts";
+import { password, select, text } from "@clack/prompts";
 import type { JsonValue } from "@devboxes/protocol/json";
 import { Option, type Command } from "commander";
 import Type from "typebox";
@@ -22,7 +22,7 @@ import {
 } from "./commands";
 import { loadCommandConnection, type LogIn } from "./connection";
 import { runDevboxesMcpServer } from "./mcp";
-import { promptCommandInput, promptField } from "./prompt-input";
+import { answered, promptCommandInput, promptField } from "./prompt-input";
 
 const connectStartSchema = Type.Object({
   attemptId: Type.String(),
@@ -262,38 +262,39 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
           "PROVIDER_REQUIRED",
           "Name the provider to connect: devboxes connect <providerId>.",
         );
-      const selected = await select({
-        message: "Connect",
-        options: providers.flatMap((provider) =>
-          [
-            ...(provider.deviceFlow
-              ? [{ signIn: true, label: `${provider.name} (browser sign-in)` }]
-              : []),
-            ...(provider.apiKey ? [{ signIn: false, label: `${provider.name} API key` }] : []),
-          ].map(({ signIn, label }) => ({
-            value: { provider, signIn },
-            label,
-            disabled: provider.unavailable !== null,
-            hint: provider.unavailable ?? undefined,
-          })),
-        ),
-        output: process.stderr,
-      });
-      if (isCancel(selected)) throw new CommandError("CANCELLED", "Command cancelled.");
-      return selected;
+      return answered(
+        select({
+          message: "Connect",
+          options: providers.flatMap((provider) =>
+            [
+              ...(provider.deviceFlow
+                ? [{ signIn: true, label: `${provider.name} (browser sign-in)` }]
+                : []),
+              ...(provider.apiKey ? [{ signIn: false, label: `${provider.name} API key` }] : []),
+            ].map(({ signIn, label }) => ({
+              value: { provider, signIn },
+              label,
+              disabled: provider.unavailable !== null,
+              hint: provider.unavailable ?? undefined,
+            })),
+          ),
+          output: process.stderr,
+        }),
+      );
     };
     const { provider, signIn } = await choose();
     if (provider.unavailable !== null)
       throw new CommandError("PROVIDER_UNAVAILABLE", provider.unavailable);
     const named =
       options.label ??
-      (await text({
-        message: "Name of the model account",
-        initialValue: provider.name,
-        validate: (value) => (value?.trim() ? undefined : "Enter a name."),
-        output: process.stderr,
-      }));
-    if (isCancel(named)) throw new CommandError("CANCELLED", "Command cancelled.");
+      (await answered(
+        text({
+          message: "Name of the model account",
+          initialValue: provider.name,
+          validate: (value) => (value?.trim() ? undefined : "Enter a name."),
+          output: process.stderr,
+        }),
+      ));
     const label = named.trim();
     const pasted = async (message: string) => {
       if (!interactive && process.stdin.isTTY)
@@ -302,9 +303,8 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
           "Pipe the key or code to stdin, or run the command in a terminal with no --json to get a masked prompt.",
         );
       const value = interactive
-        ? await password({ message, output: process.stderr })
+        ? await answered(password({ message, output: process.stderr }))
         : (await Bun.stdin.text()).trim();
-      if (isCancel(value)) throw new CommandError("CANCELLED", "Command cancelled.");
       return value;
     };
     let accountId: string;

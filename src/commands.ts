@@ -151,7 +151,7 @@ export class CommandError extends Error {
     );
   }
 
-  // A serialization conflict commits nothing, so the same command can be sent again.
+  /** A serialization conflict commits nothing, so the same command can be sent again. */
   get retryable() {
     return this.code === "CONCURRENT_MODIFICATION";
   }
@@ -191,9 +191,10 @@ export class CommandError extends Error {
 
 const w3cTraceContext = new W3CTraceContextPropagator();
 
-// The CLI joins the caller's W3C trace from TRACEPARENT. Without one it sends no traceparent, so
-// the API starts each request's trace, and a result reports the trace the API names in its
-// traceresponse.
+/**
+ * The caller's W3C trace from TRACEPARENT. Without one the CLI sends no traceparent, so the API
+ * starts each request's trace, and a result reports the trace the API names in its traceresponse.
+ */
 const callerTrace = w3cTraceContext.extract(
   ROOT_CONTEXT,
   { traceparent: process.env.TRACEPARENT },
@@ -570,7 +571,6 @@ export const devboxesCommandTools = (
       "\n\nDescribe a command with devboxes_describe before you first invoke it.",
     Type.Object({
       command: Type.String({ minLength: 1 }),
-      // Tool arguments arrive as JSON, so the advertised schema accepts every value.
       input: Type.Unsafe<JsonValue>({}),
     }),
     (invocation) => invokeCommand(connection, invocation, readCommands),
