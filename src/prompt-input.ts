@@ -312,7 +312,7 @@ export const chooseOrganization = async (
   const contract = advertisedCommand(context.description, operationId)["x-devboxes"];
   if (!Value.Check(callersSchema, contract))
     throw unreadableAnswer(`who may ${deed}`, describeErrors(callersSchema, contract));
-  if (process.env.DEVBOXES_TOKEN !== undefined && contract.delegable === undefined)
+  if (context.connection.delegation && contract.delegable === undefined)
     throw new CommandError(
       "ORGANIZATION_REQUIRED",
       "devboxes can't list your Organizations with a delegation token. Name the Organization with --organization <id>.",

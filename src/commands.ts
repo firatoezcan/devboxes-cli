@@ -22,6 +22,8 @@ import { cliUserAgent } from "./api";
 export type CommandConnection = {
   origin: string;
   token: string;
+  /** Set for DEVBOXES_TOKEN's delegation, which runs only commands without `delegable: false`. */
+  delegation?: true;
   organizationId?: string;
   /** Headers every request sends besides the ones `requestJson` sets. */
   headers?: Record<string, string>;

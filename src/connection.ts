@@ -84,7 +84,11 @@ export const loadCommandConnection = async (
         "DEVBOXES_TOKEN must contain a delegation token. No personal configuration was loaded.",
       );
     }
-    return { origin: apiOrigin(selectedApi(options.api, defaultApiOrigin)), token };
+    return {
+      origin: apiOrigin(selectedApi(options.api, defaultApiOrigin)),
+      token,
+      delegation: true,
+    };
   }
   const context = await loadAccountContext(options);
   const tokenFromConfig = context.config.sessionToken;
