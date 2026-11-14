@@ -1103,7 +1103,7 @@ describe("devboxes connect", () => {
             body.providerId === "handler"
               ? "file:///Applications/Calculator.app"
               : `https://sign-in.example/${body.providerId}?state=state`,
-          signsInAs: body.providerId === "openai" ? "Codex CLI" : null,
+          signsInAs: body.providerId === "openai" ? "Codex CLI" : "Claude Code",
           intervalSeconds: 0,
           expiresAt: null,
         });
@@ -1221,7 +1221,7 @@ describe("devboxes connect", () => {
     expect(completions).toHaveLength(5);
   });
 
-  it("says which app the sign-in page names when connect-start answers one, and names none when it answers null", async () => {
+  it("says which app connect-start answers that the sign-in page names", async () => {
     reset();
     const openai = await runCli(connectTo("openai"), connection);
     const claude = await runCli(
@@ -1233,11 +1233,8 @@ describe("devboxes connect", () => {
 
     expect({
       openaiNamesCodexCli: openai.stderr.includes("The page names Codex CLI"),
-      claudeNamesAnApp: claude.stderr.includes("The page names"),
-    }).toEqual({
-      openaiNamesCodexCli: true,
-      claudeNamesAnApp: false,
-    });
+      claudeNamesClaudeCode: claude.stderr.includes("The page names Claude Code"),
+    }).toEqual({ openaiNamesCodexCli: true, claudeNamesClaudeCode: true });
   });
 
   it("connects an API key from stdin through model-accounts.add, also to a provider with a sign-in, replaces one with --account, and never prints it", async () => {

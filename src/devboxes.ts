@@ -28,7 +28,7 @@ const connectStartSchema = Type.Object({
   attemptId: Type.String(),
   userCode: Type.Union([Type.String(), Type.Null()]),
   verificationUrl: Type.String(),
-  signsInAs: Type.Union([Type.String(), Type.Null()]),
+  signsInAs: Type.String(),
   intervalSeconds: Type.Number(),
 });
 const providersSchema = Type.Array(
@@ -331,7 +331,7 @@ export const addAccountCommands = (program: Command, logIn: LogIn) => {
           "The model-accounts.connect-start response's verificationUrl isn't an HTTP URL, so devboxes doesn't show or open it.",
         );
       process.stderr.write(
-        `Open ${verificationUrl.href} to sign in.${started.signsInAs === null ? "" : ` The page names ${started.signsInAs}, which devboxes signs in as.`}${started.userCode === null ? "" : ` Your code is ${started.userCode}.`}\n`,
+        `Open ${verificationUrl.href} to sign in. The page names ${started.signsInAs}, which devboxes signs in as.${started.userCode === null ? "" : ` Your code is ${started.userCode}.`}\n`,
       );
       if (interactive) openInBrowser(verificationUrl);
       const complete = async (code?: string) =>
