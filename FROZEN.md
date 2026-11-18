@@ -294,8 +294,15 @@ push. While a transfer runs, any local process can use that service through the
 listener. The API accepts a push only while the publish node runs, and only as
 the creation of one ref `refs/devboxes/push/<Run>/<UUID>`. It sends that commit
 to the Session's branch instead, from the branch head it read, so GitHub refuses
-the update if the branch moved meanwhile. GitHub accepts the update whether or
-not it is a fast-forward. The publish node succeeds only when the status report
+the update if the branch moved meanwhile. GitHub accepts the update of a branch
+devboxes created whether or not it is a fast-forward. A branch devboxes didn't
+create, a pull request's branch that a Session works on in place, only moves
+forward (DEC-teammate-branch-moves-forward): the API first sends the commit to
+the push ref on GitHub, compares it with the branch head, refuses any other
+update with `PUBLICATION_NOT_FAST_FORWARD`, and deletes that ref again. The
+repository answer's `base` names the branch the Session's pull request merges
+into, at its head when the Run started, and the executor writes it as
+`refs/remotes/origin/<base>`. The publish node succeeds only when the status report
 that the listener received from the API accepts that ref. A push that the
 workspace's Git configuration sends elsewhere fails the node, although Git
 reports success. The report does not identify the commit the API recorded. The
