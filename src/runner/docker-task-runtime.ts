@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { chmod, link, mkdir, readdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { Duplex, Writable } from "node:stream";
+import { finished } from "node:stream/promises";
 
 import {
   type ClaudeCodeArtifact,
@@ -68,6 +70,20 @@ export const followDockerProgress = (
 /** The name of Task `taskId`'s executor container, which is also its executor ID. */
 export const executorName = (taskId: string) => `devboxes-task-${taskId}`;
 
+/** The standard output and error of Docker's multiplexed `stream`, once it ends. */
+export const demuxedText = async (docker: Docker, stream: NodeJS.ReadableStream) => {
+  const chunks: Buffer[] = [];
+  const output = new Writable({
+    write(chunk: Buffer, _encoding, written) {
+      chunks.push(chunk);
+      written();
+    },
+  });
+  docker.modem.demuxStream(stream, output, output);
+  await finished(stream);
+  return Buffer.concat(chunks).toString();
+};
+
 export class DockerOpencodeTaskRuntime {
   readonly docker: Docker;
   /** The Claude Code volumes this Runner is checking or filling, by name. */
@@ -80,6 +96,27 @@ export class DockerOpencodeTaskRuntime {
 
   constructor(readonly options: { socketPath: string; stateDirectory: string }) {
     this.docker = new Docker({ socketPath: options.socketPath });
+  }
+
+  /**
+   * The last line that exited executor `containerId` wrote to its standard error, at most 4,000
+   * characters of it, or null when it wrote none or Docker gives none, as with the `none` log driver
+   * or a container removed meanwhile. Docker keeps an exited container's output until it is
+   * removed. It reads Docker's last 20 entries, which Docker splits at 16 KiB, so at most 320 KiB.
+   */
+  async lastErrorLine(containerId: string) {
+    try {
+      const output = await this.docker
+        .getContainer(containerId)
+        .logs({ follow: true, stdout: false, stderr: true, tail: 20 });
+      const lines = (await demuxedText(this.docker, output))
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean);
+      return lines.at(-1)?.slice(0, 4000) ?? null;
+    } catch {
+      return null;
+    }
   }
 
   async inspect(executorId: string) {
@@ -279,9 +316,30 @@ export class DockerOpencodeTaskRuntime {
    * Starts the executor of a Task that `create` set up, and writes `token`, the Run token that the
    * Runner's relay accepts, to its stdin, then closes it. The token so never enters an environment
    * block, an argument list or a file of the container.
+   *
+   * The attach request has an empty body: Docker hands what reaches the connection after it took
+   * it over to the container's stdin, so a body that a socket proxy such as OrbStack's delivers
+   * late, like the JSON options of dockerode's `attach`, would come before the token.
    */
   async start(container: Docker.Container, token: string) {
-    const stdin = await container.attach({ stream: true, stdin: true, hijack: true });
+    const stdin = await new Promise<Duplex>((attached, refused) =>
+      this.docker.modem.dial(
+        {
+          path: `/containers/${container.id}/attach?`,
+          method: "POST",
+          options: { _query: { stream: true, stdin: true } },
+          file: Buffer.alloc(0),
+          hijack: true,
+          isStream: true,
+          statusCodes: { 101: true, 200: true, 404: "no such container", 500: "server error" },
+        },
+        (error, stream) => {
+          if (error) refused(error);
+          else if (stream instanceof Duplex) attached(stream);
+          else refused(new Error(`Docker attached no stream to container ${container.id}.`));
+        },
+      ),
+    );
     await container.start();
     await new Promise<void>((resolve, reject) => {
       stdin.once("error", reject);

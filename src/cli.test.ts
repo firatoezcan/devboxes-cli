@@ -1666,7 +1666,8 @@ describe("devboxes runner listen", () => {
       if (inspected && containers.has(inspected[1]!))
         return Response.json(containers.get(inspected[1]!));
       if (pathname.includes("/containers/") && !inspected) {
-        containerChanges.push(`${request.method} ${pathname.replace(/^\/v[\d.]+/, "")}`);
+        if (request.method !== "GET")
+          containerChanges.push(`${request.method} ${pathname.replace(/^\/v[\d.]+/, "")}`);
         return new Response(null, { status: 204 });
       }
       if (pathname.endsWith("/info"))
