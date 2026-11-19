@@ -1,39 +1,29 @@
 import { hostname } from "node:os";
 import { join } from "node:path";
 
-import { confirm, isCancel, password, select, text } from "@clack/prompts";
-import { describeErrors } from "../values/validation-errors";
+import { confirm, password, text } from "@clack/prompts";
 import { platformConfigHome } from "../connections/config";
 import { writeSecretFile } from "../secret-file";
 import { type Command, InvalidArgumentError } from "commander";
 import Type from "typebox";
-import Value from "typebox/value";
 
 import {
   apiOrigin,
   asksInTerminal,
   CommandError,
-  advertisedCommand,
   describeCommands,
   invokeCommand,
   parseResponse,
   requestJson,
-  unreadableAnswer,
   writeOutput,
 } from "../commands";
 import { loadAccountContext, loadCommandConnection } from "../connection";
+import { answered, chooseOrganization, requireOrganization } from "../prompt-input";
 import { listen } from "./listen";
 
 const runnerDirectory = () => join(platformConfigHome(), "devboxes", "runner");
 const savedTokenFile = () => join(runnerDirectory(), "token");
 
-const organizationsSchema = Type.Object({
-  organizations: Type.Array(
-    Type.Object({ id: Type.String(), name: Type.String(), role: Type.String() }),
-  ),
-});
-/** What `runner add` reads of runners.add's contract to offer Organizations: who may add a Runner. */
-const rolesSchema = Type.Object({ roles: Type.Array(Type.String()) });
 const registeredSchema = Type.Object({
   runner: Type.Object({ id: Type.String(), name: Type.String() }),
   token: Type.String({ minLength: 1 }),
@@ -64,9 +54,8 @@ const listenOrigin = async (options: { api?: string; config?: string }) =>
  */
 const saveRegisteredKey = async (origin: string, tokenFile: string) => {
   const pasted = asksInTerminal(false)
-    ? await password({ message: "Paste the Runner key", output: process.stderr })
+    ? await answered(password({ message: "Paste the Runner key", output: process.stderr }))
     : await new Response(Bun.stdin.stream()).text();
-  if (isCancel(pasted)) throw new CommandError("CANCELLED", "Command cancelled.");
   const token = pasted.trim();
   if (token === "")
     throw new CommandError(
@@ -83,7 +72,11 @@ const saveRegisteredKey = async (origin: string, tokenFile: string) => {
 
 /**
  * Runs the Runner. Bun uploads its crash reports on macOS and Windows unless DO_NOT_TRACK is set
- * when the process starts, so there the CLI starts again as `devboxes <args>` with it.
+ * when the process starts, so there the CLI starts again as `devboxes <args>` with it. Windows has
+ * no execve, and its console sends Ctrl+C to the listener too. A forwarded signal would end the
+ * listener before it drains, so the first process ignores SIGINT and only outlives the listener.
+ * Once listen returns, it has waited for every Task start, and only a download of the next executor
+ * can still run, so the process exits.
  */
 const runRunner = async (
   args: string[],
@@ -111,8 +104,6 @@ const runRunner = async (
       if (!process.execve) throw new Error("The Runner needs process.execve on macOS.");
       process.execve(process.execPath, argv, env);
     }
-    // Windows has no execve. Its console sends Ctrl+C to the listener too, and a forwarded signal
-    // would terminate the listener before it drains, so this process only outlives it.
     const listener = Bun.spawn(argv, { env, stdio: ["inherit", "inherit", "inherit"] });
     process.on("SIGINT", () => {});
     process.exit(await listener.exited);
@@ -124,7 +115,6 @@ const runRunner = async (
     cpus: options.cpus,
     memoryGiB: options.memory,
   });
-  // listen waits for every Task start; only a download of the next executor may still run.
   process.exit(0);
 };
 
@@ -203,11 +193,7 @@ export const addRunnerCommands = (program: Command) => {
     }>();
     const tokenFile = savedTokenFile();
     const interactive = asksInTerminal(options.json);
-    if (!interactive && options.organization === undefined)
-      throw new CommandError(
-        "ORGANIZATION_REQUIRED",
-        "Name the Organization with --organization <id>, or run the command in a terminal to choose one.",
-      );
+    requireOrganization(interactive, options.organization);
     if (!interactive && options.name === undefined)
       throw new CommandError(
         "NAME_REQUIRED",
@@ -225,50 +211,22 @@ export const addRunnerCommands = (program: Command) => {
       );
     }
     const description = await describeCommands(connection);
-    const { organizations } = parseResponse(
-      organizationsSchema,
-      (
-        await invokeCommand(
-          connection,
-          { command: "organizations.list", input: {} },
-          async () => description,
-        )
-      ).data,
-      "organizations.list",
+    const organization = await chooseOrganization(
+      { connection, description },
+      "runners.add",
+      { question: "Which Organization should run work on this Runner?", deed: "add a Runner" },
+      options.organization,
     );
-    let chosen: string | symbol | undefined = options.organization;
-    if (chosen === undefined) {
-      const contract = advertisedCommand(description, "runners.add")["x-devboxes"];
-      if (!Value.Check(rolesSchema, contract))
-        throw unreadableAnswer("who may add a Runner", describeErrors(rolesSchema, contract));
-      const managed = organizations.filter((entry) => contract.roles.includes(entry.role));
-      if (managed.length === 0)
-        throw new CommandError(
-          "ORGANIZATION_NOT_FOUND",
-          `devboxes can't find an Organization where you can add a Runner. Only an Organization's ${contract.roles.join(" or ")} can add one.`,
-        );
-      chosen = await select({
-        message: "Which Organization should run work on this Runner?",
-        options: managed.map((entry) => ({ value: entry.id, label: entry.name })),
-        output: process.stderr,
-      });
-    }
-    if (isCancel(chosen)) throw new CommandError("CANCELLED", "Command cancelled.");
-    const organization = organizations.find((entry) => entry.id === chosen);
-    if (!organization)
-      throw new CommandError(
-        "ORGANIZATION_NOT_FOUND",
-        `devboxes can't find an Organization with the ID ${chosen} that you belong to.`,
-      );
     const named =
       options.name ??
-      (await text({
-        message: "Name this Runner",
-        initialValue: hostname(),
-        validate: (value) => (value?.trim() ? undefined : "Enter a name."),
-        output: process.stderr,
-      }));
-    if (isCancel(named)) throw new CommandError("CANCELLED", "Command cancelled.");
+      (await answered(
+        text({
+          message: "Name this Runner",
+          initialValue: hostname(),
+          validate: (value) => (value?.trim() ? undefined : "Enter a name."),
+          output: process.stderr,
+        }),
+      ));
     const { runner: added, token } = parseResponse(
       registeredSchema,
       (

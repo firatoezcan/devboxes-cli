@@ -35,6 +35,19 @@ export type AccountContext = DevboxesContext & {
   warning?: string;
 };
 
+const printableToken = /^[\x21-\x7e]+$/;
+
+/** The API origin that --api or DEVBOXES_API_URL selects, or else `fallback`. */
+const selectedApi = (api: string | undefined, fallback: string | undefined) => {
+  const selected = api ?? process.env.DEVBOXES_API_URL ?? fallback;
+  if (selected === undefined)
+    throw new CommandError(
+      "API_URL_REQUIRED",
+      "Select an API origin with --api or DEVBOXES_API_URL.",
+    );
+  return selected;
+};
+
 export const loadAccountContext = async (
   options: Pick<DevboxesCliOptions, "config" | "api">,
 ): Promise<AccountContext> => {
@@ -44,15 +57,7 @@ export const loadAccountContext = async (
     throw new CommandError("INVALID_CONFIG", "A saved credential must have its own API origin.");
   }
   const storedOrigin = config.apiBaseUrl ? apiOrigin(config.apiBaseUrl, "account") : undefined;
-  const api =
-    options.api ?? process.env.DEVBOXES_API_URL ?? (storedOrigin ? undefined : defaultApiOrigin);
-  const origin = api === undefined ? storedOrigin : apiOrigin(api, "account");
-  if (!origin) {
-    throw new CommandError(
-      "API_URL_REQUIRED",
-      "Select an API origin with --api or DEVBOXES_API_URL.",
-    );
-  }
+  const origin = apiOrigin(selectedApi(options.api, storedOrigin ?? defaultApiOrigin), "account");
   if (storedOrigin && storedOrigin !== origin) {
     throw new CommandError(
       "API_ORIGIN_MISMATCH",
@@ -73,24 +78,21 @@ export const loadCommandConnection = async (
 ): Promise<CommandConnection> => {
   const token = process.env.DEVBOXES_TOKEN;
   if (token !== undefined) {
-    if (!/^[\x21-\x7e]+$/.test(token)) {
+    if (!printableToken.test(token)) {
       throw new CommandError(
         "INVALID_DEVBOXES_TOKEN",
         "DEVBOXES_TOKEN must contain a delegation token. No personal configuration was loaded.",
       );
     }
-    const api = options.api ?? process.env.DEVBOXES_API_URL ?? defaultApiOrigin;
-    if (api === undefined) {
-      throw new CommandError(
-        "API_URL_REQUIRED",
-        "Select an API origin with --api or DEVBOXES_API_URL.",
-      );
-    }
-    return { origin: apiOrigin(api), token };
+    return {
+      origin: apiOrigin(selectedApi(options.api, defaultApiOrigin)),
+      token,
+      delegation: true,
+    };
   }
   const context = await loadAccountContext(options);
   const tokenFromConfig = context.config.sessionToken;
-  if (!tokenFromConfig || !/^[\x21-\x7e]+$/.test(tokenFromConfig)) {
+  if (!tokenFromConfig || !printableToken.test(tokenFromConfig)) {
     throw new CommandError(
       "AUTHENTICATION_REQUIRED",
       "Sign in with devboxes login before invoking commands.",

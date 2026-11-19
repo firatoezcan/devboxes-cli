@@ -1,6 +1,6 @@
 /**
- * The statuses of an ended Run. A paused Run stopped at its model account's usage limit with its
- * work kept, and its Session continues when a person asks.
+ * The statuses of an ended Run. A paused Run stopped with its work kept, and its end cause says
+ * why: its model account's usage limit or its unanswered questions.
  */
 export const endedRunStatuses = ["succeeded", "failed", "cancelled", "paused"] as const;
 

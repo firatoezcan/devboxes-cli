@@ -1,5 +1,9 @@
 # @devboxes/cli-linux-x64
 
+## 0.18.0
+
+No changes in this release.
+
 ## 0.17.0
 
 No changes in this release.

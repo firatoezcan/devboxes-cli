@@ -20,6 +20,20 @@ export const organizationRoles = ["owner", "admin", "member", "reviewer", "viewe
 /** The roles that add or replace a credential, and finish a setup that stores one. */
 export const credentialRoles: readonly (typeof organizationRoles)[number][] = ["owner", "admin"];
 
+/**
+ * The roles a member with `role` grants, and whose members and invitations they act on: every role
+ * for an owner, every role but owner for an admin, and none for anyone else, since only an owner
+ * grants the owner role or acts on an owner (DEC-admins-all-but-money).
+ */
+export const grantableRoles = (
+  role: (typeof organizationRoles)[number] | null | undefined,
+): readonly (typeof organizationRoles)[number][] =>
+  role === "owner"
+    ? organizationRoles
+    : role === "admin"
+      ? organizationRoles.filter((each) => each !== "owner")
+      : [];
+
 const sharedFields = {
   delegable: Type.Optional(Type.Literal(false)),
   chat: Type.Optional(Type.Union([Type.Literal("policy"), Type.Literal("always")])),
@@ -41,9 +55,9 @@ const contractFields = {
 };
 
 /**
- * What follows a person's approval of a Chat turn's held write, as the description of every held
- * command, the CLI's command guide and the ELEVATION_REQUIRED refusal tell Chat's model
- * (DEC-approval-continues-the-request).
+ * What follows a person's approval of a Chat turn's held write, as the CLI's command guide
+ * (devboxes_invoke), the ELEVATION_REQUIRED refusal and integrations.call's description tell
+ * Chat's model (DEC-approval-continues-the-request).
  */
 export const approvedHeldWrite =
   "Once it's approved, you go on with the request in this thread, in a new turn that makes the same call, so don't call it again in this turn.";
@@ -89,7 +103,8 @@ export type Elevation = Static<typeof elevationSchema>;
  * person's session may call it, never a member delegation; `chat` when a Chat delegation may hold
  * it: `policy` when the Chat policy's resources grant it, and `always` when every Chat turn may
  * call it whatever its policy lists, which only the listings of Projects and work setups, reading a
- * tracker conversation's own issue, and opening the turn's own conversation log are
+ * tracker conversation's own issue, opening the turn's own conversation log, and sending the asker
+ * the link that links their chat account are
  * (DEC-approval-continues-the-request); without it, the
  * command refuses a Chat token; who may call it, in words; and, once it is usable from Chat,
  * `shipped`: the day and a one-line note on what it lets devboxes do. A Chat turn calls a command
@@ -104,7 +119,12 @@ export type Elevation = Static<typeof elevationSchema>;
  * integrations.call, and whose route must then declare `sensitiveConnection`. Such a write names
  * `chatRequesterRoles` too, which law:chat-requesters-only-where-elevation-is-conditional requires
  * of exactly those writes: while it isn't elevated, a Chat turn calls it only for a person linked
- * to a member with one of them.
+ * to a member with one of them. `instructsWork` marks a write that instructs a Session's work: on a
+ * team, a Session started on its page takes it only from the person who started it, which the
+ * `command` macro enforces and law:work-instructions-named pins by name
+ * (DEC-page-sessions-are-their-starters-on-teams). `postsAtOnce` marks a write that people may see
+ * the moment it runs, in the Chat thread, the tracker or GitHub, which an interrupted turn's writes say as `posted`
+ * and law:posting-writes-named pins by name (DEC-interrupted-writes-say-posted).
  */
 export const commandContractSchema = Type.Union([
   Type.Object({ effect: Type.Literal("read"), ...contractFields }, { additionalProperties: false }),
@@ -123,6 +143,8 @@ export const commandContractSchema = Type.Union([
           Type.Array(Type.Enum(organizationRoles), { uniqueItems: true, minItems: 1 }),
         ),
       ),
+      instructsWork: Type.Optional(Type.Literal(true)),
+      postsAtOnce: Type.Optional(Type.Literal(true)),
       ...contractFields,
     },
     { additionalProperties: false },
@@ -223,13 +245,27 @@ export const detailCodesOf = (
 const fnvOffsetBasis = 0x811c9dc5;
 const fnvPrime = 0x01000193;
 
+/** A schema of an object. */
+const objectSchema = Type.Object({ type: Type.Literal("object") });
+
 /**
- * The document as the API serves it: each contract leaves out `does`, and the response of every
- * command failure, a CommandError body, refers to the details schemas of only the codes
- * `detailCodesOf` gives its command. A command that raises none refers to
- * `components.responses.CommandError`, and one that does to the `CommandError.<hash>` response of its
- * set of codes, named by a hash of the set, so the name stays while the set does. The document
- * states the details schemas of only the codes some command raises.
+ * Closes `node`, a schema of an object that declares no `additionalProperties`, as the API closes it
+ * when it validates a request (Elysia's `normalize: false`), so the document states that a request
+ * with another field is refused. Every other node stays. A `JSON.stringify` replacer, so it reaches
+ * every object in a schema.
+ */
+const closedObject = (_key: string, node: JsonValue) =>
+  Value.Check(objectSchema, node) && !("additionalProperties" in node)
+    ? { ...node, additionalProperties: false }
+    : node;
+
+/**
+ * The document as the API serves it: each request body closes its objects (`closedObject`), each contract
+ * leaves out `does`, and the response of every command failure, a CommandError body, refers to the
+ * details schemas of only the codes `detailCodesOf` gives its command. A command that raises none
+ * refers to `components.responses.CommandError`, and one that does to the `CommandError.<hash>`
+ * response of its set of codes, named by a hash of the set, so the name stays while the set does.
+ * The document states the details schemas of only the codes some command raises.
  */
 export const servedDocument = (
   document: Static<typeof commandDocumentSchema>,
@@ -260,7 +296,7 @@ export const servedDocument = (
       : [];
   };
   const detailedFailure = (codes: readonly string[]) => ({
-    description: `${CommandError.description} Its details are those of ${codes.join(", ")}.`,
+    description: `${CommandError.description} Most codes carry only that message. These also carry details, which the full manual, read with detail=full, describes, and other codes can still come back: ${codes.join(", ")}.`,
     content: {
       "application/json": {
         schema: {
@@ -312,12 +348,15 @@ export const servedDocument = (
   }
   const raisedCodes = [...new Set([...codeSets.values()].flat())].sort();
   const served = (operation: Static<typeof servedOperationSchema>) => {
-    const { responses } = operation;
+    const { requestBody, responses } = operation;
     const failure = failing.includes(operation)
       ? { $ref: `#/components/responses/${failureName(codesOf(operation))}` }
       : undefined;
     const referred = {
       ...operation,
+      ...(requestBody !== undefined && {
+        requestBody: JSON.parse(JSON.stringify(requestBody, closedObject)),
+      }),
       ...(responses && {
         responses: Object.fromEntries(
           Object.entries(responses).map(([status, response]) => [

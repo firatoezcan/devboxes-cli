@@ -12,7 +12,23 @@ import {
   advertisedCommand,
   type Field,
   invokeCommand,
+  parseResponse,
+  unreadableAnswer,
 } from "./commands";
+
+const organizationsSchema = Type.Object({
+  organizations: Type.Array(
+    Type.Object({ id: Type.String(), name: Type.String(), role: Type.String() }),
+  ),
+});
+/**
+ * What a command's contract says about who may run it: the roles, which decide the Organizations
+ * offered, and `delegable: false` when a delegation token may not.
+ */
+const callersSchema = Type.Object({
+  roles: Type.Array(Type.String()),
+  delegable: Type.Optional(Type.Literal(false)),
+});
 
 const listedSchema = Type.Array(
   Type.Object({
@@ -26,15 +42,18 @@ const listedSchema = Type.Array(
 
 type PromptContext = { connection: CommandConnection; description: CommandDescription };
 
-const answered = async <Answer>(prompt: Promise<Answer>) => {
+/** The answer to `prompt`, or CANCELLED when the person cancels it. */
+export const answered = async <Answer>(prompt: Promise<Answer>) => {
   const answer = await prompt;
   if (isCancel(answer)) throw new CommandError("CANCELLED", "Command cancelled.");
   return answer as Exclude<Answer, symbol>;
 };
 
+const summary = (field: Field) => field.description?.split(/(?<=\.)\s/)[0];
+
 const question = (path: string, field: Field) => {
-  const [summary] = field.description?.split(/(?<=\.)\s/) ?? [];
-  return summary ? `${path}: ${summary}` : path;
+  const first = summary(field);
+  return first ? `${path}: ${first}` : path;
 };
 
 const types = (field: Field) =>
@@ -234,7 +253,7 @@ const promptObject = async (
       options: optional.map(([name, property]) => ({
         value: name,
         label: name,
-        hint: property.description?.split(/(?<=\.)\s/)[0],
+        hint: summary(property),
       })),
       required: false,
       output: process.stderr,
@@ -244,6 +263,73 @@ const promptObject = async (
     if (chosen.includes(name)) value[name] = await promptField(context, at(name), property, scope);
   }
   return value;
+};
+
+/** Refuses, before any request, a command outside a terminal that names no Organization. */
+export const requireOrganization = (interactive: boolean, named: string | undefined) => {
+  if (!interactive && named === undefined)
+    throw new CommandError(
+      "ORGANIZATION_REQUIRED",
+      "Name the Organization with --organization <id>, or run the command in a terminal to choose one.",
+    );
+};
+
+/**
+ * The Organization that `operationId` runs in: the one with the ID `named`, which the person must
+ * belong to, or else the one they choose in the terminal, asked with `question`, among those where
+ * their role is one the command's contract names. `deed` says what the command does, such as "add a
+ * Runner". ORGANIZATION_NOT_FOUND when the person belongs to no such Organization. Only an account
+ * session lists Organizations, so a delegation token that names none gets ORGANIZATION_REQUIRED for a
+ * command its contract lets it run, before any list.
+ */
+export const chooseOrganization = async (
+  context: PromptContext,
+  operationId: string,
+  { question, deed }: { question: string; deed: string },
+  named?: string,
+) => {
+  const listed = async () =>
+    parseResponse(
+      organizationsSchema,
+      (
+        await invokeCommand(
+          context.connection,
+          { command: "organizations.list", input: {} },
+          async () => context.description,
+        )
+      ).data,
+      "organizations.list",
+    ).organizations;
+  if (named !== undefined) {
+    const organization = (await listed()).find((entry) => entry.id === named);
+    if (!organization)
+      throw new CommandError(
+        "ORGANIZATION_NOT_FOUND",
+        `devboxes can't find an Organization with the ID ${named} that you belong to.`,
+      );
+    return organization;
+  }
+  const contract = advertisedCommand(context.description, operationId)["x-devboxes"];
+  if (!Value.Check(callersSchema, contract))
+    throw unreadableAnswer(`who may ${deed}`, describeErrors(callersSchema, contract));
+  if (context.connection.delegation && contract.delegable === undefined)
+    throw new CommandError(
+      "ORGANIZATION_REQUIRED",
+      "devboxes can't list your Organizations with a delegation token. Name the Organization with --organization <id>.",
+    );
+  const allowed = (await listed()).filter((entry) => contract.roles.includes(entry.role));
+  if (allowed.length === 0)
+    throw new CommandError(
+      "ORGANIZATION_NOT_FOUND",
+      `devboxes can't find an Organization where you can ${deed}. Only an Organization's ${contract.roles.join(" or ")} can ${deed}.`,
+    );
+  return answered(
+    select({
+      message: question,
+      options: allowed.map((entry) => ({ value: entry, label: entry.name })),
+      output: process.stderr,
+    }),
+  );
 };
 
 /**

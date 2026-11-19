@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { mkdtemp, rename, rm } from "node:fs/promises";
+import { chmod, mkdtemp, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
 
@@ -36,6 +36,10 @@ const executorStallSeconds = 30;
 export const stalledExecutorDownload = (url: string, message: string) =>
   `The devboxes executor download from ${new URL(url).host} received no data for ${executorStallSeconds} seconds: ${message}`;
 
+/**
+ * Downloads the executor `artifact` to `destination` once its digest matches, with mode 0555 that
+ * no umask narrows, so a Task's container runs it as its own uid and nobody writes it.
+ */
 export const stageExecutorArtifact = async (
   artifact: { url: string; sha256: string },
   destination: string,
@@ -60,6 +64,7 @@ export const stageExecutorArtifact = async (
     );
     if (hash.digest("hex") !== artifact.sha256)
       throw new Error("The private executor artifact does not match its immutable digest.");
+    await chmod(staged, 0o555);
     await rename(staged, destination);
   } finally {
     await rm(directory, { recursive: true, force: true });

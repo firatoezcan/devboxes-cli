@@ -61,10 +61,11 @@ export const createDevboxesCommand = () => {
 };
 
 if (import.meta.main) {
-  // Bun's util.styleText applies colors unconditionally, where Node validates
-  // the target stream — so piped output would carry raw ANSI codes. Strip them
-  // only at the process boundary. FORCE_COLOR opts back in for callers that
-  // want colored captures; Buffer writes remain untouched.
+  /**
+   * Bun's util.styleText colors unconditionally, where Node checks the stream, so a write to a
+   * stream that is not a terminal drops its ANSI codes. FORCE_COLOR opts back in. Buffer writes pass
+   * as they are.
+   */
   const forceColor = process.env.FORCE_COLOR;
   for (const stream of [process.stdout, process.stderr]) {
     if (stream.isTTY || (forceColor && forceColor !== "0" && forceColor !== "false")) continue;

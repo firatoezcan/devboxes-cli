@@ -36,9 +36,10 @@ not establish that a container stopped.
 - `devboxes runner add` saves the Runner key from `runners.add` in a
   regular, owner-only file (`0600`). Protect that file and the Runner state
   directory from other local users.
-- Each task's executor gets a token in its container environment as
-  `DEVBOX_BACKEND_TOKEN`. Docker access permits inspection of that environment.
-  The token works only at the listener's relay, an HTTP listener on the host's
+- Each task's executor gets a token on its container's stdin, which the
+  listener writes when it starts the container and then closes. The token is in
+  no environment variable, argument or file of the container, so `docker
+  inspect` doesn't show it. The token works only at the listener's relay, an HTTP listener on the host's
   loopback address under Docker Desktop and OrbStack, and on the Docker bridge
   gateway address under a Linux Docker Engine. The relay accepts only task
   callbacks with a token that it signed, and forwards them to the API with the

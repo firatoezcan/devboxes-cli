@@ -86,6 +86,38 @@ await symlink(
 const scoped = { DEVBOXES_API_URL: "https://api.example.com", DEVBOXES_TOKEN: "scoped" };
 const unusedOrigin = "http://127.0.0.1:9";
 const listen = ["--json", "--api", "https://api.example.com", "runner", "listen"];
+const everyRole = ["owner", "admin", "member", "reviewer", "viewer"];
+
+/**
+ * A command catalog as the API serves it at /api/openapi/json: each of `operations` is the POST at
+ * its command path. An operation that names no summary or responses gets "Run the command" and none.
+ */
+const catalog = <Operation extends { operationId: string }>(...operations: Operation[]) => ({
+  openapi: "3.0.3",
+  paths: Object.fromEntries(
+    operations.map((operation) => [
+      `/api/commands/${operation.operationId.replace(".", "/")}`,
+      { post: { summary: "Run the command", responses: {}, ...operation } },
+    ]),
+  ),
+});
+
+/**
+ * An MCP client of `devboxes mcp`, run with `args` before `mcp` and with `env` beside PATH. Disposing
+ * of it ends the server.
+ */
+const mcpClient = async (env: Record<string, string>, args: string[] = []) => {
+  const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
+  await client.connect(
+    new StdioClientTransport({
+      command: process.execPath,
+      args: ["src/cli.ts", ...args, "mcp"],
+      cwd: join(import.meta.dir, ".."),
+      env: { PATH: process.env.PATH ?? "", ...env },
+    }),
+  );
+  return Object.assign(client, { [Symbol.asyncDispose]: () => client.close() });
+};
 
 /**
  * Runs the CLI in a pseudo-terminal, with an `open` and an `xdg-open` on PATH that only record
@@ -329,73 +361,45 @@ describe("devboxes invoke", () => {
       traceparents.push(request.headers.get("traceparent"));
       authorizations.push(request.headers.get("authorization"));
       if (pathname === "/api/openapi/json")
-        return Response.json({
-          openapi: "3.0.3",
-          paths: {
-            "/api/commands/sessions/dispatch": {
-              post: {
-                operationId: "sessions.dispatch",
-                summary: "Start Sessions in the Project",
-                "x-devboxes": {
-                  effect: "write",
-                  elevated: false,
-                  roles: ["owner", "admin", "member", "reviewer", "viewer"],
-                  authority: "Organization member",
-                },
-                responses: {},
+        return Response.json(
+          catalog(
+            {
+              operationId: "sessions.dispatch",
+              summary: "Start Sessions in the Project",
+              "x-devboxes": {
+                effect: "write",
+                elevated: false,
+                roles: everyRole,
+                authority: "Organization member",
               },
             },
-            "/api/commands/sessions/list": {
-              post: {
-                operationId: "sessions.list",
-                summary: "List the Organization's Sessions",
-                "x-devboxes": {
-                  effect: "read",
-                  roles: ["owner", "admin", "member", "reviewer", "viewer"],
-                  authority: "Organization member",
-                },
-                responses: {},
+            {
+              operationId: "sessions.list",
+              summary: "List the Organization's Sessions",
+              "x-devboxes": { effect: "read", roles: everyRole, authority: "Organization member" },
+            },
+            {
+              operationId: "delegations.create",
+              summary: "Create a token that acts for a member with limited access",
+              "x-devboxes": {
+                effect: "write",
+                elevated: false,
+                roles: everyRole,
+                authority: "Current account session",
               },
             },
-            "/api/commands/delegations/create": {
-              post: {
-                operationId: "delegations.create",
-                summary: "Create a token that acts for a member with limited access",
-                "x-devboxes": {
-                  effect: "write",
-                  elevated: false,
-                  roles: ["owner", "admin", "member", "reviewer", "viewer"],
-                  authority: "Current account session",
-                },
-                responses: {},
-              },
+            {
+              operationId: "sessions.events",
+              summary: "Read a Session's agent log",
+              "x-devboxes": { effect: "read", roles: everyRole, authority: "Organization member" },
             },
-            "/api/commands/sessions/events": {
-              post: {
-                operationId: "sessions.events",
-                summary: "Read a Session's agent log",
-                "x-devboxes": {
-                  effect: "read",
-                  roles: ["owner", "admin", "member", "reviewer", "viewer"],
-                  authority: "Organization member",
-                },
-                responses: {},
-              },
+            {
+              operationId: "sessions.inspect",
+              summary: "Read Sessions and their results",
+              "x-devboxes": { effect: "read", roles: everyRole, authority: "Organization member" },
             },
-            "/api/commands/sessions/inspect": {
-              post: {
-                operationId: "sessions.inspect",
-                summary: "Read Sessions and their results",
-                "x-devboxes": {
-                  effect: "read",
-                  roles: ["owner", "admin", "member", "reviewer", "viewer"],
-                  authority: "Organization member",
-                },
-                responses: {},
-              },
-            },
-          },
-        });
+          ),
+        );
       if (pathname === "/api/commands/sessions/inspect") {
         const token = request.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
         return Response.json({
@@ -630,16 +634,7 @@ describe("devboxes commands", () => {
       port: 0,
       fetch: (request) => {
         const { pathname } = new URL(request.url);
-        if (pathname === "/api/openapi/json")
-          return Response.json({
-            openapi: "3.0.3",
-            paths: Object.fromEntries(
-              operations.map((operation) => [
-                `/api/commands/${operation.operationId.replace(".", "/")}`,
-                { post: operation },
-              ]),
-            ),
-          });
+        if (pathname === "/api/openapi/json") return Response.json(catalog(...operations));
         return Response.json({ called: pathname });
       },
     });
@@ -769,18 +764,14 @@ describe("devboxes invoke in a terminal", () => {
   ];
   const uuid = { type: "string", pattern: "^[0-9a-f-]{36}$" };
   const operation = (operationId: string, schema: JsonValue) => ({
-    post: {
-      operationId,
-      summary: "Run the command",
-      "x-devboxes": {
-        effect: "write",
-        elevated: false,
-        roles: ["owner", "admin", "member", "reviewer", "viewer"],
-        authority: "Organization member",
-      },
-      requestBody: { content: { "application/json": { schema } } },
-      responses: {},
+    operationId,
+    "x-devboxes": {
+      effect: "write",
+      elevated: false,
+      roles: everyRole,
+      authority: "Organization member",
     },
+    requestBody: { content: { "application/json": { schema } } },
   });
   const requests: { path: string; body: unknown }[] = [];
   let projectsRefused = false;
@@ -791,19 +782,18 @@ describe("devboxes invoke in a terminal", () => {
     fetch: async (request) => {
       const { pathname } = new URL(request.url);
       if (pathname === "/api/openapi/json")
-        return Response.json({
-          openapi: "3.0.3",
-          paths: {
-            "/api/commands/organizations/list": operation("organizations.list", {
+        return Response.json(
+          catalog(
+            operation("organizations.list", {
               type: "object",
               properties: {},
             }),
-            "/api/commands/projects/list": operation("projects.list", {
+            operation("projects.list", {
               type: "object",
               properties: { organizationId: uuid },
               required: ["organizationId"],
             }),
-            "/api/commands/sessions/dispatch": operation("sessions.dispatch", {
+            operation("sessions.dispatch", {
               type: "object",
               properties: {
                 organizationId: uuid,
@@ -819,7 +809,7 @@ describe("devboxes invoke in a terminal", () => {
               },
               required: ["organizationId", "projectId", "title", "instruction"],
             }),
-            "/api/commands/model-accounts/add": operation("model-accounts.add", {
+            operation("model-accounts.add", {
               type: "object",
               properties: {
                 organizationId: uuid,
@@ -856,8 +846,8 @@ describe("devboxes invoke in a terminal", () => {
               },
               required: ["organizationId", "label", "limit", "auth", "scopes", "tier"],
             }),
-          },
-        });
+          ),
+        );
       const body = await request.json();
       requests.push({ path: pathname, body });
       if (pathname === "/api/commands/organizations/list") return Response.json({ organizations });
@@ -1040,16 +1030,12 @@ describe("devboxes connect", () => {
   const completions: unknown[] = [];
   const accountWrites: { operation: string; body: unknown }[] = [];
   const operation = (operationId: string) => ({
-    post: {
-      operationId,
-      summary: "Run the command",
-      "x-devboxes": {
-        effect: "write",
-        elevated: false,
-        roles: ["owner", "admin"],
-        authority: "Organization owner or admin",
-      },
-      responses: {},
+    operationId,
+    "x-devboxes": {
+      effect: "write",
+      elevated: false,
+      roles: ["owner", "admin"],
+      authority: "Organization owner or admin",
     },
   });
   const api = Bun.serve({
@@ -1058,24 +1044,39 @@ describe("devboxes connect", () => {
     fetch: async (request) => {
       const { pathname } = new URL(request.url);
       if (pathname === "/api/openapi/json")
-        return Response.json({
-          openapi: "3.0.3",
-          paths: Object.fromEntries(
-            [
+        return Response.json(
+          catalog(
+            ...[
               "model-accounts.providers",
               "model-accounts.connect-start",
               "model-accounts.connect-complete",
               "model-accounts.add",
               "model-accounts.update",
               "organizations.list",
-            ].map((operationId) => [
-              `/api/commands/${operationId.replace(".", "/")}`,
-              operation(operationId),
-            ]),
+            ].map(operation),
           ),
-        });
+        );
       if (pathname === "/api/commands/organizations/list")
-        return Response.json({ organizations: [{ id: organizationId, name: "Acme" }] });
+        return request.headers.get("authorization") === "Bearer connect-session"
+          ? Response.json({
+              organizations: [
+                { id: organizationId, name: "Acme", role: "owner" },
+                {
+                  id: "0198a0b0-0000-7000-8000-000000000002",
+                  name: "Client workspace",
+                  role: "member",
+                },
+              ],
+            })
+          : Response.json(
+              {
+                error: {
+                  code: "AUTHENTICATION_REQUIRED",
+                  message: "A current account session is required.",
+                },
+              },
+              { status: 401 },
+            );
       if (pathname === "/api/commands/model-accounts/providers") {
         const unavailable = manages ? null : managersOnly;
         return Response.json([
@@ -1103,7 +1104,7 @@ describe("devboxes connect", () => {
             body.providerId === "handler"
               ? "file:///Applications/Calculator.app"
               : `https://sign-in.example/${body.providerId}?state=state`,
-          signsInAs: body.providerId === "openai" ? "Codex CLI" : null,
+          signsInAs: body.providerId === "openai" ? "Codex CLI" : "Claude Code",
           intervalSeconds: 0,
           expiresAt: null,
         });
@@ -1221,7 +1222,7 @@ describe("devboxes connect", () => {
     expect(completions).toHaveLength(5);
   });
 
-  it("says which app the sign-in page names when connect-start answers one, and names none when it answers null", async () => {
+  it("says which app connect-start answers that the sign-in page names", async () => {
     reset();
     const openai = await runCli(connectTo("openai"), connection);
     const claude = await runCli(
@@ -1233,11 +1234,8 @@ describe("devboxes connect", () => {
 
     expect({
       openaiNamesCodexCli: openai.stderr.includes("The page names Codex CLI"),
-      claudeNamesAnApp: claude.stderr.includes("The page names"),
-    }).toEqual({
-      openaiNamesCodexCli: true,
-      claudeNamesAnApp: false,
-    });
+      claudeNamesClaudeCode: claude.stderr.includes("The page names Claude Code"),
+    }).toEqual({ openaiNamesCodexCli: true, claudeNamesClaudeCode: true });
   });
 
   it("connects an API key from stdin through model-accounts.add, also to a provider with a sign-in, replaces one with --account, and never prints it", async () => {
@@ -1360,9 +1358,15 @@ describe("devboxes connect", () => {
     expect(await cli.opened()).toBe(false);
   });
 
-  it("asks for the Organization and the model account's name when they are missing", async () => {
+  it("asks for the Organization among those where the person may connect a model account, and for the model account's name, when they are missing", async () => {
     reset();
-    const cli = await inTerminal(["connect", "anthropic"], connection);
+    const config = join(fixtureDirectory, "connect-session.json");
+    await writeFile(
+      config,
+      JSON.stringify({ apiBaseUrl: `${api.url.origin}/api`, sessionToken: "connect-session" }),
+    );
+    await chmod(config, 0o600);
+    const cli = await inTerminal(["--config", config, "connect", "anthropic"], {});
 
     await cli.answer("Acme", "\r");
     await cli.answer("Name of the model account", " key\r");
@@ -1371,6 +1375,7 @@ describe("devboxes connect", () => {
     cli.kill();
 
     expect(exitCode).toBe(0);
+    expect(cli.screen()).not.toContain("Client workspace");
     expect(accountWrites).toEqual([
       {
         operation: "/api/commands/model-accounts/add",
@@ -1382,6 +1387,18 @@ describe("devboxes connect", () => {
         },
       },
     ]);
+  });
+
+  it("has a delegation token name the Organization with --organization, since only an account session lists them", async () => {
+    reset();
+    const cli = await inTerminal(["connect", "anthropic"], connection);
+    const exitCode = await cli.exited();
+    cli.kill();
+
+    expect(exitCode).toBe(1);
+    expect(cli.screen()).toContain(
+      "ORGANIZATION_REQUIRED: devboxes can't list your Organizations with a delegation token. Name the Organization with --organization <id>.",
+    );
   });
 
   it("won't connect a greyed-out option that Enter chose", async () => {
@@ -1416,36 +1433,24 @@ describe("devboxes runner add", () => {
     fetch: async (request) => {
       const { pathname } = new URL(request.url);
       if (pathname === "/api/openapi/json")
-        return Response.json({
-          openapi: "3.0.3",
-          paths: Object.fromEntries(
-            [
-              {
-                operationId: "organizations.list",
-                effect: "read",
-                roles: [],
-                authority: "Current account session",
-              },
-              {
-                operationId: "runners.add",
+        return Response.json(
+          catalog(
+            {
+              operationId: "organizations.list",
+              "x-devboxes": { effect: "read", roles: [], authority: "Current account session" },
+            },
+            {
+              operationId: "runners.add",
+              "x-devboxes": {
                 effect: "write",
                 elevated: false,
                 authority: "Organization owner or admin",
                 roles: registerRoles,
+                delegable: false,
               },
-            ].map(({ operationId, ...contract }) => [
-              `/api/commands/${operationId.replace(".", "/")}`,
-              {
-                post: {
-                  operationId,
-                  summary: "Run the command",
-                  "x-devboxes": contract,
-                  responses: {},
-                },
-              },
-            ]),
+            },
           ),
-        });
+        );
       if (pathname === "/api/commands/organizations/list") return Response.json({ organizations });
       if (pathname === "/api/internal/execution/runners/identify")
         return refusedKeys.has(request.headers.get("authorization")?.replace("Bearer ", "") ?? "")
@@ -1651,6 +1656,8 @@ describe("devboxes runner listen", () => {
   const containers = new Map<string, { Id: string; Image: string; State: object }>();
   /** Every call the Runner made to change a container on the fake engine. */
   const containerChanges: string[] = [];
+  /** How many image pulls the Runner asked the fake engine for. */
+  let imagePulls = 0;
   const docker = Bun.serve({
     unix: join(fixtureDirectory, "docker.sock"),
     fetch: (request) => {
@@ -1677,6 +1684,7 @@ describe("devboxes runner listen", () => {
         return Response.json({ IPAM: { Config: [{ Gateway: engine.gateway }] } });
       if (/\/containers\/[^/]+\/json$/.test(pathname))
         return Response.json({ message: "No such container" }, { status: 404 });
+      if (pathname.endsWith("/images/create")) imagePulls += 1;
       return Response.json({ message: `Unexpected ${pathname}` }, { status: 500 });
     },
   });
@@ -1829,66 +1837,86 @@ describe("devboxes runner listen", () => {
     );
   }, 60_000);
 
-  it("reports a start that failed before its container existed again after a server error, and drops the report the API refuses", async () => {
-    const taskId = crypto.randomUUID();
-    const reports: unknown[] = [];
-    let claims = 0;
-    using api = Bun.serve({
-      hostname: "127.0.0.1",
-      port: 0,
-      fetch: async (request) => {
-        const path = new URL(request.url).pathname.split("/").at(-1);
-        if (path === "assignments") return Response.json({ tasks: [] });
-        if (path === "claim") {
-          claims += 1;
-          const executor = absentExecutor(request);
-          if (claims > 1) return Response.json({ task: null, executor });
-          return Response.json({
-            executor,
-            task: {
-              id: taskId,
-              executorId: null,
-              containerId: null,
-              status: "queued",
-              image: `registry.devboxes.test/workspace@sha256:${"a".repeat(64)}`,
-              platform: "linux/amd64",
-              machineSize: "medium",
-              toolCache: { organizationId: "cli-test", paths: [] },
-              daemon: executor,
-              claudeCode: null,
-              traceparent: `00-${"1".repeat(32)}-${"2".repeat(16)}-01`,
-            },
-          });
-        }
-        if (path === "reconcile") {
-          reports.push(await request.json());
-          return reports.length === 1
-            ? Response.json(
-                { error: { code: "SERVICE_UNAVAILABLE", message: "The API is restarting." } },
-                { status: 503 },
-              )
-            : Response.json(
-                { error: { code: "TASK_NOT_FOUND", message: "The Task does not exist." } },
-                { status: 404 },
-              );
-        }
-        return new Response(null, { status: 404 });
-      },
-    });
-    await using runner = await spawnListener(api.url.origin);
+  it.each([
+    {
+      refusal: { status: 404, code: "TASK_NOT_FOUND", message: "The Task does not exist." },
+      outcome: { exitCode: null, logged: 1 },
+    },
+    {
+      refusal: { status: 401, code: "UNAUTHORIZED", message: "The Runner key was revoked." },
+      outcome: { exitCode: 1, logged: 0 },
+    },
+  ])(
+    "reports a start that failed before its container existed again after a server error, and logs a refusal of the report with HTTP $refusal.status only if the refusal leaves the listener running",
+    async ({ refusal, outcome }) => {
+      const taskId = crypto.randomUUID();
+      const reports: unknown[] = [];
+      let claims = 0;
+      using api = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: async (request) => {
+          const path = new URL(request.url).pathname.split("/").at(-1);
+          if (path === "assignments") return Response.json({ tasks: [] });
+          if (path === "claim") {
+            claims += 1;
+            const executor = absentExecutor(request);
+            if (claims > 1) return Response.json({ task: null, executor });
+            return Response.json({
+              executor,
+              task: {
+                id: taskId,
+                executorId: null,
+                containerId: null,
+                status: "queued",
+                image: `registry.devboxes.test/workspace@sha256:${"a".repeat(64)}`,
+                platform: "linux/amd64",
+                machineSize: "medium",
+                toolCache: { organizationId: "cli-test", paths: [] },
+                daemon: executor,
+                claudeCode: null,
+                traceparent: `00-${"1".repeat(32)}-${"2".repeat(16)}-01`,
+              },
+            });
+          }
+          if (path === "reconcile") {
+            reports.push(await request.json());
+            return reports.length === 1
+              ? Response.json(
+                  { error: { code: "SERVICE_UNAVAILABLE", message: "The API is restarting." } },
+                  { status: 503 },
+                )
+              : Response.json(
+                  { error: { code: refusal.code, message: refusal.message } },
+                  { status: refusal.status },
+                );
+          }
+          return new Response(null, { status: 404 });
+        },
+      });
+      await using runner = await spawnListener(api.url.origin);
 
-    await until(() => claims >= 2 || runner.listener.exitCode !== null);
+      await until(
+        () =>
+          runner.output.stderr.includes(`The report about Task ${taskId} was refused`) ||
+          claims >= 2 ||
+          runner.listener.exitCode !== null,
+      );
 
-    const report = {
-      taskId,
-      observation: "start-failed",
-      reason: "The private executor artifact answered 404.",
-    };
-    expect(reports).toEqual([report, report]);
-    expect(
-      runner.output.stderr.split(`The start failure of Task ${taskId} was refused`),
-    ).toHaveLength(2);
-  }, 60_000);
+      const report = {
+        taskId,
+        observation: "start-failed",
+        reason: "The private executor artifact answered 404.",
+      };
+      expect({
+        reports,
+        exitCode: runner.listener.exitCode,
+        logged:
+          runner.output.stderr.split(`The report about Task ${taskId} was refused`).length - 1,
+      }).toEqual({ reports: [report, report], ...outcome });
+    },
+    60_000,
+  );
 
   it("reports each Task's executor on its own, so a report the API refuses holds up no other Task", async () => {
     const [refused, accepted] = [crypto.randomUUID(), crypto.randomUUID()];
@@ -2054,88 +2082,83 @@ describe("devboxes runner listen", () => {
     });
   }, 30_000);
 
-  it("reports a claimed Task whose machine size, platform or Run status it doesn't know, or whose claim it can't read, as a start failure with the install link", async () => {
-    const [size, platform, status, unreadable] = [
-      crypto.randomUUID(),
-      crypto.randomUUID(),
-      crypto.randomUUID(),
-      crypto.randomUUID(),
-    ];
-    const claimable = [
-      { id: size, machineSize: "gpu", platform: "linux/amd64", status: "queued" },
-      { id: platform, machineSize: "medium", platform: "linux/riscv64", status: "queued" },
-      { id: status, machineSize: "medium", platform: "linux/amd64", status: "archived" },
-      { id: unreadable, machineSize: 5, platform: "linux/amd64", status: "queued" },
-    ];
-    const failures: { taskId: string; reason: string }[] = [];
-    let claims = 0;
-    using api = Bun.serve({
-      hostname: "127.0.0.1",
-      port: 0,
-      fetch: async (request) => {
-        const path = new URL(request.url).pathname.split("/").at(-1);
-        const executor = absentExecutor(request);
-        if (path === "assignments") return Response.json({ tasks: [] });
-        if (path === "reconcile") {
-          const report = (await request.json()) as {
-            taskId: string;
-            observation: string;
-            reason: string;
-          };
-          if (report.observation === "start-failed") failures.push(report);
-          return Response.json({ status: "queued" });
-        }
-        if (path !== "claim") return new Response(null, { status: 404 });
-        claims += 1;
-        const task = claimable.find(({ id }) => !failures.some(({ taskId }) => taskId === id));
-        return Response.json({
-          executor,
-          task: task && {
-            ...assigned(task.id, task.status),
-            image: `registry.devboxes.test/workspace@sha256:${"a".repeat(64)}`,
-            platform: task.platform,
-            machineSize: task.machineSize,
-            toolCache: { organizationId: "cli-test", paths: [] },
-            daemon: executor,
-            claudeCode: null,
-            traceparent: `00-${"1".repeat(32)}-${"2".repeat(16)}-01`,
-          },
-        });
-      },
-    });
-    await using runner = await spawnListener(api.url.origin);
-    await until(() => failures.length >= 4 || claims >= 6 || runner.listener.exitCode !== null);
+  const installCurrentCli = "Install the current CLI from https://devboxes.ai/install.";
+  it.each([
+    {
+      part: "machine size it doesn't know",
+      task: { machineSize: "gpu", platform: "linux/amd64", status: "queued" },
+      reason: `This devboxes CLI can't start the Task, because it doesn't know the machine size gpu. ${installCurrentCli}`,
+    },
+    {
+      part: "platform it doesn't know",
+      task: { machineSize: "medium", platform: "linux/riscv64", status: "queued" },
+      reason: `This devboxes CLI can't start the Task, because it doesn't know the platform linux/riscv64. ${installCurrentCli}`,
+    },
+    {
+      part: "Run status it doesn't know",
+      task: { machineSize: "medium", platform: "linux/amd64", status: "archived" },
+      reason: `This devboxes CLI can't start the Task, because it doesn't know the Run status archived. ${installCurrentCli}`,
+    },
+    {
+      part: "claim it can't read",
+      task: { machineSize: 5, platform: "linux/amd64", status: "queued" },
+      reason: expect.stringMatching(
+        /^This devboxes CLI can't read the claim response \(\/task\/machineSize .+\)\. Install the current CLI from https:\/\/devboxes\.ai\/install\.$/,
+      ),
+    },
+  ])(
+    "reports a claimed Task whose $part as a start failure with the install link",
+    async ({ task, reason }) => {
+      const taskId = crypto.randomUUID();
+      const failures: { taskId: string; reason: string }[] = [];
+      let claims = 0;
+      using api = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: async (request) => {
+          const path = new URL(request.url).pathname.split("/").at(-1);
+          const executor = absentExecutor(request);
+          if (path === "assignments") return Response.json({ tasks: [] });
+          if (path === "reconcile") {
+            const report = (await request.json()) as {
+              taskId: string;
+              observation: string;
+              reason: string;
+            };
+            if (report.observation === "start-failed") failures.push(report);
+            return Response.json({ status: "queued" });
+          }
+          if (path !== "claim") return new Response(null, { status: 404 });
+          claims += 1;
+          return Response.json({
+            executor,
+            task:
+              failures.length === 0
+                ? {
+                    ...assigned(taskId, task.status),
+                    image: `registry.devboxes.test/workspace@sha256:${"a".repeat(64)}`,
+                    platform: task.platform,
+                    machineSize: task.machineSize,
+                    toolCache: { organizationId: "cli-test", paths: [] },
+                    daemon: executor,
+                    claudeCode: null,
+                    traceparent: `00-${"1".repeat(32)}-${"2".repeat(16)}-01`,
+                  }
+                : null,
+          });
+        },
+      });
+      await using runner = await spawnListener(api.url.origin);
+      await until(() => failures.length > 0 || claims >= 2 || runner.listener.exitCode !== null);
 
-    const install = "Install the current CLI from https://devboxes.ai/install.";
-    expect({
-      failures: failures.map(({ taskId, reason }) => [taskId, reason]),
-      changed: containerChanges.filter((change) => claimable.some(({ id }) => change.includes(id))),
-      exitCode: runner.listener.exitCode,
-    }).toEqual({
-      failures: [
-        [
-          size,
-          `This devboxes CLI can't start the Task, because it doesn't know the machine size gpu. ${install}`,
-        ],
-        [
-          platform,
-          `This devboxes CLI can't start the Task, because it doesn't know the platform linux/riscv64. ${install}`,
-        ],
-        [
-          status,
-          `This devboxes CLI can't start the Task, because it doesn't know the Run status archived. ${install}`,
-        ],
-        [
-          unreadable,
-          expect.stringMatching(
-            /^This devboxes CLI can't read the claim response \(\/task\/machineSize .+\)\. Install the current CLI from https:\/\/devboxes\.ai\/install\.$/,
-          ),
-        ],
-      ],
-      changed: [],
-      exitCode: null,
-    });
-  }, 60_000);
+      expect({
+        failures: failures.map((failure) => [failure.taskId, failure.reason]),
+        changed: containerChanges.filter((change) => change.includes(taskId)),
+        exitCode: runner.listener.exitCode,
+      }).toEqual({ failures: [[taskId, reason]], changed: [], exitCode: null });
+    },
+    60_000,
+  );
 
   it("downloads the current executor while idle, so the next Task's launch needs no download", async () => {
     const taskId = crypto.randomUUID();
@@ -2185,13 +2208,16 @@ describe("devboxes runner listen", () => {
         return new Response(null, { status: 404 });
       },
     });
+    const pulls = imagePulls;
     await using runner = await spawnListener(api.url.origin);
 
-    await until(() => reports.length > 0 || runner.listener.exitCode !== null);
+    await until(
+      () => imagePulls > pulls || reports.length > 0 || runner.listener.exitCode !== null,
+    );
 
-    expect({ executorRequests, reason: reports[0]?.reason }).toEqual({
+    expect({ executorRequests, pulled: imagePulls > pulls }).toEqual({
       executorRequests: 1,
-      reason: expect.stringContaining("/images/create"),
+      pulled: true,
     });
   }, 60_000);
 
@@ -2289,13 +2315,16 @@ describe("devboxes runner listen", () => {
         return new Response(null, { status: 404 });
       },
     });
+    const pulls = imagePulls;
     await using runner = await spawnListener(api.url.origin);
 
-    await until(() => reports.length > 0 || runner.listener.exitCode !== null);
+    await until(
+      () => imagePulls > pulls || reports.length > 0 || runner.listener.exitCode !== null,
+    );
 
-    expect({ executorRequests, reason: reports[0]?.reason }).toEqual({
+    expect({ executorRequests, pulled: imagePulls > pulls }).toEqual({
       executorRequests: 2,
-      reason: expect.stringContaining("/images/create"),
+      pulled: true,
     });
   }, 60_000);
 
@@ -2431,69 +2460,48 @@ describe("devboxes runner listen", () => {
 describe("devboxes mcp", () => {
   it("invokes an operation the API starts advertising after the server's first discovery", async () => {
     const operation = (operationId: string) => ({
-      post: {
-        operationId,
-        summary: "List the Organization's Sessions",
-        "x-devboxes": {
-          effect: "read",
-          roles: ["owner", "admin", "member", "reviewer", "viewer"],
-          authority: "Organization member",
-        },
-        responses: {},
-      },
+      operationId,
+      summary: "List the Organization's Sessions",
+      "x-devboxes": { effect: "read", roles: everyRole, authority: "Organization member" },
     });
-    const paths = new Map([["/api/commands/sessions/list", operation("sessions.list")]]);
+    const operations = [operation("sessions.list")];
     const invoked: string[] = [];
     using api = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
       fetch: (request) => {
         const { pathname } = new URL(request.url);
-        if (pathname === "/api/openapi/json")
-          return Response.json({ openapi: "3.0.3", paths: Object.fromEntries(paths) });
+        if (pathname === "/api/openapi/json") return Response.json(catalog(...operations));
         invoked.push(pathname);
         return Response.json({ sessionId: "session-1" });
       },
     });
-    const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
-    await client.connect(
-      new StdioClientTransport({
-        command: process.execPath,
-        args: ["src/cli.ts", "mcp"],
-        cwd: join(import.meta.dir, ".."),
-        env: {
-          PATH: process.env.PATH ?? "",
-          DEVBOXES_API_URL: api.url.origin,
-          DEVBOXES_TOKEN: "scoped",
-        },
-      }),
-    );
-    try {
-      const listed = await client.callTool({ name: "devboxes_describe", arguments: {} });
-      paths.set("/api/commands/sessions/inspect", operation("sessions.inspect"));
-      const inspected = await client.callTool({
-        name: "devboxes_invoke",
-        arguments: { command: "sessions.inspect", input: {} },
-      });
+    await using client = await mcpClient({
+      DEVBOXES_API_URL: api.url.origin,
+      DEVBOXES_TOKEN: "scoped",
+    });
+    const listed = await client.callTool({ name: "devboxes_describe", arguments: {} });
+    operations.push(operation("sessions.inspect"));
+    const inspected = await client.callTool({
+      name: "devboxes_invoke",
+      arguments: { command: "sessions.inspect", input: {} },
+    });
 
-      expect(listed.structuredContent).toEqual({
-        commands: [
-          {
-            operationId: "sessions.list",
-            effect: "read",
-            summary: "List the Organization's Sessions",
-          },
-        ],
-      });
-      expect(inspected.isError).toBeUndefined();
-      expect(inspected.structuredContent).toMatchObject({
-        status: 200,
-        data: { sessionId: "session-1" },
-      });
-      expect(invoked).toEqual(["/api/commands/sessions/inspect"]);
-    } finally {
-      await client.close();
-    }
+    expect(listed.structuredContent).toEqual({
+      commands: [
+        {
+          operationId: "sessions.list",
+          effect: "read",
+          summary: "List the Organization's Sessions",
+        },
+      ],
+    });
+    expect(inspected.isError).toBeUndefined();
+    expect(inspected.structuredContent).toMatchObject({
+      status: 200,
+      data: { sessionId: "session-1" },
+    });
+    expect(invoked).toEqual(["/api/commands/sessions/inspect"]);
   });
 
   it("describes a command with the manual the API serves, short by default and full with detail full", async () => {
@@ -2512,50 +2520,37 @@ describe("devboxes mcp", () => {
         return Response.json(manual(url.searchParams.get("detail")));
       },
     });
-    const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
-    await client.connect(
-      new StdioClientTransport({
-        command: process.execPath,
-        args: ["src/cli.ts", "mcp"],
-        cwd: join(import.meta.dir, ".."),
-        env: {
-          PATH: process.env.PATH ?? "",
-          DEVBOXES_API_URL: api.url.origin,
-          DEVBOXES_TOKEN: "scoped",
-        },
-      }),
-    );
-    try {
-      const short = await client.callTool({
-        name: "devboxes_describe",
-        arguments: { command: "sessions.dispatch" },
-      });
-      const full = await client.callTool({
-        name: "devboxes_describe",
-        arguments: { command: "sessions.dispatch", detail: "full" },
-      });
-      const stray = await client.callTool({
-        name: "devboxes_describe",
-        arguments: { detail: "full" },
-      });
+    await using client = await mcpClient({
+      DEVBOXES_API_URL: api.url.origin,
+      DEVBOXES_TOKEN: "scoped",
+    });
+    const short = await client.callTool({
+      name: "devboxes_describe",
+      arguments: { command: "sessions.dispatch" },
+    });
+    const full = await client.callTool({
+      name: "devboxes_describe",
+      arguments: { command: "sessions.dispatch", detail: "full" },
+    });
+    const stray = await client.callTool({
+      name: "devboxes_describe",
+      arguments: { detail: "full" },
+    });
 
-      expect({
-        short: short.structuredContent,
-        full: full.structuredContent,
-        stray: { isError: stray.isError, code: Object(stray.structuredContent).error?.code },
-        requested,
-      }).toEqual({
-        short: manual(null),
-        full: manual("full"),
-        stray: { isError: true, code: "INVALID_INPUT" },
-        requested: [
-          "/api/openapi/json?command=sessions.dispatch",
-          "/api/openapi/json?command=sessions.dispatch&detail=full",
-        ],
-      });
-    } finally {
-      await client.close();
-    }
+    expect({
+      short: short.structuredContent,
+      full: full.structuredContent,
+      stray: { isError: stray.isError, code: Object(stray.structuredContent).error?.code },
+      requested,
+    }).toEqual({
+      short: manual(null),
+      full: manual("full"),
+      stray: { isError: true, code: "INVALID_INPUT" },
+      requested: [
+        "/api/openapi/json?command=sessions.dispatch",
+        "/api/openapi/json?command=sessions.dispatch&detail=full",
+      ],
+    });
   });
 
   it("invokes a command whose failure refers to a components section it can't read", async () => {
@@ -2567,49 +2562,31 @@ describe("devboxes mcp", () => {
         const { pathname } = new URL(request.url);
         if (pathname === "/api/openapi/json")
           return Response.json({
-            openapi: "3.0.3",
-            paths: {
-              "/api/commands/projects/list": {
-                post: {
-                  operationId: "projects.list",
-                  summary: "List the Organization's Projects",
-                  "x-devboxes": { effect: "read", roles: [], authority: "Member" },
-                  responses: { 400: { $ref: "#/components/responses/CommandError" } },
-                },
-              },
-            },
+            ...catalog({
+              operationId: "projects.list",
+              summary: "List the Organization's Projects",
+              "x-devboxes": { effect: "read", roles: [], authority: "Member" },
+              responses: { 400: { $ref: "#/components/responses/CommandError" } },
+            }),
             components: { responses: "Stated elsewhere." },
           });
         invoked.push(pathname);
         return Response.json({ projects: [] });
       },
     });
-    const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
-    await client.connect(
-      new StdioClientTransport({
-        command: process.execPath,
-        args: ["src/cli.ts", "mcp"],
-        cwd: join(import.meta.dir, ".."),
-        env: {
-          PATH: process.env.PATH ?? "",
-          DEVBOXES_API_URL: api.url.origin,
-          DEVBOXES_TOKEN: "scoped",
-        },
-      }),
-    );
-    try {
-      const answered = await client.callTool({
-        name: "devboxes_invoke",
-        arguments: { command: "projects.list", input: {} },
-      });
+    await using client = await mcpClient({
+      DEVBOXES_API_URL: api.url.origin,
+      DEVBOXES_TOKEN: "scoped",
+    });
+    const answered = await client.callTool({
+      name: "devboxes_invoke",
+      arguments: { command: "projects.list", input: {} },
+    });
 
-      expect({ error: answered.isError, invoked }).toEqual({
-        error: undefined,
-        invoked: ["/api/commands/projects/list"],
-      });
-    } finally {
-      await client.close();
-    }
+    expect({ error: answered.isError, invoked }).toEqual({
+      error: undefined,
+      invoked: ["/api/commands/projects/list"],
+    });
   });
 
   it("lists a command whose contract it can't read as unreadable, with the install link", async () => {
@@ -2617,120 +2594,88 @@ describe("devboxes mcp", () => {
       hostname: "127.0.0.1",
       port: 0,
       fetch: () =>
-        Response.json({
-          openapi: "3.0.3",
-          paths: {
-            "/api/commands/sessions/list": {
-              post: {
-                operationId: "sessions.list",
-                summary: "List the Organization's Sessions",
-                "x-devboxes": { effect: "read", roles: [], authority: "Organization member" },
-                responses: {},
-              },
+        Response.json(
+          catalog(
+            {
+              operationId: "sessions.list",
+              summary: "List the Organization's Sessions",
+              "x-devboxes": { effect: "read", roles: [], authority: "Organization member" },
             },
-            "/api/commands/sessions/erase": {
-              post: { operationId: "sessions.erase", "x-devboxes": {}, responses: {} },
-            },
-          },
-        }),
+            { operationId: "sessions.erase", "x-devboxes": {} },
+          ),
+        ),
     });
-    const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
-    await client.connect(
-      new StdioClientTransport({
-        command: process.execPath,
-        args: ["src/cli.ts", "mcp"],
-        cwd: join(import.meta.dir, ".."),
-        env: {
-          PATH: process.env.PATH ?? "",
-          DEVBOXES_API_URL: api.url.origin,
-          DEVBOXES_TOKEN: "scoped",
-        },
-      }),
-    );
-    try {
-      const listed = await client.callTool({ name: "devboxes_describe", arguments: {} });
+    await using client = await mcpClient({
+      DEVBOXES_API_URL: api.url.origin,
+      DEVBOXES_TOKEN: "scoped",
+    });
+    const listed = await client.callTool({ name: "devboxes_describe", arguments: {} });
 
-      expect(listed.structuredContent).toEqual({
-        commands: [
-          {
-            operationId: "sessions.list",
-            effect: "read",
-            summary: "List the Organization's Sessions",
-          },
-        ],
-        unreadable: [
-          {
-            operationId: "sessions.erase",
-            notice: expect.stringMatching(
-              /^This devboxes CLI can't read this command's contract \(.+\)\. Install the current CLI from https:\/\/devboxes\.ai\/install\.$/,
-            ),
-          },
-        ],
-      });
-    } finally {
-      await client.close();
-    }
+    expect(listed.structuredContent).toEqual({
+      commands: [
+        {
+          operationId: "sessions.list",
+          effect: "read",
+          summary: "List the Organization's Sessions",
+        },
+      ],
+      unreadable: [
+        {
+          operationId: "sessions.erase",
+          notice: expect.stringMatching(
+            /^This devboxes CLI can't read this command's contract \(.+\)\. Install the current CLI from https:\/\/devboxes\.ai\/install\.$/,
+          ),
+        },
+      ],
+    });
   });
 
   it("lists its tools, refuses invalid arguments with every problem, and rejects an unknown tool", async () => {
-    const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
-    await client.connect(
-      new StdioClientTransport({
-        command: process.execPath,
-        args: ["src/cli.ts", "mcp"],
-        cwd: join(import.meta.dir, ".."),
-        env: {
-          PATH: process.env.PATH ?? "",
-          DEVBOXES_API_URL: "http://127.0.0.1:9",
-          DEVBOXES_TOKEN: "scoped",
-        },
-      }),
-    );
-    try {
-      expect((await client.listTools()).tools).toEqual([
-        {
-          name: "devboxes_describe",
-          description: expect.any(String),
-          inputSchema: {
-            type: "object",
-            properties: {
-              command: { type: "string", minLength: 1 },
-              detail: { type: "string", const: "full" },
-            },
-          },
-          annotations: { readOnlyHint: true, openWorldHint: true },
-        },
-        {
-          name: "devboxes_invoke",
-          description: expect.any(String),
-          inputSchema: {
-            type: "object",
-            required: ["command", "input"],
-            properties: { command: { type: "string", minLength: 1 }, input: {} },
-          },
-          annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
-        },
-      ]);
-      expect(
-        await client.callTool({ name: "devboxes_invoke", arguments: { command: "" } }),
-      ).toMatchObject({
-        isError: true,
-        structuredContent: {
-          error: {
-            code: "INVALID_INPUT",
-            message:
-              "The devboxes_invoke input is invalid: / must have required properties input; /command must not have fewer than 1 characters.",
+    await using client = await mcpClient({
+      DEVBOXES_API_URL: "http://127.0.0.1:9",
+      DEVBOXES_TOKEN: "scoped",
+    });
+    expect((await client.listTools()).tools).toEqual([
+      {
+        name: "devboxes_describe",
+        description: expect.any(String),
+        inputSchema: {
+          type: "object",
+          properties: {
+            command: { type: "string", minLength: 1 },
+            detail: { type: "string", const: "full" },
           },
         },
-      });
-      await expect(
-        client.callTool({ name: "devboxes_unknown", arguments: {} }),
-      ).rejects.toMatchObject({
-        code: -32602,
-      });
-    } finally {
-      await client.close();
-    }
+        annotations: { readOnlyHint: true, openWorldHint: true },
+      },
+      {
+        name: "devboxes_invoke",
+        description: expect.any(String),
+        inputSchema: {
+          type: "object",
+          required: ["command", "input"],
+          properties: { command: { type: "string", minLength: 1 }, input: {} },
+        },
+        annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+      },
+    ]);
+    expect(
+      await client.callTool({ name: "devboxes_invoke", arguments: { command: "" } }),
+    ).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: "INVALID_INPUT",
+          message:
+            "The devboxes_invoke input is invalid: / must have required properties input; /command must not have fewer than 1 characters.",
+        },
+      },
+    });
+    await expect(
+      client.callTool({ name: "devboxes_unknown", arguments: {} }),
+    ).rejects.toMatchObject({
+      code: -32602,
+    });
   });
 });
 
@@ -3101,38 +3046,32 @@ describe("devboxes after a refusal for an old sign-in", () => {
     fetch: async (request) => {
       const { pathname } = new URL(request.url);
       if (pathname === "/api/openapi/json")
-        return Response.json({
-          openapi: "3.0.3",
-          paths: {
-            "/api/commands/organizations/update": {
-              post: {
-                operationId: "organizations.update",
-                summary: "Change the Organization's settings",
-                "x-devboxes": {
-                  effect: "write",
-                  elevated: "access",
-                  roles: ["owner", "admin"],
-                  authority: "Organization owner or admin",
-                },
-                requestBody: {
-                  content: {
-                    "application/json": {
-                      schema: {
-                        type: "object",
-                        properties: {
-                          organizationId: { type: "string" },
-                          name: { type: "string" },
-                        },
-                        required: ["organizationId", "name"],
-                      },
+        return Response.json(
+          catalog({
+            operationId: "organizations.update",
+            summary: "Change the Organization's settings",
+            "x-devboxes": {
+              effect: "write",
+              elevated: "access",
+              roles: ["owner", "admin"],
+              authority: "Organization owner or admin",
+            },
+            requestBody: {
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      organizationId: { type: "string" },
+                      name: { type: "string" },
                     },
+                    required: ["organizationId", "name"],
                   },
                 },
-                responses: {},
               },
             },
-          },
-        });
+          }),
+        );
       const authorization = request.headers.get("authorization");
       requests.push(`${pathname} ${authorization}`);
       if (pathname === "/api/auth/email-otp/send-verification-otp")
@@ -3224,6 +3163,25 @@ describe("devboxes after a refusal for an old sign-in", () => {
     ]);
   });
 
+  it("ends a cancelled sign-in like any cancelled prompt, without sending the change again", async () => {
+    requests.length = 0;
+    const config = await staleAccount("stale-cancel.json");
+    const cli = await inTerminal(
+      ["--config", config, "invoke", "organizations.update", "--input", `@${rename}`],
+      {},
+    );
+
+    await cli.answer("Sign in with", "\x03");
+    const exitCode = await cli.exited();
+    cli.kill();
+
+    expect(exitCode).toBe(1);
+    expect(cli.screen()).toContain("Command cancelled.");
+    expect(requests.filter((sent) => sent.includes("organizations/update"))).toEqual([
+      "/api/commands/organizations/update Bearer stale-session",
+    ]);
+  });
+
   it("answers the refusal as it came without a terminal", async () => {
     requests.length = 0;
     const config = await staleAccount("stale-json.json");
@@ -3245,15 +3203,7 @@ describe("devboxes after a refusal for an old sign-in", () => {
   it("serves an MCP call with the session a later devboxes login saved", async () => {
     requests.length = 0;
     const config = await staleAccount("stale-mcp.json");
-    const client = new Client({ name: "devboxes-cli-test", version: "1.0.0" });
-    await client.connect(
-      new StdioClientTransport({
-        command: process.execPath,
-        args: ["src/cli.ts", "--config", config, "mcp"],
-        cwd: join(import.meta.dir, ".."),
-        env: { PATH: process.env.PATH ?? "" },
-      }),
-    );
+    await using client = await mcpClient({}, ["--config", config]);
     const update = () =>
       client.callTool({
         name: "devboxes_invoke",
@@ -3262,23 +3212,19 @@ describe("devboxes after a refusal for an old sign-in", () => {
           input: { organizationId: "organization", name: "Renamed" },
         },
       });
-    try {
-      const refused = await update();
-      await writeFile(
-        config,
-        JSON.stringify({ apiBaseUrl: `${api.url.origin}/api`, sessionToken: "fresh-session" }),
-      );
-      const renamed = await update();
+    const refused = await update();
+    await writeFile(
+      config,
+      JSON.stringify({ apiBaseUrl: `${api.url.origin}/api`, sessionToken: "fresh-session" }),
+    );
+    const renamed = await update();
 
-      expect(refused.structuredContent).toMatchObject({ error: { code: "SESSION_NOT_FRESH" } });
-      expect(renamed.isError).toBeUndefined();
-      expect(requests).toEqual([
-        "/api/commands/organizations/update Bearer stale-session",
-        "/api/commands/organizations/update Bearer fresh-session",
-      ]);
-    } finally {
-      await client.close();
-    }
+    expect(refused.structuredContent).toMatchObject({ error: { code: "SESSION_NOT_FRESH" } });
+    expect(renamed.isError).toBeUndefined();
+    expect(requests).toEqual([
+      "/api/commands/organizations/update Bearer stale-session",
+      "/api/commands/organizations/update Bearer fresh-session",
+    ]);
   });
 });
 

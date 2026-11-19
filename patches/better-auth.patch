@@ -1,3 +1,27 @@
+diff --git a/dist/api/index.d.mts b/dist/api/index.d.mts
+index 46b15f81adbc36dbfd64397d32b1e2264beba4bf..8392ba8e3e0ebbc7d524dfefda77defc9ef71f52 100644
+--- a/dist/api/index.d.mts
++++ b/dist/api/index.d.mts
+@@ -4047,5 +4047,6 @@ export declare const router: <Option extends BetterAuthOptions>(ctx: AuthContext
+     }>;
+   } extends (infer T_2) ? { [K in keyof T_2 as K extends keyof T_1 ? never : K]: T_2[K]; } : never) & T_1> : never : never : never;
+ };
++declare function onRequestRateLimit<Options extends BetterAuthOptions>(req: Request, ctx: AuthContext<Options>): Promise<Response | undefined>;
+ //#endregion
+-export { APIError, type AuthEndpoint, type AuthMiddleware, type DispatchContext, NO_STORE_HEADERS, accountInfo, addOAuthServerContext, callbackOAuth, changeEmail, changePassword, createAuthEndpoint, createAuthMiddleware, createEmailVerificationToken, deleteUser, deleteUserCallback, dispatchAuthEndpoint, error, formCsrfMiddleware, freshSessionMiddleware, getAccessToken, getAuthoritativeSessionFromCtx, getIP, getOAuthState, getSession, getSessionFromCtx, getShouldSkipSessionRefresh, isAPIError, isStateful, linkSocialAccount, listSessions, listUserAccounts, ok, optionsMiddleware, originCheck, originCheckMiddleware, refreshToken, requestOnlySessionMiddleware, requestPasswordReset, requestPasswordResetCallback, requireOrgRole, requireResourceOwnership, resetPassword, revokeOtherSessions, revokeSession, revokeSessions, sendVerificationEmail, sendVerificationEmailFn, sensitiveSessionMiddleware, sessionMiddleware, setPassword, setShouldSkipSessionRefresh, signInEmail, signInSocial, signOut, signUpEmail, unlinkAccount, updateSession, updateUser, verifyEmail, verifyPassword };
+\ No newline at end of file
++export { APIError, type AuthEndpoint, onRequestRateLimit, type AuthMiddleware, type DispatchContext, NO_STORE_HEADERS, accountInfo, addOAuthServerContext, callbackOAuth, changeEmail, changePassword, createAuthEndpoint, createAuthMiddleware, createEmailVerificationToken, deleteUser, deleteUserCallback, dispatchAuthEndpoint, error, formCsrfMiddleware, freshSessionMiddleware, getAccessToken, getAuthoritativeSessionFromCtx, getIP, getOAuthState, getSession, getSessionFromCtx, getShouldSkipSessionRefresh, isAPIError, isStateful, linkSocialAccount, listSessions, listUserAccounts, ok, optionsMiddleware, originCheck, originCheckMiddleware, refreshToken, requestOnlySessionMiddleware, requestPasswordReset, requestPasswordResetCallback, requireOrgRole, requireResourceOwnership, resetPassword, revokeOtherSessions, revokeSession, revokeSessions, sendVerificationEmail, sendVerificationEmailFn, sensitiveSessionMiddleware, sessionMiddleware, setPassword, setShouldSkipSessionRefresh, signInEmail, signInSocial, signOut, signUpEmail, unlinkAccount, updateSession, updateUser, verifyEmail, verifyPassword };
+\ No newline at end of file
+diff --git a/dist/api/index.mjs b/dist/api/index.mjs
+index ebdb5f3e8f392cda82a98947653a2d25ced652a1..4cae0ed3e8b7a6a21dda71ff449554653a2844e7 100644
+--- a/dist/api/index.mjs
++++ b/dist/api/index.mjs
+@@ -222,4 +222,4 @@ const router = (ctx, options) => {
+ 	});
+ };
+ //#endregion
+-export { APIError, NO_STORE_HEADERS, accountInfo, addOAuthServerContext, callbackOAuth, changeEmail, changePassword, checkEndpointConflicts, createAuthEndpoint, createAuthMiddleware, createEmailVerificationToken, deleteUser, deleteUserCallback, dispatchAuthEndpoint, error, formCsrfMiddleware, freshSessionMiddleware, getAccessToken, getAuthoritativeSessionFromCtx, getEndpoints, getIP, getOAuthState, getSession, getSessionFromCtx, getShouldSkipSessionRefresh, isAPIError, isStateful, linkSocialAccount, listSessions, listUserAccounts, ok, optionsMiddleware, originCheck, originCheckMiddleware, refreshToken, requestOnlySessionMiddleware, requestPasswordReset, requestPasswordResetCallback, requireOrgRole, requireResourceOwnership, resetPassword, revokeOtherSessions, revokeSession, revokeSessions, router, sendVerificationEmail, sendVerificationEmailFn, sensitiveSessionMiddleware, sessionMiddleware, setPassword, setShouldSkipSessionRefresh, signInEmail, signInSocial, signOut, signUpEmail, unlinkAccount, updateSession, updateUser, verifyEmail, verifyPassword };
++export { APIError, NO_STORE_HEADERS, onRequestRateLimit, accountInfo, addOAuthServerContext, callbackOAuth, changeEmail, changePassword, checkEndpointConflicts, createAuthEndpoint, createAuthMiddleware, createEmailVerificationToken, deleteUser, deleteUserCallback, dispatchAuthEndpoint, error, formCsrfMiddleware, freshSessionMiddleware, getAccessToken, getAuthoritativeSessionFromCtx, getEndpoints, getIP, getOAuthState, getSession, getSessionFromCtx, getShouldSkipSessionRefresh, isAPIError, isStateful, linkSocialAccount, listSessions, listUserAccounts, ok, optionsMiddleware, originCheck, originCheckMiddleware, refreshToken, requestOnlySessionMiddleware, requestPasswordReset, requestPasswordResetCallback, requireOrgRole, requireResourceOwnership, resetPassword, revokeOtherSessions, revokeSession, revokeSessions, router, sendVerificationEmail, sendVerificationEmailFn, sensitiveSessionMiddleware, sessionMiddleware, setPassword, setShouldSkipSessionRefresh, signInEmail, signInSocial, signOut, signUpEmail, unlinkAccount, updateSession, updateUser, verifyEmail, verifyPassword };
 diff --git a/dist/api/routes/session.mjs b/dist/api/routes/session.mjs
 index 073580d38e977702c3ea51d73a61ab1138807ea5..fd2f6b0b2446ac9d916b0f36f8cc58648abb0322 100644
 --- a/dist/api/routes/session.mjs
@@ -263,6 +287,20 @@ index e3e62918310517b0543a8bb6d710f07fc168ac27..f85ccaa1c7eb5d55f58775540ccd2f23
  		return valid(ctx);
  	});
  	return {
+diff --git a/dist/plugins/two-factor/verify-two-factor.mjs b/dist/plugins/two-factor/verify-two-factor.mjs
+index 1b06e8e25c738afd8c8e30a08f8da16510aa5f0a..e0a9677a92f59605baaa1451f5e583ce9a776dd5 100644
+--- a/dist/plugins/two-factor/verify-two-factor.mjs
++++ b/dist/plugins/two-factor/verify-two-factor.mjs
+@@ -130,7 +130,8 @@ function resolveAccountLockoutConfig(ctx) {
+ async function assertTwoFactorNotLocked(ctx, twoFactorTable, twoFactor) {
+ 	const { enabled } = resolveAccountLockoutConfig(ctx);
+ 	if (!enabled || !twoFactor.lockedUntil) return;
+-	if (new Date(twoFactor.lockedUntil).getTime() > Date.now()) throw APIError.from("TOO_MANY_REQUESTS", TWO_FACTOR_ERROR_CODES.ACCOUNT_TEMPORARILY_LOCKED);
++	const retryAfterSeconds = Math.ceil((new Date(twoFactor.lockedUntil).getTime() - Date.now()) / 1e3);
++	if (retryAfterSeconds > 0) throw new APIError("TOO_MANY_REQUESTS", { code: "ACCOUNT_TEMPORARILY_LOCKED", message: `Too many incorrect codes locked this account's second factor. Try again in ${retryAfterSeconds} seconds.`, retryAfterSeconds }, { "Retry-After": String(retryAfterSeconds) });
+ 	await ctx.context.adapter.incrementOne({
+ 		model: twoFactorTable,
+ 		where: [{
 diff --git a/dist/utils/password.mjs b/dist/utils/password.mjs
 index e90a62bbf6cf4f589107fe6fbf8ffdc74f2ca55d..3679f76c8cf394356d37a258bd96de30158566b2 100644
 --- a/dist/utils/password.mjs

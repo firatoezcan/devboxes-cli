@@ -1,5 +1,19 @@
 # devboxes
 
+## 0.18.0
+
+### Minor Changes
+
+- `devboxes runner listen` gives each Task its Run token on the Task container's standard input, which closes after the token, and no longer in the container's environment. Update the CLI on every machine that runs `devboxes runner listen`, then restart the listener. A Runner on 0.17.0 or earlier starts each Task without its token, and the Run fails with "This executor reads its Run token from the devboxes Runner, which sent none. Update the devboxes CLI that runs `devboxes runner listen`."
+
+### Patch Changes
+
+- A cancelled sign-in prompt ends with `CANCELLED: Command cancelled.`, like every other cancelled prompt. It said `Authentication cancelled.` before.
+- `devboxes connect` without `--organization` offers only the Organizations where you may connect a model account. With a delegation token, it fails with `ORGANIZATION_REQUIRED` and asks you to name the Organization with `--organization <id>`, where it failed with `AUTHENTICATION_REQUIRED` before.
+- 4e5b45e: When work is refused because its model account is paused until its limit resets (`MODEL_ACCOUNT_PAUSED`), the error now lists the paused account and the other accounts that run the same model, each with its ID, under the message. The API's message no longer names them; `--json` output gives them in `details.account` and `details.accounts`.
+- `devboxes runner listen` stops when devboxes refuses its report that a Task failed to start with HTTP 401 or 403, or because another listener holds the Runner (`RUNNER_LISTENING_ELSEWHERE`), as it already did for its other reports. Before, it logged the refusal and kept polling.
+- `devboxes runner listen` runs Tasks on a machine whose umask is 077. Before, every Task on such a Runner failed with `exec: "/usr/local/bin/devboxes-executor": permission denied`. A Runner that downloaded the executor under that umask fixes its permissions at its next Task, without downloading it again.
+
 ## 0.17.0
 
 ### Minor Changes

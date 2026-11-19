@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { link, mkdir, readdir, rm } from "node:fs/promises";
+import { chmod, link, mkdir, readdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import {
@@ -25,9 +25,8 @@ import { claudeCodeArchive, stageExecutorArtifact } from "./executor-artifact";
 
 type NativeTaskLaunch = {
   id: string;
-  /** The executor's API and its token: the Runner's relay and a token that only it accepts. */
+  /** The executor's API: the Runner's relay. */
   apiBaseUrl: string;
-  token: string;
   image: string;
   platform: "linux/amd64" | "linux/arm64";
   /** The CPUs and memory the Task's container may use. */
@@ -65,6 +64,9 @@ export const followDockerProgress = (
       else resolve();
     }),
   );
+
+/** The name of Task `taskId`'s executor container, which is also its executor ID. */
+export const executorName = (taskId: string) => `devboxes-task-${taskId}`;
 
 export class DockerOpencodeTaskRuntime {
   readonly docker: Docker;
@@ -203,9 +205,10 @@ export class DockerOpencodeTaskRuntime {
   /**
    * Makes `daemon`'s executor the one in this Runner's cache, `<state directory>/executors/<sha256>`,
    * and hard-links it at `destination` when one is given. It hashes the cached file against the
-   * digest and downloads it again when it doesn't match. Then it deletes everything else in the
-   * cache that it can: older digests, and the temporary folders of downloads that a stopped Runner
-   * left. An entry it can't delete yet, such as a file a container holds open on Windows, stays for
+   * digest and downloads it again when it doesn't match. A cached file that matches gets mode 0555
+   * again, which an earlier Runner's umask could have narrowed so that no Task could run it. Then
+   * it deletes everything else in the cache that it can: older digests, and the temporary folders
+   * of downloads that a stopped Runner left. An entry it can't delete yet, such as a file a container holds open on Windows, stays for
    * a later call and never fails this one. A Task's own hard link keeps an evicted executor until the
    * Task's directory goes.
    */
@@ -217,7 +220,8 @@ export class DockerOpencodeTaskRuntime {
       const present = await cached.exists();
       const hash = createHash("sha256");
       if (present) for await (const chunk of cached.stream()) hash.update(chunk);
-      if (!present || hash.digest("hex") !== daemon.sha256) {
+      if (present && hash.digest("hex") === daemon.sha256) await chmod(path, 0o555);
+      else {
         await mkdir(cache, { recursive: true, mode: 0o700 });
         await stageExecutorArtifact(daemon, path);
       }
@@ -271,8 +275,22 @@ export class DockerOpencodeTaskRuntime {
     }
   }
 
+  /**
+   * Starts the executor of a Task that `create` set up, and writes `token`, the Run token that the
+   * Runner's relay accepts, to its stdin, then closes it. The token so never enters an environment
+   * block, an argument list or a file of the container.
+   */
+  async start(container: Docker.Container, token: string) {
+    const stdin = await container.attach({ stream: true, stdin: true, hijack: true });
+    await container.start();
+    await new Promise<void>((resolve, reject) => {
+      stdin.once("error", reject);
+      stdin.end(token, resolve);
+    });
+  }
+
   async create(task: NativeTaskLaunch): Promise<Docker.Container> {
-    const name = `devboxes-task-${task.id}`;
+    const name = executorName(task.id);
     const existing = await this.inspect(name);
     if (existing) return this.docker.getContainer(existing.Id);
     const directory = resolve(this.options.stateDirectory, task.id);
@@ -291,7 +309,6 @@ export class DockerOpencodeTaskRuntime {
       ...executorEnvironment({
         id: task.id,
         apiBaseUrl: task.apiBaseUrl,
-        token: task.token,
         traceparent: task.traceparent,
       }),
       DEVBOX_EXECUTOR_ID: name,
@@ -308,6 +325,10 @@ export class DockerOpencodeTaskRuntime {
       WorkingDir: containerWorkspace,
       Entrypoint: ["/usr/local/bin/devboxes-executor"],
       Cmd: [],
+      // The executor reads its Run token from stdin, which closes once `start` wrote it.
+      OpenStdin: true,
+      StdinOnce: true,
+      AttachStdin: true,
       Env: Object.entries(environment).map(([key, value]) => `${key}=${value}`),
       Labels: { "devboxes.task": task.id },
       StopTimeout: executorDrainSeconds,

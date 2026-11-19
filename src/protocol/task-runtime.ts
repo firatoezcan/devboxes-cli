@@ -75,21 +75,25 @@ export const opencodeMemoryHomeDirectories = [xdgHomes.XDG_CONFIG_HOME, xdgHomes
 /** How long the executor has after SIGTERM to drain a started Run and record its result. */
 export const executorDrainSeconds = 120;
 
-/** The environment every Task executor receives, apart from its runtime's executor identity. */
+/**
+ * The environment every Task executor receives, apart from its runtime's executor identity. It
+ * carries no credential: a Runner writes the Run token to the executor's stdin, and a managed Task,
+ * whose executor holds only the token's stand-in, names its egress proxy's files in
+ * `DEVBOX_EGRESS_DIR`, which only a managed Task sets.
+ */
 export const executorEnvironment = (task: {
   id: string;
   apiBaseUrl: string;
-  token: string;
   traceparent: string;
+  /** The managed Task's egress proxy files; a Runner Task has none. */
+  egressDir?: string;
 }) => ({
   HOME: containerHome,
   WORKSPACE: containerWorkspace,
-  DEVBOX_WORKSPACE: containerWorkspace,
   DEVBOX_WORKSPACE_CAPABILITY: "agent-task",
   DEVBOX_WORKSPACE_CAPABILITY_ID: task.id,
   OPENCODE_WORKSPACE_ID: task.id,
   DEVBOX_BACKEND_BASE_URL: task.apiBaseUrl,
-  DEVBOX_BACKEND_TOKEN: task.token,
   DEVBOX_DAEMON_PRIVATE_DIR: containerDaemonPrivateDir,
   ...Object.fromEntries(
     Object.entries(xdgHomes).map(([variable, directory]) => [
@@ -98,4 +102,5 @@ export const executorEnvironment = (task: {
     ]),
   ),
   TRACEPARENT: task.traceparent,
+  ...(task.egressDir && { DEVBOX_EGRESS_DIR: task.egressDir }),
 });

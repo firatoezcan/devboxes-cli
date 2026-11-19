@@ -34,6 +34,12 @@ export const machineSizeNames = {
 export const machineSizeUnits = (machineSize: (typeof machineSizes)[number]) =>
   machineSizeResources[machineSize].cpus / machineSizeResources.medium.cpus;
 
+/**
+ * How many Tasks an Organization runs at once on its own Runners at no charge, on any plan. Each
+ * further one takes a paid slot, charged by the hour.
+ */
+export const freeRunnerSlots = 3;
+
 /** The bounds of how many fix Runs a Project's automatic Review may start for one piece of work. */
 export const reviewFixRounds = { minimum: 0, maximum: 10 } as const;
 

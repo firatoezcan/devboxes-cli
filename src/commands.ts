@@ -22,6 +22,8 @@ import { cliUserAgent } from "./api";
 export type CommandConnection = {
   origin: string;
   token: string;
+  /** Set for DEVBOXES_TOKEN's delegation, which runs only commands without `delegable: false`. */
+  delegation?: true;
   organizationId?: string;
   /** Headers every request sends besides the ones `requestJson` sets. */
   headers?: Record<string, string>;
@@ -117,6 +119,16 @@ type CommandResponse = {
   data: JsonValue;
 } & RequestCorrelation;
 
+const namedAccount = Type.Object({ accountId: Type.String(), label: Type.String() });
+/**
+ * What a MODEL_ACCOUNT_PAUSED refusal's details name for a person at a terminal: the paused
+ * `account`, and the other `accounts` that run the same model now. Its message names none.
+ */
+const pausedAccounts = Type.Object({
+  account: Type.Optional(namedAccount),
+  accounts: Type.Optional(Type.Array(namedAccount)),
+});
+
 export class CommandError extends Error {
   constructor(
     readonly code: string,
@@ -141,7 +153,7 @@ export class CommandError extends Error {
     );
   }
 
-  // A serialization conflict commits nothing, so the same command can be sent again.
+  /** A serialization conflict commits nothing, so the same command can be sent again. */
   get retryable() {
     return this.code === "CONCURRENT_MODIFICATION";
   }
@@ -164,15 +176,27 @@ export class CommandError extends Error {
       ...(this.options.status === undefined ? [] : [`HTTP ${this.options.status}`]),
       ...(this.retryable ? ["retryable"] : []),
     ];
-    return `${this.code}${qualifiers.length ? ` (${qualifiers.join(", ")})` : ""}: ${this.message}`;
+    const lines = [
+      `${this.code}${qualifiers.length ? ` (${qualifiers.join(", ")})` : ""}: ${this.message}`,
+    ];
+    const { details } = this.options;
+    if (this.code === "MODEL_ACCOUNT_PAUSED" && Value.Check(pausedAccounts, details)) {
+      const named = ({ accountId, label }: Static<typeof namedAccount>) =>
+        `${label} (${accountId})`;
+      if (details.account) lines.push(`Paused account: ${named(details.account)}`);
+      if (details.accounts?.length)
+        lines.push(`Other accounts for this model: ${details.accounts.map(named).join(", ")}`);
+    }
+    return lines.join("\n");
   }
 }
 
 const w3cTraceContext = new W3CTraceContextPropagator();
 
-// The CLI joins the caller's W3C trace from TRACEPARENT. Without one it sends no traceparent, so
-// the API starts each request's trace, and a result reports the trace the API names in its
-// traceresponse.
+/**
+ * The caller's W3C trace from TRACEPARENT. Without one the CLI sends no traceparent, so the API
+ * starts each request's trace, and a result reports the trace the API names in its traceresponse.
+ */
 const callerTrace = w3cTraceContext.extract(
   ROOT_CONTEXT,
   { traceparent: process.env.TRACEPARENT },
@@ -549,7 +573,6 @@ export const devboxesCommandTools = (
       "\n\nDescribe a command with devboxes_describe before you first invoke it.",
     Type.Object({
       command: Type.String({ minLength: 1 }),
-      // Tool arguments arrive as JSON, so the advertised schema accepts every value.
       input: Type.Unsafe<JsonValue>({}),
     }),
     (invocation) => invokeCommand(connection, invocation, readCommands),
