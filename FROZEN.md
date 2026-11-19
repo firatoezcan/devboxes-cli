@@ -188,10 +188,10 @@ executor, a container of the Task's image runs the staged executor as Bun
 executor unstarted and stops with `DOCKER_ENGINE_UNSUPPORTED`.
 
 The private executor captures its configuration, sanitizes the process
-environment, and drops to uid 1001 before importing the native execution
-module. The in-process uid change makes the executor non-dumpable under Docker
-and under gVisor, the managed runtime, so other uid 1001 processes cannot read
-its environment, memory or file descriptors.
+environment, drops to uid 1001, and marks itself non-dumpable
+(`PR_SET_DUMPABLE`) before importing the native execution module, so other uid
+1001 processes, the agent's shell among them, cannot read its environment,
+memory or file descriptors.
 
 Admission records a Run's secret bindings, each host-bound secret's key, hosts
 and `swapIn` without its value, in the Run's snapshot. The Pod, the payload and
