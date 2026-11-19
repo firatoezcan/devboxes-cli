@@ -1,5 +1,12 @@
 # devboxes
 
+## 0.18.1
+
+### Patch Changes
+
+- When a Task's executor exits with an error before it reports its result, `devboxes runner listen` sends the last line the executor wrote to its standard error, and the Run fails with `The executor stopped. It last wrote: "<line>"`. Before, the Run said only "The executor ended without a terminal acknowledgement."
+- b0e27a2: `devboxes runner listen` hands each executor only its Run token on stdin. On Docker reached through a socket proxy such as OrbStack's, about one start in four sent bytes ahead of the token, and that Run failed with RUN_TOKEN_INVALID.
+
 ## 0.18.0
 
 ### Minor Changes
