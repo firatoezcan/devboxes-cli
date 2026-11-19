@@ -46,7 +46,7 @@ boundaries, not compatibility guarantees for retired protocols.
   lacks or changes a field the CLI needs, here or from any other route, fails
   with `INVALID_RESPONSE`, which says to install the current CLI from
   https://devboxes.ai/install, because Production always runs the newest API.
-  `devboxes runner listen` logs it once and keeps polling with backoff, so it
+  `devboxes runner listen` logs it once and asks again with backoff, so it
   carries on by itself once the answer reads again
   (DEC-clients-fail-only-on-what-they-use). Every claim answer
   names the current executor for the Runner's platform, as the API last read
@@ -55,14 +55,17 @@ boundaries, not compatibility guarantees for retired protocols.
   into its cache without waiting for it, so the first Task after a release
   finds it there.
 - `apps/firops-api/src/execution/runners.ts` owns
-  `/api/internal/execution/runners` claims, assignments, stop reports, and
-  Runner heartbeat expiry. A claim hands out another Task while the machine
+  `/api/internal/execution/runners` claims, assignments, stop reports, the
+  Runner's events stream, and Runner heartbeat expiry. `listen` asks
+  `/assignments`, `/reconcile` and `/claim` only when the events stream or
+  Docker says something changed, or at the claim answer's `wakeAt`
+  (DEC-runners-wake-and-claim). A claim hands out another Task while the machine
   sizes of the Runner's live Tasks and that Task fit what the claim says it may
   use, and one Task to a Runner that runs none. It reads the live Tasks in the
   transaction that claims, so claims that arrive together can't overfill the
   Runner. One listener holds a Runner (DEC-one-listener-holds-each-runner):
   `listen` names itself in `runnerListenerHeader` on `/claim`, `/assignments`,
-  `/reconcile` and `/release`, another listener gets 409
+  `/reconcile`, `/events` and `/release`, another listener gets 409
   `RUNNER_LISTENING_ELSEWHERE` until the holder's heartbeat lapses, and
   `/release`, which `listen` calls when a signal stops it, lets go of the
   Runner while no Task's container runs on its machine. `/identify` answers
