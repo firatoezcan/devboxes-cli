@@ -396,6 +396,10 @@ export const listen = async (options: {
           await startCreated(task, executor.Id);
           continue;
         }
+        const reason =
+          !executor.State.Running && executor.State.ExitCode !== 0
+            ? await runtime.lastErrorLine(executor.Id)
+            : null;
         const result = await api("reconcile", {
           taskId: task.id,
           executorId,
@@ -406,6 +410,7 @@ export const listen = async (options: {
                 observation: "stopped",
                 startedAt: executor.State.StartedAt,
                 stoppedAt: executor.State.FinishedAt,
+                ...(reason && { reason }),
               }),
         }).catch(refusedReport(task.id));
         if (result && !executor.State.Running && knows(task.id, result.status)) {

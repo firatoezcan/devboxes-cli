@@ -70,7 +70,10 @@ boundaries, not compatibility guarantees for retired protocols.
   to `/reconcile` as `start-failed` with its reason. The API then holds the
   Task from `/claim` for 1, 4 and then 15 minutes, as `nextRetry` schedules a
   managed retry, and hands out other Tasks that fit meanwhile. After the third
-  retry it ends the Run with that reason.
+  retry it ends the Run with that reason. An executor it finds exited with a nonzero code, the
+  Runner reports as `stopped` with the last line the executor wrote to its
+  standard error, and a Run that hadn't acknowledged its end fails with that
+  line (DEC-executor-stop-gives-its-reason).
 - `apps/firops-api/src/execution/callbacks.ts` owns Task callbacks. The hidden
   `runtime-*` routes in `apps/firops-api/src/routes/commands/model-accounts.ts` are
   Task callbacks for the Run's model account.
