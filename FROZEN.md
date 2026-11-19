@@ -13,7 +13,9 @@ boundaries, not compatibility guarantees for retired protocols.
   payload, execution snapshot, inputs, and Review results.
 - `packages/protocol/src/execution-callbacks.ts` defines what each Task
   callback answers. Each schema is its route's `response`, which the API
-  validates, and what the executor parses. Only Git's smart HTTP transport and
+  validates. The executor parses only the fields it reads of it
+  (`answerReads` in `apps/elysia-opencode/src/executor/execution.ts`), so an
+  answer that drops another field breaks no running executor. Only Git's smart HTTP transport and
   `/capability` answer raw, and `law:callbacks-declare-their-answer` holds
   every other callback to a declared answer.
 - `packages/protocol/src/task-runtime.ts` defines the Task container
