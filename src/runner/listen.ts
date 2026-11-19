@@ -297,7 +297,10 @@ export const listen = async (options: {
         relayReachable = true;
       }
       if (stopping) return;
-      await container.start();
+      await runtime.start(
+        container,
+        await new SignJWT().setProtectedHeader({ alg: "HS256" }).setSubject(task.id).sign(relayKey),
+      );
       console.info(`Started Task ${task.id} in ${executorId}.`);
     }
   };
@@ -326,10 +329,6 @@ export const listen = async (options: {
           memoryBytes: Math.min(size.memoryBytes, machine.memoryBytes),
         },
         apiBaseUrl,
-        token: await new SignJWT()
-          .setProtectedHeader({ alg: "HS256" })
-          .setSubject(task.id)
-          .sign(relayKey),
       });
       await startCreated(task, container.id);
     } else if (existing.State.Status === "created") {

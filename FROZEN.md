@@ -165,9 +165,12 @@ The Runner stages the SHA-256-verified executor and mounts it read-only at
 `DAC_OVERRIDE`, `SETGID`, and `SETUID`; it drops all other capabilities and uses
 `no-new-privileges`.
 
-The executor's token is supplied as `DEVBOX_BACKEND_TOKEN` in Docker Env and is
-visible to anyone with Docker access. It authenticates only at the Runner's
-relay, which `DEVBOX_BACKEND_BASE_URL` names at `host.docker.internal`. The
+The Runner writes the executor's token to the container's stdin when it starts
+the container, and closes it. Bootstrap reads it as root before the privilege
+drop and keeps it in memory, so it is in no environment block, argument list or
+file of the container. An executor whose stdin carries no token stops at start
+and says to update the devboxes CLI. The token authenticates only at the
+Runner's relay, which `DEVBOX_BACKEND_BASE_URL` names at `host.docker.internal`. The
 relay listens on the host's loopback address under Docker Desktop, OrbStack and
 rootless Docker, and on the bridge gateway address under a rootful Linux Docker
 Engine, whose host must accept container traffic to that address and the
@@ -201,8 +204,11 @@ for uid 1003, so bootstrap reads it as root before the privilege drop and keeps
 it only in memory. The executor sends through it only its model requests and its
 requests to the devboxes API, which carry a header whose value only the
 executor's memory holds, so a request whose headers the agent configures, such
-as a remote MCP server's, goes around it. Bootstrap takes the stand-in Run token
-as the sign of a managed Task, and refuses to start without that URL. When the
+as a remote MCP server's, goes around it. Only the managed launcher sets
+`DEVBOX_EGRESS_DIR` (`executorEnvironment` in
+`packages/protocol/src/task-runtime.ts`). Bootstrap takes it as the sign of a
+managed Task, holds the stand-in Run token, and refuses to start without that
+URL. When the
 payload names bound secrets, the executor refuses to start without the agent's
 proxy URL; with it, the executor gives the agent `HTTPS_PROXY` and a CA bundle
 of the image's trusted CAs plus the proxy's, and redacts the session.
@@ -222,8 +228,8 @@ refreshes the system model's credential. A GitHub Copilot sign-in keeps its
 token, which OpenCode sends as its bearer token and which doesn't expire.
 
 On managed capacity, the executor holds only the fixed stand-ins of
-`credentialStandIns` in `packages/protocol/src/egress.ts`: its
-`DEVBOX_BACKEND_TOKEN` is `__devboxes-run-token__`, and the payload and
+`credentialStandIns` in `packages/protocol/src/egress.ts`: its Run token is
+`__devboxes-run-token__`, and the payload and
 `model-accounts/runtime-read` give each part of the model credential as
 `__devboxes-model-key__`, `__devboxes-model-access__` and
 `__devboxes-model-refresh__`, which no secret's stand-in can equal. The
