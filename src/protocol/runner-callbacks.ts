@@ -60,6 +60,12 @@ export const RunnerClaimSchema = Type.Object({
     Type.Null(),
   ]),
   executor: Type.Union([ExecutorSchema, Type.Null()]),
+  /**
+   * When the claim's answer next changes with time alone, or null: the earliest start retry of a
+   * Task the Runner claimed, or the end of the allowance window that a Task waiting for credit waits
+   * out. The Runner asks again then.
+   */
+  wakeAt: Type.Union([Type.String({ format: "date-time" }), Type.Null()]),
 });
 
 /**

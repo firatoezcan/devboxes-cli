@@ -1,5 +1,11 @@
 # devboxes
 
+## 0.19.0
+
+### Minor Changes
+
+- fc172b3: `devboxes runner listen` no longer asks devboxes for work every 5 seconds. It keeps an events stream from devboxes open and watches Docker's events for its Task containers, and asks when either says something changed, or at the moment devboxes names for a start retry or a new allowance window. A queued Task starts within about a second. A listener on an earlier version keeps asking every 5 seconds, as before.
+
 ## 0.18.1
 
 ### Patch Changes

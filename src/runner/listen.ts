@@ -30,6 +30,7 @@ import {
   CommandError,
   installCurrentCli,
   parseResponse,
+  readServerEvents,
   requestJson,
   unreadableAnswer,
 } from "../commands";
@@ -264,8 +265,22 @@ export const listen = async (options: {
     return false;
   };
   let stopping = false;
+  /**
+   * Whether something asked for the next look since the last one began: a `wake` event of the API's
+   * events stream, which sends one as it opens, a Task container's start, stop or removal, a
+   * reconnection to Docker's events, the moment the claim answered in `wakeAt`, a finished start, a
+   * retry after a failed look, or a stop. Asks that arrive while a look runs merge into the next one.
+   */
+  let asked = false;
+  let rouse: (() => void) | null = null;
+  const wake = () => {
+    asked = true;
+    rouse?.();
+    rouse = null;
+  };
   const interrupt = () => {
     stopping = true;
+    wake();
   };
   /**
    * The executor digest the Runner is downloading or downloaded ahead of its Tasks. A failed
@@ -306,8 +321,8 @@ export const listen = async (options: {
   };
   /**
    * The Task starts in progress, by Task ID. An image pull or an executor download can outlast the
-   * API's heartbeat window, so a start runs beside the poll loop, and its failure surfaces on the
-   * next cycle.
+   * API's heartbeat window, so a start runs beside the looks, and its failure surfaces on the look
+   * that its end asks for.
    */
   const starting = new Map<string, Promise<void>>();
   let startFailure: {
@@ -346,8 +361,8 @@ export const listen = async (options: {
     status === 403 ||
     (!connected && (status === 404 || status === 422));
   /**
-   * Logs the API's refusal of a report about Task `taskId` and lets the poll go on to the other
-   * Tasks. A refusal that ends the listener, and a server error, fail the poll.
+   * Logs the API's refusal of a report about Task `taskId` and lets the look go on to the other
+   * Tasks. A refusal that ends the listener, and a server error, fail the look.
    */
   const refusedReport = (taskId: string) => (refusal: Error) => {
     if (
@@ -364,7 +379,14 @@ export const listen = async (options: {
    */
   const reportStartFailure = (taskId: string, reason: string) =>
     api("reconcile", { taskId, observation: "start-failed", reason }).catch(refusedReport(taskId));
-  const poll = async () => {
+  /** How many claims answered so far, so only the latest claim's `wakeAt` asks for a look. */
+  let claims = 0;
+  /**
+   * One look: reports what this machine's containers of the Runner's Tasks show (`/assignments`,
+   * `/reconcile`), then, while no start runs, claims the next Task (`/claim`). It answers null, or
+   * the failure the loop retries after a backoff.
+   */
+  const look = async () => {
     try {
       const assignments = await api("assignments", {});
       connected = true;
@@ -448,7 +470,12 @@ export const listen = async (options: {
           await reportStartFailure(claim.task.id, reason);
           return null;
         }
-        const { task, executor } = parseResponse(runnerAnswers.claim, claim, "claim");
+        const { task, executor, wakeAt } = parseResponse(runnerAnswers.claim, claim, "claim");
+        const answered = ++claims;
+        if (wakeAt)
+          void Bun.sleep(new Date(wakeAt)).then(() => {
+            if (answered === claims) wake();
+          });
         if (executor && executor.sha256 !== prefetched) {
           prefetched = executor.sha256;
           runtime.stageExecutor(executor).catch((error: Error) => {
@@ -495,6 +522,7 @@ export const listen = async (options: {
                 )
                 .finally(() => {
                   starting.delete(task.id);
+                  wake();
                 }),
             );
         }
@@ -505,22 +533,87 @@ export const listen = async (options: {
       throw error;
     }
   };
+  /** How long to wait before trying again after `failures` failures in a row. */
+  const backoff = (failures: number) =>
+    Math.min(60_000, 5_000 * 2 ** failures) * (0.5 + Math.random() / 2);
+  /**
+   * Reads the API's events stream for this listener once, asking for a look on each `wake` event,
+   * the first of which the API sends as the stream opens, since a stream opened again may have
+   * missed one. It answers whether the stream opened, once it ends; a refusal throws.
+   */
+  const readEvents = async () => {
+    let opened = false;
+    await readServerEvents(
+      { origin: options.apiOrigin, token, headers: { [runnerListenerHeader]: listener } },
+      "/api/internal/execution/runners/events",
+      (event) => {
+        opened = true;
+        if (event === "wake") wake();
+      },
+    );
+    return opened;
+  };
+  /** How many times the listener connected to Docker's events. */
+  let dockerConnections = 0;
+  /**
+   * Follows Docker's events for the containers of Tasks once, asking for a look when a container
+   * starts, dies or goes, and when it connects again, since it may have missed one meanwhile. It
+   * answers whether it connected, once the events end or fail.
+   */
+  const readDockerEvents = async () => {
+    const events = await runtime.docker.getEvents({
+      filters: {
+        type: ["container"],
+        label: ["devboxes.task"],
+        event: ["start", "die", "destroy"],
+      },
+    });
+    if (dockerConnections++ > 0) wake();
+    await new Promise((ended) => {
+      events.on("data", wake);
+      events.once("end", ended);
+      events.once("error", ended);
+    });
+    return true;
+  };
+  /**
+   * Runs `read` until the listener stops. When it ends or fails, it asks for a look, whose calls
+   * report what failed, and runs again after a backoff that grows while it keeps failing.
+   */
+  const follow = async (read: () => Promise<boolean>) => {
+    for (let failed = 1; !stopping;) {
+      failed = (await read().catch(() => false)) ? 1 : failed + 1;
+      if (stopping) return;
+      wake();
+      await Bun.sleep(backoff(failed));
+    }
+  };
   /**
    * The refusal of the last answer this CLI couldn't read, which it logged. It logs the same refusal
-   * once, and keeps polling with backoff, so it carries on by itself once the answer reads again.
+   * once, and keeps asking with backoff, so it carries on by itself once the answer reads again.
    */
   let unreadable: string | null = null;
+  void follow(readEvents);
+  void follow(readDockerEvents);
   try {
     while (!stopping) {
-      const failure = await poll();
+      if (!asked)
+        await new Promise<void>((roused) => {
+          rouse = roused;
+        });
+      asked = false;
+      if (stopping) break;
+      const failure = await look();
       failures = failure ? failures + 1 : starting.size > 0 ? failures : 0;
-      const delay = failure
-        ? Math.min(60_000, 5_000 * 2 ** failures) * (0.5 + Math.random() / 2)
-        : 5_000;
-      if (failure && failure.message !== unreadable)
-        console.error(`Polling failed, retrying in ${Math.ceil(delay / 1_000)}s: ${failure}`);
+      const logged = unreadable;
       unreadable = failure?.code === "INVALID_RESPONSE" ? failure.message : null;
-      for (let waited = 0; waited < delay && !stopping; waited += 250) await Bun.sleep(250);
+      if (!failure) continue;
+      const delay = backoff(failures);
+      if (failure.message !== logged)
+        console.error(
+          `Asking the API failed, retrying in ${Math.ceil(delay / 1_000)}s: ${failure}`,
+        );
+      void Bun.sleep(delay).then(wake);
     }
   } finally {
     await Promise.all(starting.values());

@@ -10,6 +10,7 @@ import { redactedSecret, secretRedactingReviver } from "./security/secret-redact
 import { describeErrors } from "./values/validation-errors";
 import { defaultTextMapGetter, ROOT_CONTEXT, trace } from "@opentelemetry/api";
 import { W3CTraceContextPropagator } from "@opentelemetry/core";
+import { EventSourceParserStream } from "eventsource-parser/stream";
 import Type, { type Static, type TObject, type TSchema } from "typebox";
 import Value from "typebox/value";
 
@@ -344,17 +345,58 @@ export const requestJson = async (
         ...(issue !== undefined && { issue }),
       });
     }
-    throw new CommandError(error.error.code, error.error.message, {
-      status: error.status,
-      details: error.error.details,
-      correlation,
-    });
   }
-  throw new CommandError(
-    "HTTP_ERROR",
-    `The API returned HTTP ${error.status} without a command error.`,
-    { status: error.status, correlation },
-  );
+  throw refusalOf(error, correlation);
+};
+
+/** The command error of the API's refusal `error`, or one that names its HTTP status. */
+const refusalOf = (
+  error: { status: number },
+  correlation: { traceId: string | null; requestId: string | null },
+) =>
+  Value.Check(errorSchema, error)
+    ? new CommandError(error.error.code, error.error.message, {
+        status: error.status,
+        details: error.error.details,
+        correlation,
+      })
+    : new CommandError(
+        "HTTP_ERROR",
+        `The API returned HTTP ${error.status} without a command error.`,
+        { status: error.status, correlation },
+      );
+
+/**
+ * Reads the server-sent events of `path` on `connection`'s API until the stream ends, and hands
+ * `onEvent` each event's name as it arrives. It reads no event's data, so nothing of an answer can
+ * reach the output. A refusal throws its command error, as `requestJson`'s does.
+ */
+export const readServerEvents = async (
+  connection: CommandConnection,
+  path: string,
+  onEvent: (event: string | undefined) => void,
+) => {
+  const { error } = await betterFetch<JsonValue>(path, {
+    baseURL: connection.origin,
+    method: "GET",
+    auth: { type: "Bearer", token: connection.token },
+    headers: new Headers({
+      ...connection.headers,
+      Accept: "text/event-stream",
+      "User-Agent": cliUserAgent,
+    }),
+    redirect: "error",
+    jsonParser: (text) => credentialSafeJson(text, [connection.token]),
+    onResponse: async ({ response }) => {
+      if (!response.ok || !response.body) return;
+      for await (const { event } of response.body
+        .pipeThrough(new TextDecoderStream())
+        .pipeThrough(new EventSourceParserStream()))
+        onEvent(event);
+      return new Response(null, { status: 204 });
+    },
+  });
+  if (error) throw refusalOf(error, { traceId: null, requestId: null });
 };
 
 /** Whether the CLI may ask in the terminal: outside --json, with stdin and stderr on a terminal. */

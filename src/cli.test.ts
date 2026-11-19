@@ -1452,6 +1452,8 @@ describe("devboxes runner add", () => {
           ),
         );
       if (pathname === "/api/commands/organizations/list") return Response.json({ organizations });
+      if (pathname === "/api/internal/execution/runners/events")
+        return new Response(null, { status: 404 });
       if (pathname === "/api/internal/execution/runners/identify")
         return refusedKeys.has(request.headers.get("authorization")?.replace("Bearer ", "") ?? "")
           ? Response.json(
@@ -1662,6 +1664,7 @@ describe("devboxes runner listen", () => {
     unix: join(fixtureDirectory, "docker.sock"),
     fetch: (request) => {
       const { pathname } = new URL(request.url);
+      if (pathname.endsWith("/events")) return new Response(new ReadableStream());
       const inspected = /\/containers\/([^/]+)\/json$/.exec(pathname);
       if (inspected && containers.has(inspected[1]!))
         return Response.json(containers.get(inspected[1]!));
@@ -1709,14 +1712,51 @@ describe("devboxes runner listen", () => {
     version: "test",
     url: `${new URL(request.url).origin}/executor`,
   });
+  const wakeFrame = new TextEncoder().encode("event: wake\ndata: null\n\n");
+  /**
+   * Starts `devboxes runner listen` against the fake API at `origin`, through a front that serves
+   * the Runner's events stream as the API does, with a `wake` as it opens and each one `wake` sends,
+   * and passes every other request on to `origin`.
+   */
   const spawnListener = async (
     origin: string,
     env: Record<string, string | undefined> = {},
     flags: string[] = [],
   ) => {
     await writeFile(runnerTokenFile, "devboxes_runner_fixture\n", { mode: 0o600 });
+    const streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
+    const front = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      idleTimeout: 0,
+      fetch: async (request) => {
+        const url = new URL(request.url);
+        if (url.pathname === "/api/internal/execution/runners/events") {
+          let opened: ReadableStreamDefaultController<Uint8Array> | undefined;
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start: (controller) => {
+                opened = controller;
+                streams.add(controller);
+                controller.enqueue(wakeFrame);
+              },
+              cancel: () => {
+                if (opened) streams.delete(opened);
+              },
+            }),
+            { headers: { "content-type": "text/event-stream" } },
+          );
+        }
+        return fetch(new URL(`${url.pathname}${url.search}`, origin), {
+          method: request.method,
+          headers: request.headers,
+          body: request.method === "GET" ? undefined : await request.arrayBuffer(),
+          redirect: "manual",
+        });
+      },
+    });
     const listener = Bun.spawn(
-      [process.execPath, "src/cli.ts", ...(await listenTo(origin)), ...flags],
+      [process.execPath, "src/cli.ts", ...(await listenTo(front.url.origin)), ...flags],
       {
         cwd: join(import.meta.dir, ".."),
         env: { ...process.env, ...fixtureDocker, ...env },
@@ -1736,38 +1776,43 @@ describe("devboxes runner listen", () => {
     return {
       listener,
       output,
+      /** Sends every open events stream of the listener a `wake`. */
+      wake: () => {
+        for (const stream of streams) stream.enqueue(wakeFrame);
+      },
       [Symbol.asyncDispose]: async () => {
         listener.kill();
         await listener.exited;
         await reading;
+        await front.stop(true);
       },
     };
   };
 
-  it("retries a server error and a 404 after its first successful poll, and stops without finishing its wait", async () => {
+  it("retries a server error and a 404 after its first answered request, and stops without finishing its wait", async () => {
     const serve = (failure: {
       path: "assignments" | "claim";
       status: number;
       code: string;
       message: string;
     }) => {
-      const polls = { failed: false, retried: false };
+      const requests = { failed: false, retried: false };
       return {
-        polls,
+        requests,
         server: Bun.serve({
           hostname: "127.0.0.1",
           port: 0,
           fetch: (request) => {
             const path = new URL(request.url).pathname.split("/").at(-1);
-            if (path === failure.path && !polls.failed) {
-              polls.failed = true;
+            if (path === failure.path && !requests.failed) {
+              requests.failed = true;
               const { status, code, message } = failure;
               return Response.json({ error: { code, message } }, { status });
             }
-            if (polls.failed) polls.retried = true;
+            if (requests.failed) requests.retried = true;
             return path === "assignments"
               ? Response.json({ tasks: [] })
-              : Response.json({ task: null, executor: null });
+              : Response.json({ task: null, executor: null, wakeAt: null });
           },
         }),
       };
@@ -1790,7 +1835,7 @@ describe("devboxes runner listen", () => {
       const runners = [serverError, lateNotFound];
       await until(
         () =>
-          (serverErrorApi.polls.retried && lateNotFoundApi.polls.retried) ||
+          (serverErrorApi.requests.retried && lateNotFoundApi.requests.retried) ||
           runners.some((runner) => runner.listener.exitCode !== null),
       );
 
@@ -1811,7 +1856,7 @@ describe("devboxes runner listen", () => {
     }
   }, 30_000);
 
-  it("keeps polling with backoff at an answer it can't read, says so once with the install link, and recovers once the answer reads", async () => {
+  it("asks again with backoff at an answer it can't read, says so once with the install link, and recovers once the answer reads", async () => {
     let claims = 0;
     using api = Bun.serve({
       hostname: "127.0.0.1",
@@ -1821,12 +1866,12 @@ describe("devboxes runner listen", () => {
           return Response.json({ tasks: [] });
         claims += 1;
         return claims <= 2
-          ? Response.json({ task: { id: 7 }, executor: null })
-          : Response.json({ task: null, executor: null });
+          ? Response.json({ task: { id: 7 }, executor: null, wakeAt: null })
+          : Response.json({ task: null, executor: null, wakeAt: null });
       },
     });
     await using runner = await spawnListener(api.url.origin);
-    await until(() => claims >= 4 || runner.listener.exitCode !== null);
+    await until(() => claims >= 3 || runner.listener.exitCode !== null);
 
     expect({
       exitCode: runner.listener.exitCode,
@@ -1862,9 +1907,10 @@ describe("devboxes runner listen", () => {
           if (path === "claim") {
             claims += 1;
             const executor = absentExecutor(request);
-            if (claims > 1) return Response.json({ task: null, executor });
+            if (claims > 1) return Response.json({ task: null, executor, wakeAt: null });
             return Response.json({
               executor,
+              wakeAt: null,
               task: {
                 id: taskId,
                 executorId: null,
@@ -1944,7 +1990,7 @@ describe("devboxes runner listen", () => {
               traceparent: `00-${"1".repeat(32)}-${"2".repeat(16)}-01`,
             })),
           });
-        if (path === "claim") return Response.json({ task: null, executor });
+        if (path === "claim") return Response.json({ task: null, executor, wakeAt: null });
         if (path === "reconcile") {
           const report = (await request.json()) as { taskId: string; observation: string };
           reports.push(report);
@@ -1969,7 +2015,7 @@ describe("devboxes runner listen", () => {
     await until(
       () =>
         reports.some(({ taskId }) => taskId === accepted) ||
-        runner.output.stderr.split("Polling failed").length > 2 ||
+        runner.output.stderr.split("Asking the API failed").length > 2 ||
         runner.listener.exitCode !== null,
     );
 
@@ -2022,7 +2068,7 @@ describe("devboxes runner listen", () => {
           reported.push(((await request.json()) as { taskId: string }).taskId);
           return Response.json({ status: "succeeded" });
         }
-        return Response.json({ task: null, executor: absentExecutor(request) });
+        return Response.json({ task: null, executor: absentExecutor(request), wakeAt: null });
       },
     });
     await using runner = await spawnListener(api.url.origin);
@@ -2057,7 +2103,7 @@ describe("devboxes runner listen", () => {
           reports.push((await request.json()) as { taskId: string; observation: string });
           return Response.json({ status: "archived" });
         }
-        return Response.json({ task: null, executor: absentExecutor(request) });
+        return Response.json({ task: null, executor: absentExecutor(request), wakeAt: null });
       },
     });
     await using runner = await spawnListener(api.url.origin);
@@ -2133,6 +2179,7 @@ describe("devboxes runner listen", () => {
           claims += 1;
           return Response.json({
             executor,
+            wakeAt: null,
             task:
               failures.length === 0
                 ? {
@@ -2184,9 +2231,10 @@ describe("devboxes runner listen", () => {
         if (path === "assignments") return Response.json({ tasks: [] });
         if (path === "claim") {
           claims += 1;
-          if (claims !== 2) return Response.json({ task: null, executor });
+          if (claims !== 2) return Response.json({ task: null, executor, wakeAt: null });
           return Response.json({
             executor,
+            wakeAt: null,
             task: {
               id: taskId,
               executorId: null,
@@ -2211,6 +2259,9 @@ describe("devboxes runner listen", () => {
     });
     const pulls = imagePulls;
     await using runner = await spawnListener(api.url.origin);
+    await until(() => executorRequests === 1 || runner.listener.exitCode !== null);
+    await Bun.sleep(500);
+    runner.wake();
 
     await until(
       () => imagePulls > pulls || reports.length > 0 || runner.listener.exitCode !== null,
@@ -2232,7 +2283,7 @@ describe("devboxes runner listen", () => {
           if (new URL(request.url).pathname.endsWith("/assignments"))
             return Response.json({ tasks: [] });
           bodies.push(await request.json());
-          return Response.json({ task: null, executor: null });
+          return Response.json({ task: null, executor: null, wakeAt: null });
         },
       });
       return { server, bodies, [Symbol.dispose]: () => server.stop(true) };
@@ -2291,9 +2342,10 @@ describe("devboxes runner listen", () => {
         if (path === "assignments") return Response.json({ tasks: [] });
         if (path === "claim") {
           claims += 1;
-          if (claims !== 3) return Response.json({ task: null, executor });
+          if (claims !== 3) return Response.json({ task: null, executor, wakeAt: null });
           return Response.json({
             executor,
+            wakeAt: null,
             task: {
               id: taskId,
               executorId: null,
@@ -2318,6 +2370,12 @@ describe("devboxes runner listen", () => {
     });
     const pulls = imagePulls;
     await using runner = await spawnListener(api.url.origin);
+    await until(() => executorRequests === 1 || runner.listener.exitCode !== null);
+    await Bun.sleep(500);
+    runner.wake();
+    await until(() => executorRequests === 2 || runner.listener.exitCode !== null);
+    await Bun.sleep(500);
+    runner.wake();
 
     await until(
       () => imagePulls > pulls || reports.length > 0 || runner.listener.exitCode !== null,
@@ -2327,6 +2385,33 @@ describe("devboxes runner listen", () => {
       executorRequests: 2,
       pulled: true,
     });
+  }, 60_000);
+
+  it("asks again at the moment the claim names, and not again while nothing changes", async () => {
+    const claimedAt: number[] = [];
+    using api = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request) => {
+        const path = new URL(request.url).pathname.split("/").at(-1);
+        if (path === "assignments") return Response.json({ tasks: [] });
+        if (path !== "claim") return new Response(null, { status: 404 });
+        claimedAt.push(Date.now());
+        return Response.json({
+          task: null,
+          executor: null,
+          wakeAt: claimedAt.length === 1 ? new Date(Date.now() + 1_500).toISOString() : null,
+        });
+      },
+    });
+    await using runner = await spawnListener(api.url.origin);
+    await until(() => claimedAt.length >= 2 || runner.listener.exitCode !== null);
+    await Bun.sleep(6_000);
+
+    expect({
+      claims: claimedAt.length,
+      waited: (claimedAt[1] ?? 0) - (claimedAt[0] ?? 0) >= 1_400,
+    }).toEqual({ claims: 2, waited: true });
   }, 60_000);
 
   it("stops at once while it downloads an executor that no Task waits for", async () => {
@@ -2349,7 +2434,7 @@ describe("devboxes runner listen", () => {
           );
         }
         if (path === "assignments") return Response.json({ tasks: [] });
-        return Response.json({ task: null, executor: absentExecutor(request) });
+        return Response.json({ task: null, executor: absentExecutor(request), wakeAt: null });
       },
     });
     await using runner = await spawnListener(api.url.origin);
@@ -2365,7 +2450,7 @@ describe("devboxes runner listen", () => {
   it.each([
     [401, "RUNNER_TOKEN_REVOKED", "The Runner credential is unavailable."],
     [404, "NOT_FOUND", "The requested route does not exist."],
-  ])("stops when its first poll is rejected with HTTP %i", async (status, code, message) => {
+  ])("stops when the API refuses its first request with HTTP %i", async (status, code, message) => {
     const api = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
@@ -2427,21 +2512,21 @@ describe("devboxes runner listen", () => {
     [undefined, "DO_NOT_TRACK=1"],
     ["0", "DO_NOT_TRACK=0"],
   ])(
-    "polls with DO_NOT_TRACK %p as %s in its process environment, so Bun uploads a crash report only when asked",
-    async (configured, polling) => {
-      let polled = false;
+    "runs with DO_NOT_TRACK %p as %s in its process environment, so Bun uploads a crash report only when asked",
+    async (configured, environment) => {
+      let asked = false;
       using api = Bun.serve({
         hostname: "127.0.0.1",
         port: 0,
         fetch: (request) => {
-          polled = true;
+          asked = true;
           return new URL(request.url).pathname.endsWith("/assignments")
             ? Response.json({ tasks: [] })
-            : Response.json({ task: null, executor: absentExecutor(request) });
+            : Response.json({ task: null, executor: absentExecutor(request), wakeAt: null });
         },
       });
       await using runner = await spawnListener(api.url.origin, { DO_NOT_TRACK: configured });
-      await until(() => polled || runner.listener.exitCode !== null);
+      await until(() => asked || runner.listener.exitCode !== null);
       const processes = Bun.spawnSync([
         "ps",
         "-E",
@@ -2452,7 +2537,7 @@ describe("devboxes runner listen", () => {
         String(runner.listener.pid),
       ]);
 
-      expect(processes.stdout.toString().split(/\s/)).toContain(polling);
+      expect(processes.stdout.toString().split(/\s/)).toContain(environment);
     },
     30_000,
   );
