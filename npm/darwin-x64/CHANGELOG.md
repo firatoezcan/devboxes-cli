@@ -1,5 +1,9 @@
 # @devboxes/cli-darwin-x64
 
+## 0.19.0
+
+No changes in this release.
+
 ## 0.18.1
 
 No changes in this release.
