@@ -104,8 +104,10 @@ boundaries, not compatibility guarantees for retired protocols.
   `apps/elysia-opencode/src/executor/execution.ts` restores and saves the
   tool cache.
 - `packages/devbox/src/runner/docker-task-runtime.ts` owns Docker launch.
-  The container name is `devboxes-task-<taskId>` and its identity label is
-  `devboxes.task`. Launch reuses the existing named container when present.
+  The container name is its executor id, `devboxes-task-<taskId>-<uuid>`, and
+  its labels `devboxes.task` and `devboxes.runner` name its Task and the Runner
+  that created it. Launch reuses the Runner's existing container of the Task
+  when present.
   It keeps the executor of the digest it staged last in
   `<state directory>/executors/<sha256>`, one staging at a time. Each staging
   hashes it against the digest, downloads it only when it is missing or doesn't

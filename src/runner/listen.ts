@@ -19,8 +19,12 @@ import {
 } from "@devboxes/protocol/runner-callbacks";
 import { describeErrors } from "@devboxes/protocol/validation-errors";
 import { dockerSocketPath } from "@firops/devbox/runner/docker-socket";
-import { DockerOpencodeTaskRuntime, executorName } from "@firops/devbox/runner/docker-task-runtime";
+import {
+  containerExecutorId,
+  DockerOpencodeTaskRuntime,
+} from "@firops/devbox/runner/docker-task-runtime";
 import { stalledExecutorDownload } from "@firops/devbox/runner/executor-artifact";
+import type Docker from "dockerode";
 import { proxy } from "hono/proxy";
 import { jwtVerify, SignJWT } from "jose";
 import Type, { type Static } from "typebox";
@@ -287,16 +291,24 @@ export const listen = async (options: {
    * download clears it, so a later claim tries again.
    */
   let prefetched: string | null = null;
+  let identified: string | null = null;
+  /**
+   * This Runner's id (`/identify`), which labels the containers it creates. A look asks for it once,
+   * so a failed call fails that look, which the loop retries.
+   */
+  const runnerId = async () => (identified ??= (await api("identify", {})).id);
+  /** The relay's token for Task `taskId`, which its executor reads from stdin when it starts. */
+  const relayToken = (taskId: string) =>
+    new SignJWT().setProtectedHeader({ alg: "HS256" }).setSubject(taskId).sign(relayKey);
   const startCreated = async (
     task: Static<typeof RunnerAssignmentsSchema>["tasks"][number],
-    containerId: string,
+    created: Docker.ContainerInspectInfo,
   ) => {
-    const executorId = executorName(task.id);
-    const container = runtime.docker.getContainer(containerId);
+    const container = runtime.docker.getContainer(created.Id);
     const result = await api("reconcile", {
       taskId: task.id,
-      executorId,
-      containerId,
+      executorId: containerExecutorId(created),
+      containerId: created.Id,
       observation: "created",
     });
     if (!knows(task.id, result.status)) return;
@@ -312,11 +324,8 @@ export const listen = async (options: {
         relayReachable = true;
       }
       if (stopping) return;
-      await runtime.start(
-        container,
-        await new SignJWT().setProtectedHeader({ alg: "HS256" }).setSubject(task.id).sign(relayKey),
-      );
-      console.info(`Started Task ${task.id} in ${executorId}.`);
+      await runtime.start(container, await relayToken(task.id));
+      console.info(`Started Task ${task.id} in ${created.Name.slice(1)}.`);
     }
   };
   /**
@@ -327,27 +336,29 @@ export const listen = async (options: {
   const starting = new Map<string, Promise<void>>();
   let startFailure: {
     taskId: string;
-    executorId: string;
     reason: string;
     error: CommandError;
   } | null = null;
   const startClaimed = async (
     task: NonNullable<Static<typeof RunnerClaimSchema>["task"]> & Static<typeof runnableTaskSchema>,
   ) => {
-    const existing = await runtime.inspect(executorName(task.id));
+    const existing = await runtime.taskContainer(task.id, await runnerId());
     if (!existing) {
       const size = machineSizeResources[task.machineSize];
-      const container = await runtime.create({
-        ...task,
-        resources: {
-          cpus: Math.min(size.cpus, machine.cpus),
-          memoryBytes: Math.min(size.memoryBytes, machine.memoryBytes),
+      const container = await runtime.create(
+        {
+          ...task,
+          resources: {
+            cpus: Math.min(size.cpus, machine.cpus),
+            memoryBytes: Math.min(size.memoryBytes, machine.memoryBytes),
+          },
+          apiBaseUrl,
         },
-        apiBaseUrl,
-      });
-      await startCreated(task, container.id);
+        await runnerId(),
+      );
+      await startCreated(task, await container.inspect());
     } else if (existing.State.Status === "created") {
-      await startCreated(task, existing.Id);
+      await startCreated(task, existing);
     }
   };
   process.once("SIGINT", interrupt);
@@ -383,18 +394,26 @@ export const listen = async (options: {
   let claims = 0;
   /**
    * One look: reports what this machine's containers of the Runner's Tasks show (`/assignments`,
-   * `/reconcile`), then, while no start runs, claims the next Task (`/claim`). It answers null, or
-   * the failure the loop retries after a backoff.
+   * `/reconcile`), removes the containers the Runner created for Tasks it no longer holds, as after
+   * devboxes offered them to another Runner while this one was silent, then, while no start runs,
+   * claims the next Task (`/claim`). It finds a Task's container by the labels the Runner gave it,
+   * so another Runner's containers on the same engine are never its own. It judges what the Runner
+   * holds by what was true when it read `/assignments`: a start that ran then may report its
+   * container after the read, so its Task's container stays. A start begins only from a claim,
+   * which a look makes after its cleanup, so none begins in between. It answers null, or the
+   * failure the loop retries after a backoff.
    */
   const look = async () => {
     try {
+      const startedBefore = new Set(starting.keys());
       const assignments = await api("assignments", {});
       connected = true;
       for (const task of assignments.tasks) {
         if (stopping) break;
         if (starting.has(task.id) || !knows(task.id, task.status)) continue;
-        const executorId = executorName(task.id);
-        const executor = await runtime.inspect(task.containerId ?? executorId);
+        const executor = task.containerId
+          ? await runtime.inspect(task.containerId)
+          : await runtime.taskContainer(task.id, await runnerId());
         if (!executor) {
           await rm(join(directory, task.id), { recursive: true, force: true });
           const result = await api("reconcile", {
@@ -404,12 +423,16 @@ export const listen = async (options: {
             observation: "absent",
             observedAt: new Date().toISOString(),
           }).catch(refusedReport(task.id));
-          if (result)
+          if (result && (endedRunStatuses as readonly string[]).includes(result.status))
             console.info(`Task ${task.id} ended as ${result.status}; its executor is absent.`);
+          else if (result)
+            console.info(
+              `Task ${task.id}'s executor is absent; it starts again in a new container.`,
+            );
           continue;
         }
         if (executor.State.Status === "created") {
-          await startCreated(task, executor.Id);
+          await startCreated(task, executor);
           continue;
         }
         const reason =
@@ -418,7 +441,7 @@ export const listen = async (options: {
             : null;
         const result = await api("reconcile", {
           taskId: task.id,
-          executorId,
+          executorId: containerExecutorId(executor),
           containerId: executor.Id,
           ...(executor.State.Running
             ? { observation: "running", startedAt: executor.State.StartedAt }
@@ -429,21 +452,38 @@ export const listen = async (options: {
                 ...(reason && { reason }),
               }),
         }).catch(refusedReport(task.id));
-        if (
-          result &&
-          !executor.State.Running &&
-          knows(task.id, result.status) &&
-          (endedRunStatuses as readonly string[]).includes(result.status)
-        ) {
-          await runtime.docker.getContainer(executor.Id).remove({ v: true });
+        if (!result || !knows(task.id, result.status)) continue;
+        const container = runtime.docker.getContainer(executor.Id);
+        if ((endedRunStatuses as readonly string[]).includes(result.status)) {
+          if (executor.State.Running) continue;
+          await container.remove({ v: true });
           await rm(join(directory, task.id), { recursive: true, force: true });
           console.info(`Task ${task.id} ended as ${result.status}.`);
+        } else if (result.restart && !stopping) {
+          if (executor.State.Running)
+            await container.kill().catch((error: { statusCode?: number }) => {
+              if (error.statusCode !== 409) throw error;
+            });
+          await container.wait();
+          await runtime.start(container, await relayToken(task.id));
+          console.info(`Started Task ${task.id}'s executor again in ${executor.Name.slice(1)}.`);
         }
+      }
+      const assigned = new Set(assignments.tasks.map(({ id }) => id));
+      for (const left of await runtime.runnerContainers(await runnerId())) {
+        if (stopping) break;
+        if (assigned.has(left.taskId) || startedBefore.has(left.taskId)) continue;
+        await runtime.docker.getContainer(left.id).remove({ v: true, force: true });
+        await rm(join(directory, left.taskId), { recursive: true, force: true });
+        console.info(
+          `Removed Task ${left.taskId}'s container: the Task no longer runs on this Runner.`,
+        );
       }
       if (stopping) return null;
       if (startFailure !== null) {
-        const { taskId, executorId, reason, error } = startFailure;
-        if (!(await runtime.inspect(executorId))) await reportStartFailure(taskId, reason);
+        const { taskId, reason, error } = startFailure;
+        if (!(await runtime.taskContainer(taskId, await runnerId())))
+          await reportStartFailure(taskId, reason);
         startFailure = null;
         throw error;
       }
@@ -497,7 +537,6 @@ export const listen = async (options: {
                   (error) => {
                     startFailure = {
                       taskId: task.id,
-                      executorId: executorName(task.id),
                       reason:
                         error instanceof Error
                           ? error.name === "TimeoutError"
