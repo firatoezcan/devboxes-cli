@@ -124,8 +124,9 @@ boundaries, not compatibility guarantees for retired protocols.
   `executorDownloadStalledExitCode` and names the host and the bound in its
   termination message, which the Run's error quotes. Any other failure exits 1
   without a termination message.
-- `apps/elysia-opencode/src/executor/claude-code-launcher.ts` owns the
-  launcher that runs a Claude subscription Run's Claude Code as its own uid.
+- `apps/elysia-opencode/src/executor/launcher.ts` owns the launchers that run
+  the agent's processes and file operations, and a Claude subscription Run's
+  Claude Code, each at its own uid, away from the executor's.
 - `apps/firops-api/src/execution/managed.ts` owns managed launch of the Task
   Pod from the SandboxTemplate of the Task's machine size: `devboxes-task`,
   `devboxes-task-large` or `devboxes-task-xl`. Before the Sandbox, it creates
