@@ -10,7 +10,7 @@ import {
 } from "@devboxes/protocol/daemon-artifact";
 import type { JsonValue } from "@devboxes/protocol/json";
 import { machineSizeResources, machineSizes } from "@devboxes/protocol/project";
-import { runStatuses } from "@devboxes/protocol/run-statuses";
+import { endedRunStatuses, runStatuses } from "@devboxes/protocol/run-statuses";
 import {
   type RunnerAssignmentsSchema,
   type RunnerClaimSchema,
@@ -396,13 +396,7 @@ export const listen = async (options: {
         const executorId = executorName(task.id);
         const executor = await runtime.inspect(task.containerId ?? executorId);
         if (!executor) {
-          if (
-            task.status === "succeeded" ||
-            task.status === "cancelled" ||
-            task.status === "paused" ||
-            task.status === "cancel_requested"
-          )
-            await rm(join(directory, task.id), { recursive: true, force: true });
+          await rm(join(directory, task.id), { recursive: true, force: true });
           const result = await api("reconcile", {
             taskId: task.id,
             executorId: task.executorId,
@@ -435,20 +429,14 @@ export const listen = async (options: {
                 ...(reason && { reason }),
               }),
         }).catch(refusedReport(task.id));
-        if (result && !executor.State.Running && knows(task.id, result.status)) {
-          if (
-            result.status === "succeeded" ||
-            result.status === "cancelled" ||
-            result.status === "paused"
-          ) {
-            await runtime.docker.getContainer(executor.Id).remove({ v: true });
-            await rm(join(directory, task.id), { recursive: true, force: true });
-          } else {
-            console.error(`Retained failed executor ${executorId} for inspection.`);
-            console.error(
-              `Remove it when you no longer need it: docker rm --volumes ${executorId} && rm -rf '${join(directory, task.id).replaceAll("'", "'\\''")}'`,
-            );
-          }
+        if (
+          result &&
+          !executor.State.Running &&
+          knows(task.id, result.status) &&
+          (endedRunStatuses as readonly string[]).includes(result.status)
+        ) {
+          await runtime.docker.getContainer(executor.Id).remove({ v: true });
+          await rm(join(directory, task.id), { recursive: true, force: true });
           console.info(`Task ${task.id} ended as ${result.status}.`);
         }
       }

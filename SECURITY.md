@@ -26,9 +26,9 @@ credentials, mounted Opencode configuration, and the Docker host as one
 security boundary. A dedicated runner host limits unrelated exposure.
 
 The listener reconciles observed executors with the API. It removes a stopped
-container and per-task state after confirmed success or cancellation. It retains
-failed containers for inspection. A disconnected listener or expired lease does
-not establish that a container stopped.
+container and its per-task state once the API confirms the Run ended, failed
+Runs included. A disconnected listener or expired lease does not establish that a
+container stopped.
 
 ## Credential handling
 
