@@ -180,7 +180,10 @@ The Runner writes the executor's token to the container's stdin when it starts
 the container, and closes it. Bootstrap reads it as root before the privilege
 drop and keeps it in memory, so it is in no environment block, argument list or
 file of the container. An executor whose stdin carries no token stops at start
-and says to update the devboxes CLI. The token authenticates only at the
+and says to update the devboxes CLI. So does an executor in a container of a
+devboxes CLI before 0.20.0, whose private directory and folder of binaries the
+agent's uid owns: the executor's uid couldn't use the one, and the agent could
+replace the other's binaries. The token authenticates only at the
 Runner's relay, which `DEVBOX_BACKEND_BASE_URL` names at `host.docker.internal`. The
 relay listens on the host's loopback address under Docker Desktop, OrbStack and
 rootless Docker, and on the bridge gateway address under a rootful Linux Docker
