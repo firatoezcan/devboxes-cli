@@ -1,0 +1,19 @@
+Vite's license plugin (build.license) reads the first entry of a package directory whose name
+starts with license, licence or copying, without checking that it is a file. A package that ships
+a LICENSES directory, such as @opentelemetry/instrumentation, fails the API build with EISDIR. This
+patch skips entries that aren't files. Delete it once Vite's findLicenseFile checks for a file:
+upstream it is packages/vite/src/node/plugins/license.ts:143 on vitejs/vite main (2026-11-18).
+
+diff --git a/dist/vite/node/chunks/node.js b/dist/vite/node/chunks/node.js
+index c84de3a..3f2bb2c 100644
+--- a/dist/vite/node/chunks/node.js
++++ b/dist/vite/node/chunks/node.js
+@@ -39647,7 +39647,7 @@ The app bundles dependencies which contain the following licenses:
+ 	return text;
+ }
+ function findLicenseFile(pkgDir) {
+-	const matchedFile = fs.readdirSync(pkgDir).find((file) => licenseFiles.some((re) => re.test(file)));
++	const matchedFile = fs.readdirSync(pkgDir).find((file) => licenseFiles.some((re) => re.test(file)) && fs.statSync(path.join(pkgDir, file)).isFile());
+ 	if (matchedFile) return path.join(pkgDir, matchedFile);
+ }
+ // ../../vite/packages/vite/src/node/plugins/prepareOutDir.ts
