@@ -1654,8 +1654,18 @@ describe("devboxes runner listen", () => {
   const runnerTokenFile = join(fixtureDirectory, "runner-token");
   const engine = { name: "Test Engine", gateway: "127.0.0.1" };
   const fixtureDocker = { DOCKER_HOST: `unix://${join(fixtureDirectory, "docker.sock")}` };
-  /** The executors on the fake engine, by name, as Docker inspects them. */
-  const containers = new Map<string, { Id: string; Image: string; State: object }>();
+  /** The executors on the fake engine, by id, as Docker inspects them. */
+  const containers = new Map<
+    string,
+    {
+      Id: string;
+      Image: string;
+      State: object;
+      Config: { Env: string[]; Labels: Record<string, string> };
+    }
+  >();
+  /** The Runner the fake API says the listener's key belongs to (`/identify`). */
+  const fixtureRunnerId = "runner-fixture";
   /** Every call the Runner made to change a container on the fake engine. */
   const containerChanges: string[] = [];
   /** How many image pulls the Runner asked the fake engine for. */
@@ -1665,6 +1675,21 @@ describe("devboxes runner listen", () => {
     fetch: (request) => {
       const { pathname } = new URL(request.url);
       if (pathname.endsWith("/events")) return new Response(new ReadableStream());
+      if (pathname.endsWith("/containers/json")) {
+        const wanted: string[] = JSON.parse(
+          new URL(request.url).searchParams.get("filters") ?? "{}",
+        ).label;
+        return Response.json(
+          [...containers.values()]
+            .filter(({ Config }) =>
+              wanted.every((label) => {
+                const [name = "", value] = label.split("=");
+                return Config.Labels[name] === value;
+              }),
+            )
+            .map(({ Id, Config }) => ({ Id, Labels: Config.Labels })),
+        );
+      }
       const inspected = /\/containers\/([^/]+)\/json$/.exec(pathname);
       if (inspected && containers.has(inspected[1]!))
         return Response.json(containers.get(inspected[1]!));
@@ -1731,6 +1756,8 @@ describe("devboxes runner listen", () => {
       idleTimeout: 0,
       fetch: async (request) => {
         const url = new URL(request.url);
+        if (url.pathname === "/api/internal/execution/runners/identify")
+          return Response.json({ id: fixtureRunnerId });
         if (url.pathname === "/api/internal/execution/runners/events") {
           let opened: ReadableStreamDefaultController<Uint8Array> | undefined;
           return new Response(
@@ -2033,9 +2060,13 @@ describe("devboxes runner listen", () => {
     });
   }, 60_000);
 
-  /** An executor that ran and stopped, or that exists without having started. */
-  const executor = (name: string, state: "exited" | "created") => ({
-    Id: name,
+  /** Task `taskId`'s executor that ran and stopped, or that exists without having started. */
+  const executor = (taskId: string, state: "exited" | "created") => ({
+    Id: `devboxes-task-${taskId}`,
+    Config: {
+      Env: [`DEVBOX_EXECUTOR_ID=devboxes-task-${taskId}`],
+      Labels: { "devboxes.task": taskId, "devboxes.runner": fixtureRunnerId },
+    },
     Image: `registry.devboxes.test/workspace@sha256:${"a".repeat(64)}`,
     State: {
       Status: state,
@@ -2053,7 +2084,7 @@ describe("devboxes runner listen", () => {
 
   it("leaves a Task whose Run status it doesn't know, and its executor, as they are, and says so once", async () => {
     const [unknown, known] = [crypto.randomUUID(), crypto.randomUUID()];
-    containers.set(`devboxes-task-${unknown}`, executor(`devboxes-task-${unknown}`, "exited"));
+    containers.set(`devboxes-task-${unknown}`, executor(unknown, "exited"));
     const reported: string[] = [];
     using api = Bun.serve({
       hostname: "127.0.0.1",
@@ -2087,8 +2118,8 @@ describe("devboxes runner listen", () => {
 
   it("keeps a stopped or created executor whose Run the API answers with a status it doesn't know", async () => {
     const [stopped, created] = [crypto.randomUUID(), crypto.randomUUID()];
-    containers.set(`devboxes-task-${stopped}`, executor(`devboxes-task-${stopped}`, "exited"));
-    containers.set(`devboxes-task-${created}`, executor(`devboxes-task-${created}`, "created"));
+    containers.set(`devboxes-task-${stopped}`, executor(stopped, "exited"));
+    containers.set(`devboxes-task-${created}`, executor(created, "created"));
     const reports: { taskId: string; observation: string }[] = [];
     using api = Bun.serve({
       hostname: "127.0.0.1",

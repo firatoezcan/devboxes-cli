@@ -4,6 +4,11 @@ export const containerHome = "/home/workspace";
 export const containerDaemonUid = 0;
 export const containerAgentUid = 1001;
 export const containerSharedGid = 1000;
+/**
+ * The executor's uid. The agent's processes run at `containerAgentUid` through a launcher, so they
+ * can neither signal the executor nor read its memory or its folder in the private directory.
+ */
+export const containerExecutorUid = 1004;
 /** The uid and gid of a Claude subscription Run's Claude Code, which the agent can't read or signal. */
 export const containerClaudeCodeUid = 1002;
 /** Where a Workspace Image keeps its trusted CA certificates, unless SSL_CERT_FILE names a file. */
@@ -60,20 +65,25 @@ const xdgHomes = {
   XDG_CACHE_HOME: ".cache",
   XDG_STATE_HOME: ".local/state",
 };
-/** OpenCode's own directories in the Task home, which a tool cache path may neither be nor hold. */
-export const opencodeHomeDirectories = Object.values(xdgHomes).map(
-  (directory) => `${directory}/opencode`,
-);
 /**
- * OpenCode's configuration and data directories in the Task home. They hold the connected Provider
- * Account credential and the Session database, which the Docker Runner keeps in memory so that a
- * failed executor it retains does not keep them on disk.
+ * OpenCode's configuration directory in the Task home, its only directory there, which a tool cache
+ * path may neither be nor hold: a cached one would carry a Run's configuration into the next.
  */
-export const opencodeMemoryHomeDirectories = [xdgHomes.XDG_CONFIG_HOME, xdgHomes.XDG_DATA_HOME].map(
-  (directory) => `${directory}/opencode`,
-);
+export const opencodeConfigDirectory = `${xdgHomes.XDG_CONFIG_HOME}/opencode`;
 /** How long the executor has after SIGTERM to drain a started Run and record its result. */
 export const executorDrainSeconds = 120;
+
+/**
+ * How often an executor tells the API it is alive, apart from its main loop, whose drains,
+ * checkpoint uploads and end-of-Run publication send no heartbeat while they run.
+ */
+export const executorHeartbeatIntervalMs = 10_000;
+
+/**
+ * How long a started executor may send no heartbeat before the API takes it as lost
+ * (DEC-lost-executor-restarts): nine missed heartbeats.
+ */
+export const executorSilentMs = 9 * executorHeartbeatIntervalMs;
 
 /**
  * The environment every Task executor receives, apart from its runtime's executor identity. It

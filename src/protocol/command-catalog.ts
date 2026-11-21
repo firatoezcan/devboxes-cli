@@ -36,7 +36,9 @@ export const grantableRoles = (
 
 const sharedFields = {
   delegable: Type.Optional(Type.Literal(false)),
-  chat: Type.Optional(Type.Union([Type.Literal("policy"), Type.Literal("always")])),
+  chat: Type.Optional(
+    Type.Union([Type.Literal("policy"), Type.Literal("private"), Type.Literal("always")]),
+  ),
   authority: Type.String({ minLength: 1 }),
   shipped: Type.Optional(
     Type.Object({
@@ -101,7 +103,10 @@ export type Elevation = Static<typeof elevationSchema>;
  * its turn answers is linked to a member who holds one of the contract's roles, which
  * law:only-issue-reads-cross-projects allows only issues.read (DEC-referable-project-issues); `delegable: false` when only a
  * person's session may call it, never a member delegation; `chat` when a Chat delegation may hold
- * it: `policy` when the Chat policy's resources grant it, and `always` when every Chat turn may
+ * it: `policy` when the Chat policy's resources grant it, `private` when they grant it and the
+ * conversation is the asker's own web Chat conversation, which nobody else reads, as
+ * law:personal-data-answers-privately requires of every command on a person's own account
+ * (DEC-personal-data-answers-privately), and `always` when every Chat turn may
  * call it whatever its policy lists, which only the listings of Projects and work setups, reading a
  * tracker conversation's own issue, opening the turn's own conversation log, and sending the asker
  * the link that links their chat account are
@@ -259,9 +264,22 @@ const closedObject = (_key: string, node: JsonValue) =>
     ? { ...node, additionalProperties: false }
     : node;
 
+/** A schema that names itself, which an answer states once in the document's components. */
+const identifiedSchema = Type.Object({ $id: Type.String() });
+
+/** A named schema whose single type OpenAPI 3.1 widened with `null`. */
+const nullableIdentifiedSchema = Type.Object({
+  $id: Type.String(),
+  type: Type.Tuple([Type.String(), Type.Literal("null")]),
+});
+
 /**
- * The document as the API serves it: each request body closes its objects (`closedObject`), each contract
- * leaves out `does`, and the response of every command failure, a CommandError body, refers to the
+ * The document as the API serves it: each request body closes its objects (`closedObject`) and
+ * states every schema inline without its `$id`, since an installed CLI checks and prompts for a
+ * body's fields from the inline schema (DEC-clients-fail-only-on-what-they-use). An answer states
+ * each schema that carries an `$id` once, open like every answer, under
+ * `components.schemas.<$id>`, and refers to it wherever it's used. Each contract leaves out `does`.
+ * A command's failures are one `4XX` and one `5XX` response, a CommandError body that refers to the
  * details schemas of only the codes `detailCodesOf` gives its command. A command that raises none
  * refers to `components.responses.CommandError`, and one that does to the `CommandError.<hash>`
  * response of its set of codes, named by a hash of the set, so the name stays while the set does.
@@ -347,6 +365,24 @@ export const servedDocument = (
     if (codes.length > 0) codeSets.set(name, codes);
   }
   const raisedCodes = [...new Set([...codeSets.values()].flat())].sort();
+  const named = new Map<string, JsonValue>();
+  const statedOnce = (_key: string, node: JsonValue): JsonValue => {
+    if (!Value.Check(identifiedSchema, node)) return node;
+    const nullable = Value.Check(nullableIdentifiedSchema, node);
+    const { $id, ...schema } = nullable ? { ...node, type: node.type[0] } : node;
+    const stated: JsonValue = JSON.parse(JSON.stringify(schema, statedOnce));
+    const earlier = named.get($id);
+    if (earlier !== undefined && !Value.Equal(earlier, stated))
+      throw new Error(`Two different answer schemas carry the $id ${$id}.`);
+    named.set($id, stated);
+    const ref = { $ref: `#/components/schemas/${$id}` };
+    return nullable ? { anyOf: [ref, { type: "null" }] } : ref;
+  };
+  const statedInline = (key: string, node: JsonValue) => {
+    if (!Value.Check(identifiedSchema, node)) return closedObject(key, node);
+    const { $id: _id, ...schema } = node;
+    return closedObject(key, schema);
+  };
   const served = (operation: Static<typeof servedOperationSchema>) => {
     const { requestBody, responses } = operation;
     const failure = failing.includes(operation)
@@ -355,15 +391,19 @@ export const servedDocument = (
     const referred = {
       ...operation,
       ...(requestBody !== undefined && {
-        requestBody: JSON.parse(JSON.stringify(requestBody, closedObject)),
+        requestBody: JSON.parse(JSON.stringify(requestBody, statedInline)),
       }),
       ...(responses && {
-        responses: Object.fromEntries(
-          Object.entries(responses).map(([status, response]) => [
-            status,
-            failure && Value.Equal(response, elysiaFailure) ? failure : response,
-          ]),
-        ),
+        responses: {
+          ...Object.fromEntries(
+            Object.entries(responses).flatMap(([status, response]) =>
+              failure && Value.Equal(response, elysiaFailure)
+                ? []
+                : [[status, JSON.parse(JSON.stringify(response, statedOnce))]],
+            ),
+          ),
+          ...(failure && { "4XX": failure, "5XX": failure }),
+        },
       }),
     };
     const contract = operation["x-devboxes"];
@@ -390,6 +430,7 @@ export const servedDocument = (
       schemas: {
         ...document.components.schemas,
         CommandError: body,
+        ...Object.fromEntries(named),
         ...Object.fromEntries(
           raisedCodes.map((code) => {
             const schema = sources.schemas[code];

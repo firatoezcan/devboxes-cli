@@ -82,8 +82,15 @@ export const RunnerMachineSchema = Type.Object({
 /** `/assignments`: the Tasks this Runner holds an executor for, or must stop one of. */
 export const RunnerAssignmentsSchema = Type.Object({ tasks: Type.Array(AssignedTaskSchema) });
 
-/** `/reconcile`: the Run's status once the Runner's observation is recorded. */
-export const RunnerReconcileSchema = Type.Object({ status: Type.String() });
+/**
+ * `/reconcile`: the Run's status once the Runner's observation is recorded, and `restart` when the
+ * Runner starts the Task's stopped or silent executor again in the same container, which keeps its
+ * workspace and its saved Run (DEC-lost-executor-restarts).
+ */
+export const RunnerReconcileSchema = Type.Object({
+  status: Type.String(),
+  restart: Type.Optional(Type.Literal(true)),
+});
 
 /**
  * `/release`: whether the calling listener let go of the Runner, and otherwise until when it holds

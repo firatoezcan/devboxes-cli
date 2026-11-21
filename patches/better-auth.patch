@@ -1,5 +1,5 @@
 diff --git a/dist/api/index.d.mts b/dist/api/index.d.mts
-index 46b15f81adbc36dbfd64397d32b1e2264beba4bf..8392ba8e3e0ebbc7d524dfefda77defc9ef71f52 100644
+index 46b15f81adbc36dbfd64397d32b1e2264beba4bf..381af65f59fcfbc26efa6b85b707418c9a1f3b23 100644
 --- a/dist/api/index.d.mts
 +++ b/dist/api/index.d.mts
 @@ -4047,5 +4047,6 @@ export declare const router: <Option extends BetterAuthOptions>(ctx: AuthContext
@@ -48,6 +48,33 @@ index 073580d38e977702c3ea51d73a61ab1138807ea5..fd2f6b0b2446ac9d916b0f36f8cc5864
  	return ctx.json({ status: true });
  });
  //#endregion
+diff --git a/dist/plugins/admin/routes.mjs b/dist/plugins/admin/routes.mjs
+index 5ff91c4dd0cdf81b6f04d949b3108922b408fed8..0ac6b706a658d48fdb24a351c07b72d63ec77b39 100644
+--- a/dist/plugins/admin/routes.mjs
++++ b/dist/plugins/admin/routes.mjs
+@@ -8,6 +8,7 @@ import { hasPermission } from "./has-permission.mjs";
+ import { APIError, BASE_ERROR_CODES } from "@better-auth/core/error";
+ import { whereOperators } from "@better-auth/core/db/adapter";
+ import { createAuthEndpoint, createAuthMiddleware } from "@better-auth/core/api";
++import { runWithTransaction } from "@better-auth/core/context";
+ import * as z from "zod";
+ //#region src/plugins/admin/routes.ts
+ /**
+@@ -778,8 +779,12 @@ const removeUser = (opts) => createAuthEndpoint("/admin/remove-user", {
+ 	})) throw APIError.from("FORBIDDEN", ADMIN_ERROR_CODES.YOU_ARE_NOT_ALLOWED_TO_DELETE_USERS);
+ 	if (ctx.body.userId === ctx.context.session.user.id) throw APIError.from("BAD_REQUEST", ADMIN_ERROR_CODES.YOU_CANNOT_REMOVE_YOURSELF);
+ 	if (!await ctx.context.internalAdapter.findUserById(ctx.body.userId)) throw APIError.from("NOT_FOUND", BASE_ERROR_CODES.USER_NOT_FOUND);
+-	await ctx.context.internalAdapter.deleteUserSessions(ctx.body.userId);
+-	await ctx.context.internalAdapter.deleteUser(ctx.body.userId);
++	// devboxes patch: one transaction, so a removal that fails deletes nothing. Upstream main, 1.7.26
++	// and 1.8.0-beta.10 still run these two calls outside a transaction; check before dropping it.
++	await runWithTransaction(ctx.context.adapter, async () => {
++		await ctx.context.internalAdapter.deleteUserSessions(ctx.body.userId);
++		await ctx.context.internalAdapter.deleteUser(ctx.body.userId);
++	});
+ 	return ctx.json({ success: true });
+ });
+ const setUserPasswordBodySchema = z.object({
 diff --git a/dist/plugins/two-factor/backup-codes/index.d.mts b/dist/plugins/two-factor/backup-codes/index.d.mts
 index 37aeeb3807274e0ddccc19f749207bbd38a3bb61..955a26b50070a0b8aa3609e14db1d6d270a293ce 100644
 --- a/dist/plugins/two-factor/backup-codes/index.d.mts

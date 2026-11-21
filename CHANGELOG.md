@@ -1,5 +1,16 @@
 # devboxes
 
+## 0.20.0
+
+### Minor Changes
+
+- Update the devboxes CLI on every machine that runs `devboxes runner listen`, then restart the listener. devboxes now runs each Task's executor at a uid of its own, apart from the agent's, and a Task container from a devboxes CLI before 0.20.0 can't hold that executor: a Run on such a Runner fails at once with "This executor needs the devboxes CLI 0.20.0 or later on the Runner. Update the devboxes CLI that runs `devboxes runner listen`."
+- `devboxes runner listen` starts a Task's executor again in its own container when the executor stops, for example after the container was killed or the machine restarted, and the Run continues where it was. When the container is gone, the listener starts the Run in a new container from the last point the Run saved. Each Task container is named `devboxes-task-<task id>-<uuid>` and labelled with its Task and its Runner, so two Runners on one Docker engine keep their containers apart. A listener removes the container of a Task that devboxes moved to another Runner.
+
+### Patch Changes
+
+- 12c5491: `devboxes runner listen` deletes a failed Task's container and folder when the Task ends, as it already did for every other end, instead of keeping them for you to delete. The Run's error keeps the executor's last error line.
+
 ## 0.19.0
 
 ### Minor Changes

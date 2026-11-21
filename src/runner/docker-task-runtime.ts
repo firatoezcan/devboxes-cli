@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmod, link, mkdir, readdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { Duplex, Writable } from "node:stream";
@@ -11,14 +11,12 @@ import {
   containerClaudeCodeHome,
   containerClaudeCodeUid,
   containerDaemonExecutableDir,
-  containerDaemonPrivateDir,
   containerDaemonUid,
   containerHome,
   containerSharedGid,
   containerWorkspace,
   executorDrainSeconds,
   executorEnvironment,
-  opencodeMemoryHomeDirectories,
 } from "../protocol/task-runtime";
 import Docker from "dockerode";
 import { extract, pack } from "tar-stream";
@@ -67,8 +65,26 @@ export const followDockerProgress = (
     }),
   );
 
-/** The name of Task `taskId`'s executor container, which is also its executor ID. */
-export const executorName = (taskId: string) => `devboxes-task-${taskId}`;
+/** The labels of the containers that Runner `runnerId` creates for Task `taskId`. */
+const taskLabels = (taskId: string, runnerId: string) => ({
+  "devboxes.task": taskId,
+  "devboxes.runner": runnerId,
+});
+
+/** Docker's label filter for every container whose labels hold all of `labels`. */
+const labelFilter = (labels: Record<string, string>) =>
+  Object.entries(labels).map(([name, value]) => `${name}=${value}`);
+
+/**
+ * The executor ID of `container`, which its `DEVBOX_EXECUTOR_ID` holds: each container of a Task
+ * has its own, so a new container restores the Task's checkpoint
+ * (DEC-executor-restores-from-checkpoint).
+ */
+export const containerExecutorId = (container: Docker.ContainerInspectInfo) => {
+  const variable = container.Config.Env.find((entry) => entry.startsWith("DEVBOX_EXECUTOR_ID="));
+  if (!variable) throw new Error(`Container ${container.Name} has no executor ID.`);
+  return variable.slice("DEVBOX_EXECUTOR_ID=".length);
+};
 
 /** The standard output and error of Docker's multiplexed `stream`, once it ends. */
 export const demuxedText = async (docker: Docker, stream: NodeJS.ReadableStream) => {
@@ -347,10 +363,40 @@ export class DockerOpencodeTaskRuntime {
     });
   }
 
-  async create(task: NativeTaskLaunch): Promise<Docker.Container> {
-    const name = executorName(task.id);
-    const existing = await this.inspect(name);
+  /**
+   * The container that Runner `runnerId` created for Task `taskId` on this engine, or null. Another
+   * Runner on the same engine creates its own container for the Task, under its own labels.
+   */
+  async taskContainer(taskId: string, runnerId: string) {
+    const [found] = await this.docker.listContainers({
+      all: true,
+      filters: { label: labelFilter(taskLabels(taskId, runnerId)) },
+    });
+    return found ? this.inspect(found.Id) : null;
+  }
+
+  /** The containers that Runner `runnerId` created on this engine, each with its Task's id. */
+  async runnerContainers(runnerId: string) {
+    return (
+      await this.docker.listContainers({
+        all: true,
+        filters: { label: labelFilter({ "devboxes.runner": runnerId }) },
+      })
+    ).flatMap(({ Id, Labels }) => {
+      const taskId = Labels["devboxes.task"];
+      return taskId ? [{ id: Id, taskId }] : [];
+    });
+  }
+
+  /**
+   * Creates the container of Task `task` for Runner `runnerId`, or answers the one it already
+   * created. Each container's name is its executor id, which no other container shares, so two
+   * Runners on one engine never name the same container.
+   */
+  async create(task: NativeTaskLaunch, runnerId: string): Promise<Docker.Container> {
+    const existing = await this.taskContainer(task.id, runnerId);
     if (existing) return this.docker.getContainer(existing.Id);
+    const name = `devboxes-task-${task.id}-${randomUUID()}`;
     const directory = resolve(this.options.stateDirectory, task.id);
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const binary = join(directory, "devboxes-executor");
@@ -362,7 +408,6 @@ export class DockerOpencodeTaskRuntime {
     );
     const claudeCode =
       task.claudeCode && (await this.claudeCodeVolume(task.claudeCode, task.image, task.platform));
-    const agentOwner = `uid=${containerAgentUid},gid=${containerSharedGid}`;
     const environment = {
       ...executorEnvironment({
         id: task.id,
@@ -388,7 +433,7 @@ export class DockerOpencodeTaskRuntime {
       StdinOnce: true,
       AttachStdin: true,
       Env: Object.entries(environment).map(([key, value]) => `${key}=${value}`),
-      Labels: { "devboxes.task": task.id },
+      Labels: taskLabels(task.id, runnerId),
       StopTimeout: executorDrainSeconds,
       HostConfig: {
         AutoRemove: false,
@@ -397,7 +442,7 @@ export class DockerOpencodeTaskRuntime {
         Init: true,
         CapDrop: ["ALL"],
         // KILL lets Docker's init, which stays root, forward a stop's SIGTERM to the executor after
-        // the executor dropped to the agent's uid and with it every capability.
+        // the executor dropped to its own uid and with it every capability.
         CapAdd: ["DAC_OVERRIDE", "KILL", "SETGID", "SETUID"],
         SecurityOpt: ["no-new-privileges"],
         NanoCpus: Math.round(task.resources.cpus * 1e9),
@@ -429,14 +474,7 @@ export class DockerOpencodeTaskRuntime {
           })),
         ],
         Tmpfs: {
-          [containerDaemonPrivateDir]: `rw,noexec,nosuid,size=1g,mode=0700,${agentOwner}`,
-          [containerDaemonExecutableDir]: `rw,exec,nosuid,size=64m,mode=0700,${agentOwner}`,
-          ...Object.fromEntries(
-            opencodeMemoryHomeDirectories.map((directory) => [
-              `${containerHome}/${directory}`,
-              `rw,noexec,nosuid,mode=0770,${agentOwner}`,
-            ]),
-          ),
+          [containerDaemonExecutableDir]: "rw,exec,nosuid,size=64m,mode=0755",
           [containerClaudeCodeHome]: "ro,noexec,nosuid,size=4k,mode=0555",
         },
         ExtraHosts: ["host.docker.internal:host-gateway"],
